@@ -84,7 +84,9 @@ const TALK_HELP = `/help                         show this help
 /queue delete <id>            delete a queued message
 /exit                         detach this terminal
 `;
-const TALK_USER_LABEL = "\u001b[48;5;238m\u001b[97m you> \u001b[0m";
+const TALK_USER_STYLE = "\u001b[48;5;238m\u001b[97m";
+const TALK_STYLE_RESET = "\u001b[0m";
+const TALK_WORK_FRAMES = ["∮   ", "∮·  ", "∮·· ", "∮···"] as const;
 const VERSION_HELP = `Usage: rr version
 
 Print the rr, Node.js, and supported Pi versions.
@@ -703,6 +705,7 @@ export async function queueCommand(
 export interface TalkTerminal {
   question(prompt: string): Promise<string>;
   writeEvent?(text: string): void;
+  setWorking?(working: boolean): void;
   colors?: boolean;
   close(): void;
 }
@@ -747,10 +750,16 @@ interface TalkTerminalControls {
   moveCursor(destination: TalkOutput, offset: number): void;
 }
 
+interface TalkTerminalClock {
+  setInterval(callback: () => void, milliseconds: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
 export function createTalkTerminal(overrides?: {
   terminal: TalkReadline;
   output: TalkOutput;
   controls: TalkTerminalControls;
+  clock?: TalkTerminalClock;
 }): TalkTerminal {
   const destination = overrides?.output ?? output,
     terminal =
@@ -767,15 +776,37 @@ export function createTalkTerminal(overrides?: {
         cursorTo(stream as NodeJS.WriteStream, 0),
       moveCursor: (stream: TalkOutput, offset: number) =>
         moveCursor(stream as NodeJS.WriteStream, offset, 0),
+    },
+    clock = overrides?.clock ?? {
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
     };
-  let activePrompt: string | undefined;
+  let activePrompt: string | undefined,
+    working = false,
+    frame = 0,
+    animation: unknown;
+  const displayedPrompt = () =>
+      `${working ? `${TALK_WORK_FRAMES[frame]} ` : ""}${activePrompt ?? ""}`,
+    redrawPrompt = () => {
+      if (!activePrompt || !destination.isTTY) return;
+      const pendingInput = terminal.line,
+        pendingCursor = terminal.cursor;
+      if (activePrompt === humanLabel(true))
+        destination.write(TALK_STYLE_RESET);
+      controls.clearLine(destination);
+      controls.cursorTo(destination);
+      destination.write(`${displayedPrompt()}${pendingInput}`);
+      if (pendingCursor < pendingInput.length)
+        controls.moveCursor(destination, pendingCursor - pendingInput.length);
+    };
   return {
     colors: Boolean(destination.isTTY) && process.env.NO_COLOR === undefined,
     async question(prompt) {
       activePrompt = prompt;
       try {
-        return await terminal.question(prompt);
+        return await terminal.question(displayedPrompt());
       } finally {
+        if (prompt === humanLabel(true)) destination.write(TALK_STYLE_RESET);
         activePrompt = undefined;
       }
     },
@@ -786,14 +817,30 @@ export function createTalkTerminal(overrides?: {
       }
       const pendingInput = terminal.line,
         pendingCursor = terminal.cursor;
+      if (activePrompt === humanLabel(true))
+        destination.write(TALK_STYLE_RESET);
       controls.clearLine(destination);
       controls.cursorTo(destination);
       destination.write(text);
-      destination.write(`${activePrompt}${pendingInput}`);
+      destination.write(`${displayedPrompt()}${pendingInput}`);
       if (pendingCursor < pendingInput.length)
         controls.moveCursor(destination, pendingCursor - pendingInput.length);
     },
+    setWorking(next) {
+      if (working === next || !destination.isTTY) return;
+      working = next;
+      frame = 0;
+      if (animation !== undefined) clock.clearInterval(animation);
+      animation = undefined;
+      redrawPrompt();
+      if (working)
+        animation = clock.setInterval(() => {
+          frame = (frame + 1) % TALK_WORK_FRAMES.length;
+          redrawPrompt();
+        }, 160);
+    },
     close() {
+      if (animation !== undefined) clock.clearInterval(animation);
       terminal.close();
     },
   };
@@ -843,6 +890,7 @@ export async function talkCommand(
       rl.writeEvent?.bind(rl) ?? dependencies.writeOutput,
       terminalId,
       Boolean(rl.colors),
+      (working) => rl.setWorking?.(working),
     ).catch((error) => {
       if (!abort.signal.aborted)
         dependencies.writeError(`rr: ${messageOf(error)}\n`);
@@ -935,6 +983,7 @@ export async function talkCommand(
     }
     return 0;
   } finally {
+    rl.setWorking?.(false);
     rl.close();
     abort.abort();
     await follow;
@@ -1074,10 +1123,20 @@ async function consumeEvents(
   writeOutput: (text: string) => void = (text) => process.stdout.write(text),
   terminalId?: string,
   colors = false,
+  setWorking: (working: boolean) => void = () => undefined,
 ): Promise<void> {
   const reader = stream.getReader(),
     decoder = new TextDecoder();
-  let buffer = "";
+  let buffer = "",
+    sessionActive = false,
+    inFlight = false,
+    working = false;
+  const updateWorking = () => {
+    const next = sessionActive && inFlight;
+    if (next === working) return;
+    working = next;
+    setWorking(working);
+  };
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -1093,13 +1152,21 @@ async function consumeEvents(
       if (event === "snapshot") {
         const snapshot = value as {
           conversation: { type: string; text?: string }[];
+          queue?: { status: string }[];
         };
+        const latestSession = snapshot.conversation
+          .filter((item) => item.type === "session")
+          .at(-1);
+        sessionActive = latestSession?.text === "started";
+        inFlight =
+          snapshot.queue?.some((item) => item.status === "in-flight") ?? false;
+        updateWorking();
         for (const item of snapshot.conversation)
           if (item.text && item.type !== "session") {
             writeOutput(
               item.type === "user"
-                ? `${humanLabel(colors)}${item.text}\n`
-                : `rr> ${item.text}\n`,
+                ? humanMessage(item.text, colors)
+                : `∮ ${item.text}\n`,
             );
           }
       } else if (event === "conversation.user") {
@@ -1109,13 +1176,21 @@ async function consumeEvents(
           terminalId?: string;
         };
         if (item.text && item.terminalId !== terminalId)
-          writeOutput(`${humanLabel(colors)}${item.text}\n`);
+          writeOutput(humanMessage(item.text, colors));
       } else if (
         event === "conversation.assistant" ||
         event === "conversation.error"
       ) {
         const item = value as { type: string; text?: string };
-        if (item.text) writeOutput(`rr> ${item.text}\n`);
+        inFlight = false;
+        updateWorking();
+        if (item.text) writeOutput(`∮ ${item.text}\n`);
+      } else if (event === "queue.claimed") {
+        inFlight = true;
+        updateWorking();
+      } else if (event === "queue.completed" || event === "queue.released") {
+        inFlight = false;
+        updateWorking();
       } else if (event === "queue.edited") {
         const item = (value as { message: { id: string; text: string } })
           .message;
@@ -1126,6 +1201,8 @@ async function consumeEvents(
         );
       else if (event === "conversation.session") {
         const item = value as { sessionId?: string; text?: string };
+        sessionActive = item.text === "started";
+        updateWorking();
         writeOutput(`session: ${item.text} ${item.sessionId}\n`);
       } else if (event === "conversation.selection") {
         const item = value as unknown as ModelSelection;
@@ -1138,7 +1215,13 @@ async function consumeEvents(
 }
 
 function humanLabel(colors: boolean): string {
-  return colors ? TALK_USER_LABEL : "you> ";
+  return colors ? `${TALK_USER_STYLE} 👤 ` : "👤 ";
+}
+
+function humanMessage(text: string, colors: boolean): string {
+  return colors
+    ? `${humanLabel(true)}${text} ${TALK_STYLE_RESET}\n`
+    : `${humanLabel(false)}${text}\n`;
 }
 async function fetchJson(
   url: URL,

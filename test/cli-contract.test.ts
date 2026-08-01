@@ -390,7 +390,7 @@ test("[CHAT-DB0EF523] talk refuses to start an ungoverned Pi when no coordinator
 
 test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve pending input", async () => {
   const actions: string[] = [];
-  let finishQuestion!: (answer: string) => void;
+  let finishQuestion!: (answer: string) => void, tick!: () => void;
   const questionResult = new Promise<string>((resolve) => {
       finishQuestion = resolve;
     }),
@@ -420,27 +420,64 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
           actions.push(`move:${offset}`);
         },
       },
+      clock: {
+        setInterval(callback, milliseconds) {
+          tick = callback;
+          actions.push(`interval:${milliseconds}`);
+          return "animation";
+        },
+        clearInterval(handle) {
+          actions.push(`clearInterval:${String(handle)}`);
+        },
+      },
     }),
-    pending = terminal.question("you> ");
+    pending = terminal.question("👤 ");
 
-  terminal.writeEvent!("rr> hello\n");
+  terminal.writeEvent!("∮ hello\n");
   assert.deepEqual(actions, [
     "clear",
     "start",
-    "write:rr> hello\n",
-    "write:you> draft",
+    "write:∮ hello\n",
+    "write:👤 draft",
+    "move:-3",
+  ]);
+
+  actions.length = 0;
+  terminal.setWorking!(true);
+  assert.deepEqual(actions, [
+    "clear",
+    "start",
+    "write:∮    👤 draft",
+    "move:-3",
+    "interval:160",
+  ]);
+  actions.length = 0;
+  tick();
+  assert.deepEqual(actions, [
+    "clear",
+    "start",
+    "write:∮·   👤 draft",
+    "move:-3",
+  ]);
+  actions.length = 0;
+  terminal.setWorking!(false);
+  assert.deepEqual(actions, [
+    "clearInterval:animation",
+    "clear",
+    "start",
+    "write:👤 draft",
     "move:-3",
   ]);
 
   finishQuestion("done");
   assert.equal(await pending, "done");
-  terminal.writeEvent!("rr> later\n");
-  assert.equal(actions.at(-1), "write:rr> later\n");
+  terminal.writeEvent!("∮ later\n");
+  assert.equal(actions.at(-1), "write:∮ later\n");
 });
 
 test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
-    userLabel = "\u001b[48;5;238m\u001b[97m you> \u001b[0m",
+    userLabel = "\u001b[48;5;238m\u001b[97m 👤 ",
     lines = [
       "   ",
       "   ",
@@ -457,10 +494,13 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
     requests: { path: string; method: string; body?: string }[] = [];
   let stdout = "",
     stderr = "";
+  const workingStates: boolean[] = [];
   const events = new TextEncoder().encode(
     'event: snapshot\ndata: {"conversation":[{"type":"user","text":"persisted"},{"type":"session","text":"hidden"}]}\n\n' +
       'event: conversation.user\ndata: {"type":"user","text":"local echo","terminalId":"terminal-test"}\n\n' +
       'event: conversation.user\ndata: {"type":"user","text":"from another terminal","terminalId":"terminal-other"}\n\n' +
+      'event: queue.claimed\ndata: {"type":"claimed","message":{"status":"in-flight"}}\n\n' +
+      'event: conversation.session\ndata: {"type":"session","text":"started","sessionId":"session-1"}\n\n' +
       'event: conversation.assistant\ndata: {"type":"assistant","text":"response"}\n\n',
   );
 
@@ -479,6 +519,9 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
       },
       writeEvent(text) {
         stdout += `[event]${text}`;
+      },
+      setWorking(working) {
+        workingStates.push(working);
       },
       close() {},
     }),
@@ -547,10 +590,13 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
   assert.equal(code, 0);
   assert.ok(prompts.every((prompt) => prompt === userLabel));
   assert.doesNotMatch(stdout, /Available models/);
-  assert.ok(stdout.includes(`[event]${userLabel}persisted`));
+  assert.ok(stdout.includes(`[event]${userLabel}persisted \u001b[0m`));
   assert.doesNotMatch(stdout, /local echo/);
-  assert.ok(stdout.includes(`[event]${userLabel}from another terminal`));
-  assert.match(stdout, /\[event\]rr> response/);
+  assert.ok(
+    stdout.includes(`[event]${userLabel}from another terminal \u001b[0m`),
+  );
+  assert.match(stdout, /\[event\]∮ response/);
+  assert.deepEqual(workingStates, [true, false, false]);
   assert.doesNotMatch(stdout, /hidden/);
   assert.match(stdout, /gateway.*healthy/s);
   assert.match(stdout, /queued\tmessage-1\tqueued/);

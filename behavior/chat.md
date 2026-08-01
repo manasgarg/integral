@@ -20,7 +20,7 @@ Given no healthy coordinator is reachable
 Given the terminal is interactive
 	And the rr coordinator is healthy
 	When the user runs `rr talk`
-		Then the terminal shows a stable `you>` input prompt
+		Then the terminal shows a stable person-symbol input prompt
 			And displays asynchronous conversation events above the input prompt instead of after its prefix
 			And redraws any input already being typed after an asynchronous event
 			And trims input before interpreting or submitting it
@@ -28,16 +28,22 @@ Given the terminal is interactive
 			And ignores empty or whitespace-only input
 			And does not repeat a user message already echoed by that terminal's input editor
 			And displays user messages submitted by other attached terminals
-			And labels every human message as `you>`
-			And gives the `you>` label a distinct background color on color terminals
+			And labels every human message with a person symbol
+			And gives each full person-labeled message a distinct background color on color terminals
 			And does not emit color escapes to non-color output
-			And labels every assistant or error message as `rr>`
+			And labels every assistant or error message with `∮`
 			And displays assistant text emitted by Pi as assistant output
 			And does not display protocol events or raw JSON
 			And does not display model credentials
 	When the user enters an unrecognized line beginning with `/`
 		Then rr reports an unknown local command on stderr
 			And does not submit the line to the coordinator or Pi
+Given the user is in `rr talk`
+	When a Pi process is active inside its container
+		And that Pi process is working on an in-flight message
+		Then the terminal animates a `∮` working indicator without disturbing input
+	When no Pi container is active or the active Pi process is idle
+		Then the terminal does not animate the working indicator
 
 ## CHAT-84D839CE — Show local chat help
 
