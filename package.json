@@ -1,0 +1,28 @@
+{
+  "name": "rr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "rr": "bin/rr.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test && npm run behavior:coverage",
+    "build": "tsc",
+    "prepare": "npm run build",
+    "behavior:coverage": "node scripts/check-behavior-coverage.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --experimental-transform-types --test --test-concurrency=1 test/*.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "smol-toml": "1.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}
