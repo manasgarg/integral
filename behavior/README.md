@@ -5,6 +5,7 @@ specifications for Phase 1.
 
 - [`cli.md`](cli.md) — command discovery and version reporting
 - [`environment.md`](environment.md) — deployment selection and container environment
+- [`config.md`](config.md) — configuration files, validation, and options
 - [`connection.md`](connection.md) — provider, HTTP, and MCP connection setup
 - [`server.md`](server.md) — combined and separate component lifecycle
 - [`gateway.md`](gateway.md) — health, session identity, and governed egress

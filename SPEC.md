@@ -26,6 +26,12 @@ all three listeners in one process. `rr server start --component <name>` runs
 one component so the three can instead be operated as separate processes. The
 component boundaries and ports are the same in both modes.
 
+The optional main configuration file is `<RR_HOME>/config/rr.toml`. It uses a
+strict TOML schema for server ports, runner image and limits, restored context,
+and logging. Environment port variables override file values. Non-secret
+connection records live under `<RR_HOME>/config/connections/`; credentials
+never belong in configuration files.
+
 Phase 1 excludes Discord, Slack, multiple users, rooms, channels, research
 workflows, task scheduling, recurring work, host-managed worker storage, worker
 memory, actions, approvals, trust, budgets, email, host-resource connections,

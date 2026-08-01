@@ -7,7 +7,7 @@ These behaviors cover command discovery and implementation information.
 Given rr is installed
 	When the user runs `rr --help`
 		Then the command exits successfully
-			And lists `server`, `talk`, `connection`, and `version`
+			And lists `server`, `talk`, `connection`, `config`, and `version`
 			And does not list a separate `auth` or `credential` command
 			And describes each command in plain English
 

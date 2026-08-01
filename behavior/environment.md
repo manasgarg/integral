@@ -56,18 +56,21 @@ Given an rr process has resolved its deployment root and component settings
 			And does not switch deployment roots or ports
 			And requires a new process to observe new values
 
-## ENV-5F2C7E06 — Select component ports
+## ENV-5F2C7E06 — Override component ports from the environment
 
 Given `RR_GATEWAY_PORT`, `RR_COORDINATOR_PORT`, and `RR_RUNNER_PORT` contain distinct free decimal ports from `1` through `65535`
+	And the main config may contain different component ports
 	When the user runs `rr server start`
 		Then the gateway binds to `RR_GATEWAY_PORT`
 			And the coordinator binds to `RR_COORDINATOR_PORT`
 			And the runner binds to `RR_RUNNER_PORT`
+			And environment values take precedence over main-config values
 			And rr records all bound component endpoints under the resolved `RR_HOME`
 
 ## ENV-C8A14D73 — Use default component ports
 
 Given all three component port variables are unset or empty
+	And the main config does not define component ports
 	When the user runs `rr server start`
 		Then the gateway uses port `7300`
 			And the coordinator uses port `7301`
@@ -148,6 +151,16 @@ Given `NO_COLOR` is present in the host environment
 Given one or more component port variables are explicitly configured
 	And one or more component port variables are unset or empty
 	When the user starts a server component
-		Then rr uses the configured values where present
-			And uses that component's default port where its variable is absent
+		Then rr uses environment values where present
+			And otherwise uses that component's main-config value where present
+			And otherwise uses that component's built-in default port
 			And validates that the resulting three ports are distinct
+
+## ENV-2E7A94C1 — Override one separately running component port
+
+Given the user starts one component with `--component <name>`
+	And its matching `RR_<NAME>_PORT` contains a valid free port
+	When that component binds its listener
+		Then it uses its matching environment override
+			And does not require sibling component port variables to be repeated
+			And publishes its actual endpoint for sibling discovery
