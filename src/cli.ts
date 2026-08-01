@@ -51,7 +51,7 @@ const CONNECTION_HELP = `Usage: rr connection <command>
 
 Commands:
   catalog    show model providers and generic connection types
-  add        guided setup (or: add <entry> [options])
+  add        guided setup (or: add <entry> --auth <method> [options])
   ls         list configured connections
   rm <name>  deliberately remove a connection
 
@@ -328,7 +328,7 @@ async function connectionCommand(args: string[]): Promise<number> {
   if (command === "add") {
     await prepareStorage(paths);
     const setup = args[1]
-      ? explicitConnection(args.slice(1))
+      ? await explicitConnection(args.slice(1))
       : await guidedConnection();
     const entry = CATALOG.find(
       (e) => e.name === (setup.provider ?? setup.kind),
@@ -387,14 +387,24 @@ async function connectionCommand(args: string[]): Promise<number> {
   throw new RrError(`unknown connection command: ${command}`);
 }
 
-function explicitConnection(args: string[]): Connection {
+async function explicitConnection(args: string[]): Promise<Connection> {
   const entryName = args[0]!,
     entry = CATALOG.find((e) => e.name === entryName);
   if (!entry) throw new RrError(`unknown catalog entry: ${entryName}`);
   const name = flag(args, "--name") ?? entryName;
-  const auth = (flag(args, "--auth") ??
-    ("defaultAuth" in entry ? entry.defaultAuth : undefined)) as
-    AuthMethod | undefined;
+  const requestedAuth = flag(args, "--auth");
+  let ask: ((message: string) => Promise<string>) | undefined;
+  let rl: ReturnType<typeof createInterface> | undefined;
+  if (!requestedAuth && input.isTTY) {
+    rl = createInterface({ input, output });
+    ask = (message) => rl!.question(message);
+  }
+  let auth: AuthMethod;
+  try {
+    auth = await selectAuthentication(entry.auth, requestedAuth, ask);
+  } finally {
+    rl?.close();
+  }
   const raw: Record<string, unknown> = { name, kind: entry.kind, auth };
   if (entry.kind === "model") raw.provider = entryName;
   else raw.url = flag(args, "--url");
@@ -414,6 +424,32 @@ function explicitConnection(args: string[]): Connection {
     if (value) raw[key] = value;
   }
   return validateConnection(raw);
+}
+
+export async function selectAuthentication(
+  supported: readonly AuthMethod[],
+  requested?: string,
+  ask?: (message: string) => Promise<string>,
+): Promise<AuthMethod> {
+  if (requested) {
+    if (!supported.includes(requested as AuthMethod))
+      throw new RrError(
+        `authentication method ${requested} is not supported; choose one of: ${supported.join(", ")}`,
+      );
+    return requested as AuthMethod;
+  }
+  if (!ask)
+    throw new RrError(
+      `authentication method is required in a non-interactive terminal; use --auth with one of: ${supported.join(", ")}`,
+    );
+  const selected = (await ask(`Authentication (${supported.join("/")}): `))
+    .trim()
+    .toLowerCase();
+  if (!supported.includes(selected as AuthMethod))
+    throw new RrError(
+      `authentication method must be one of: ${supported.join(", ")}`,
+    );
+  return selected as AuthMethod;
 }
 async function guidedConnection(): Promise<Connection> {
   if (!input.isTTY)
@@ -469,7 +505,7 @@ async function guidedConnection(): Promise<Connection> {
       ).trim();
       if (transport) args.push("--transport", transport);
     }
-    return explicitConnection(args);
+    return await explicitConnection(args);
   } finally {
     rl.close();
   }

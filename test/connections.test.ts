@@ -3,7 +3,6 @@ import test from "node:test";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  CATALOG,
   credentialFor,
   listConnections,
   loadConnections,
@@ -13,28 +12,6 @@ import {
   validateConnection,
 } from "../src/connections.ts";
 import { fixture } from "./helpers.ts";
-
-test("[CONNECTION-B4E83C2D] Anthropic defaults to OAuth while retaining explicit key authentication", () => {
-  const catalog = CATALOG.find((entry) => entry.name === "anthropic");
-  assert.equal(catalog?.defaultAuth, "oauth");
-  assert.equal(
-    validateConnection({
-      name: "anthropic",
-      kind: "model",
-      provider: "anthropic",
-    }).auth,
-    "oauth",
-  );
-  assert.equal(
-    validateConnection({
-      name: "anthropic-key",
-      kind: "model",
-      provider: "anthropic",
-      auth: "key",
-    }).auth,
-    "key",
-  );
-});
 
 test("[CONFIG-48C2D7A1] [CONNECTION-46E90D69] [CONNECTION-9C7A41E2] model declarations use catalog providers and protected host credentials", async (t) => {
   const paths = await fixture(t);

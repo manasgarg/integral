@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { main } from "../src/cli.ts";
+import { main, selectAuthentication } from "../src/cli.ts";
 import { fixture } from "./helpers.ts";
 
 async function capture(
@@ -72,6 +72,7 @@ test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and
   for (const command of ["catalog", "add", "ls", "rm"])
     assert.match(result.stdout, new RegExp(`\\b${command}\\b`));
   assert.match(result.stdout, /guided setup/);
+  assert.match(result.stdout, /--auth <method>/);
   assert.doesNotMatch(result.stdout, /^\s+(grant|revoke)\b/m);
 });
 
@@ -130,16 +131,40 @@ test("[CONNECTION-512D9A25] unsupported authentication is rejected before creati
       { RR_HOME: paths.root },
     );
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /does not support|do not support/);
+  assert.match(result.stderr, /not supported/);
 });
 
-test("[CONNECTION-B4E83C2D] bare Anthropic setup selects OAuth rather than credential entry", async (t) => {
+test("[CONNECTION-2F7C9A61] interactive connection setup asks for a supported authentication method", async () => {
+  let question = "",
+    prompts = 0;
+  const selected = await selectAuthentication(
+    ["oauth", "key"],
+    undefined,
+    async (message) => {
+      prompts++;
+      question = message;
+      return "key";
+    },
+  );
+  assert.equal(selected, "key");
+  assert.match(question, /oauth\/key/);
+  assert.equal(
+    await selectAuthentication(["oauth", "key"], "oauth", async () => {
+      prompts++;
+      return "key";
+    }),
+    "oauth",
+  );
+  assert.equal(prompts, 1, "--auth must bypass the prompt");
+});
+
+test("[CONNECTION-2F7C9A61] non-interactive connection setup requires --auth and names supported choices", async (t) => {
   const paths = await fixture(t),
     result = await capture(["connection", "add", "anthropic"], {
       RR_HOME: paths.root,
     });
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /OAuth setup requires an interactive terminal/);
+  assert.match(result.stderr, /use --auth.*oauth, key/);
   assert.doesNotMatch(
     `${result.stdout}${result.stderr}`,
     /Credential \(hidden/,

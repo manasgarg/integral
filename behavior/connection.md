@@ -16,6 +16,7 @@ Given rr is installed
 	When the user runs `rr connection --help`
 		Then the command lists `catalog`, `add`, `ls`, and `rm`
 			And describes bare `add` as guided setup
+			And documents `--auth` for explicit setup
 			And does not list `grant` or `revoke`
 
 ## CONNECTION-75EC27E8 — Show the connection catalog
@@ -51,14 +52,18 @@ Given no connection exists for the selected provider
 			And makes the connection available to new chat sessions
 			And identifies the connection without printing secret values
 
-## CONNECTION-B4E83C2D — Default Anthropic setup to OAuth
+## CONNECTION-2F7C9A61 — Choose a supported authentication method
 
-Given Anthropic supports OAuth and API-key authentication
-	When the user runs `rr connection add anthropic`
-		Then rr starts the Anthropic OAuth authorization flow
-			And does not ask for an API key
-	When the user runs `rr connection add anthropic --auth key`
-		Then rr asks for an API key without echoing it
+Given the selected catalog entry supports one or more authentication methods
+	When the user runs `rr connection add <entry>` without `--auth`
+		Then rr lists the authentication methods supported by that entry
+			And asks the user to choose one before starting authentication
+			And does not assume an authentication method
+	When standard input is not an interactive terminal
+		Then rr requires `--auth`
+			And identifies the supported values
+	When the user supplies a supported method with `--auth <method>`
+		Then rr uses that authentication method without asking
 
 ## CONNECTION-512D9A25 — Select an authentication method explicitly
 
