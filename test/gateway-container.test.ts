@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   decideRequest,
+  OAUTH_SENTINEL,
   parseProxyAuthorization,
   SENTINEL,
 } from "../src/gateway-policy.ts";
@@ -143,6 +144,15 @@ test("[GATEWAY-A2BBBBE8] a matching connection injects its host credential only 
   );
   assert.equal(decision.connection.name, "api");
   assert.equal(decision.headers.authorization, "Bearer real-secret");
+  assert.equal(
+    decideRequest(
+      "POST",
+      new URL("https://api.test/v1/messages/1"),
+      { authorization: `Bearer ${OAUTH_SENTINEL}` },
+      [{ connection, credential: "real-secret" }],
+    ).headers.authorization,
+    "Bearer real-secret",
+  );
 });
 
 test("[GATEWAY-EB8D96FE] destinations, methods, paths, schemes, and ports outside active boundaries are denied", () => {
@@ -224,6 +234,7 @@ test("[ENV-D20B7A48] [ENV-3E85C1F9] [ENV-F19A64B2] [ENV-6C3F91E5] container envi
   assert.equal(spec.environment.NO_PROXY, "");
   assert.equal(spec.environment.NODE_EXTRA_CA_CERTS, "/rr-ca/rr-ca.pem");
   assert.equal(spec.environment.SSL_CERT_FILE, "/rr-ca/ca-bundle.pem");
+  assert.equal(spec.environment.PI_CODING_AGENT_DIR, "/home/pi/.pi/agent");
   assert.equal("RR_HOME" in spec.environment, false);
   assert.equal("AWS_SECRET_ACCESS_KEY" in spec.environment, false);
 });
@@ -234,6 +245,7 @@ test("[ENV-7B2D40AC] rr-managed environment names cannot be delegated to connect
     "PATH",
     "HTTPS_PROXY",
     "NODE_EXTRA_CA_CERTS",
+    "PI_CODING_AGENT_DIR",
     "RR_HOME",
     "RR_CUSTOM",
   ])
@@ -364,11 +376,23 @@ test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools con
 
 test("[BOX-AB639757] OAuth model connections receive only a temporary sentinel OAuth credential", async (t) => {
   const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
     model = validateConnection({
       name: "codex",
       kind: "model",
       provider: "openai-codex",
       auth: "oauth",
+    }),
+    spec = buildContainerSpec({
+      config,
+      selectedModel: "gpt-5.6-luna",
+      gatewayUrl: "http://host.rr.internal:7310",
+      caCert: "/ca",
+      caBundle: "/bundle",
+      sessionHome: paths.root,
+      ...newSessionIdentity(),
+      model,
+      mcp: [],
     });
   await writePiCredential(paths.root, model);
   const credential = await import("node:fs/promises").then((fs) =>
@@ -377,12 +401,14 @@ test("[BOX-AB639757] OAuth model connections receive only a temporary sentinel O
   assert.deepEqual(JSON.parse(credential), {
     "openai-codex": {
       type: "oauth",
-      access: SENTINEL,
+      access: OAUTH_SENTINEL,
       refresh: SENTINEL,
       expires: Number.MAX_SAFE_INTEGER,
     },
   });
   assert.doesNotMatch(credential, /actual-secret/);
+  assert.equal(spec.args.includes("--api-key"), false);
+  assert.equal(spec.environment.PI_CODING_AGENT_DIR, "/home/pi/.pi/agent");
 });
 
 test("[FAILURE-A4C19E72] an immediate Pi prompt rejection becomes a turn error", () => {

@@ -14,7 +14,7 @@ import type { Connection } from "./connections.ts";
 import { RrError } from "./errors.ts";
 import { atomicWrite, ensureDir } from "./fs.ts";
 import { DEFAULT_PI_IMAGE, RR_VERSION } from "./constants.ts";
-import { SENTINEL } from "./gateway-policy.ts";
+import { OAUTH_SENTINEL, SENTINEL } from "./gateway-policy.ts";
 
 export interface ContainerSpec {
   image: string;
@@ -63,6 +63,7 @@ const managed = new Set([
   "REQUESTS_CA_BUNDLE",
   "GIT_SSL_CAINFO",
   "PIP_CERT",
+  "PI_CODING_AGENT_DIR",
 ]);
 export function isManagedContainerVariable(name: string): boolean {
   return managed.has(name) || name.startsWith("RR_");
@@ -104,6 +105,7 @@ export function buildContainerSpec(options: {
     REQUESTS_CA_BUNDLE: bundlePath,
     GIT_SSL_CAINFO: bundlePath,
     PIP_CERT: bundlePath,
+    PI_CODING_AGENT_DIR: "/home/pi/.pi/agent",
   };
   const provider = options.model.provider!;
   // Pi sees only a sentinel. The gateway swaps it for the host credential inside the allowed boundary.
@@ -118,9 +120,9 @@ export function buildContainerSpec(options: {
     "--offline",
     "--provider",
     provider,
-    "--api-key",
-    SENTINEL,
   ];
+  if (options.model.auth !== "oauth" && options.model.auth !== "device-code")
+    args.push("--api-key", SENTINEL);
   args.push("--model", options.selectedModel);
   return {
     image: options.image ?? options.config.runner.image,
@@ -202,7 +204,7 @@ export async function writePiCredential(
     model.auth === "oauth" || model.auth === "device-code"
       ? {
           type: "oauth",
-          access: SENTINEL,
+          access: OAUTH_SENTINEL,
           refresh: SENTINEL,
           expires: Number.MAX_SAFE_INTEGER,
         }

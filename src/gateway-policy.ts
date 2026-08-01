@@ -3,6 +3,11 @@ import type { Connection } from "./connections.ts";
 import { RrError } from "./errors.ts";
 
 export const SENTINEL = "rr-managed-credential";
+export const OAUTH_SENTINEL = `e30.${Buffer.from(
+  JSON.stringify({
+    "https://api.openai.com/auth": { chatgpt_account_id: SENTINEL },
+  }),
+).toString("base64url")}.${SENTINEL}`;
 export interface CredentialedConnection {
   connection: Connection;
   credential: string | undefined;
