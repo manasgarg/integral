@@ -754,6 +754,7 @@ export async function talkCommand(
       endpoint,
       dependencies.fetch,
       dependencies.writeOutput,
+      args.length === 0,
     );
     const response = await dependencies.fetch(new URL("/rr/events", endpoint), {
       signal: abort.signal,
@@ -873,6 +874,7 @@ async function chooseConversationModel(
   endpoint: string,
   fetcher: typeof globalThis.fetch,
   writeOutput: (text: string) => void,
+  reuseCurrent = false,
 ): Promise<ModelChoice> {
   const menu = (await fetchJson(
     new URL("/rr/models", endpoint),
@@ -890,6 +892,11 @@ async function chooseConversationModel(
     writeOutput(
       `Previous model ${menu.current.connection} (${menu.current.provider}) / ${menu.current.model} is no longer available.\n`,
     );
+  if (reuseCurrent && current) {
+    if (!sameSelection(menu.current ?? undefined, current))
+      await saveConversationSelection(current, endpoint, fetcher);
+    return current;
+  }
   let displayed = menu.choices,
     pendingTerms = [...initialTerms];
   while (true) {

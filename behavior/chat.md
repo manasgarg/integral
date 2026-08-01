@@ -68,9 +68,9 @@ Given the terminal is interactive
 	When the user runs `rr talk`
 		And the conversation has a previously selected model connection and model
 		And both selections remain available
-		Then rr opens the model chooser with the previous selections as its default
-			And reuses them when the user submits empty chooser input
-			And attaches the terminal to the same conversation after selection
+		Then rr reuses the previous selections without opening the model chooser
+			And refreshes the selected Pi runtime identity when the available runtime changed
+			And attaches the terminal to the same conversation
 	When the user runs `rr talk <pattern>...`
 		And at least one active model connection exists
 		Then rr opens the model chooser and applies each pattern argument as a search term

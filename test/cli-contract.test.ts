@@ -387,7 +387,7 @@ test("[CHAT-DB0EF523] talk refuses to start an ungoverned Pi when no coordinator
   assert.match(result.stderr, /coordinator is not reachable.*rr server start/);
 });
 
-test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal carries the current model onto a refreshed runtime before handling local commands", async (t) => {
+test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
     lines = [
       "   ",
@@ -486,8 +486,8 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
   });
 
   assert.equal(code, 0);
-  assert.equal(prompts[0], "Model [current]: ");
-  assert.ok(prompts.slice(1).every((prompt) => prompt === "rr> "));
+  assert.ok(prompts.every((prompt) => prompt === "rr> "));
+  assert.doesNotMatch(stdout, /Available models/);
   assert.match(stdout, /user: persisted/);
   assert.match(stdout, /assistant: response/);
   assert.doesNotMatch(stdout, /hidden/);
