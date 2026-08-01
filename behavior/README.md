@@ -4,8 +4,9 @@ This directory contains the normative, test-case-oriented behavior
 specifications for Phase 1.
 
 - [`cli.md`](cli.md) — command discovery and version reporting
+- [`environment.md`](environment.md) — deployment selection and container environment
 - [`connection.md`](connection.md) — provider, HTTP, and MCP connection setup
-- [`server.md`](server.md) — foreground server lifecycle
+- [`server.md`](server.md) — combined and separate component lifecycle
 - [`gateway.md`](gateway.md) — health, session identity, and governed egress
 - [`container.md`](container.md) — Pi provisioning, isolation, and RPC lifecycle
 - [`chat.md`](chat.md) — terminal interaction and conversation lifecycle

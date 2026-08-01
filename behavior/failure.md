@@ -19,7 +19,8 @@ Given a chat container is running
 		Then model calls fail visibly
 			And rr does not fall back to direct internet access
 			And rr does not place a real credential in the container
-			And ending the chat still cleans up the container
+			And the runner ends the failed Pi turn and removes its container
+			And the coordinator durably returns the interrupted message to the queue
 
 ## FAILURE-282E3B57 — Redact secrets from diagnostics
 

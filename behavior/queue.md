@@ -1,13 +1,13 @@
 # Message queue behaviors
 
-These behaviors cover the server-owned durable queue for the one logical
+These behaviors cover the coordinator-owned durable queue for the one logical
 conversation in an `$RR_HOME` deployment.
 
 ## QUEUE-5B7C2E91 — Enqueue every submitted message durably
 
-Given the rr server is healthy
+Given the rr coordinator is healthy
 	When an attached terminal submits a non-empty message
-		Then the server assigns the message a stable opaque ID
+		Then the coordinator assigns the message a stable opaque ID
 			And writes the message durably before acknowledging it
 			And assigns it an order after all previously acknowledged messages
 			And broadcasts the queued message and its ID to every attached terminal
@@ -17,7 +17,7 @@ Given the rr server is healthy
 Given one message is in flight with Pi
 	And one or more later messages are queued
 	When the in-flight turn completes
-		Then the server durably marks the in-flight message complete
+		Then the coordinator durably marks the in-flight message complete
 			And claims the oldest remaining queued message
 			And sends only that message to Pi
 			And preserves acknowledged queue order regardless of submitting terminal
@@ -67,12 +67,12 @@ Given one or more messages are durably queued
 			And processing continues independently of that terminal
 	When every terminal detaches
 		Then every queued message remains stored
-			And the server continues processing the queue
+			And the coordinator continues offering work to the runner
 
-## QUEUE-F0C937AD — Recover the queue after a server restart
+## QUEUE-F0C937AD — Recover the queue after a coordinator restart
 
-Given queued messages were acknowledged before the server stopped or crashed
-	When the server starts again with the same `$RR_HOME`
+Given queued messages were acknowledged before the coordinator stopped or crashed
+	When the coordinator starts again with the same `$RR_HOME`
 		Then every acknowledged queued message is present in its prior order
 			And deleted messages remain deleted
 			And edits retain their latest acknowledged text
@@ -82,14 +82,14 @@ Given queued messages were acknowledged before the server stopped or crashed
 
 Given two or more terminals are attached to the same conversation
 	When they submit messages concurrently
-		Then the server commits one total order for those messages
+		Then the coordinator commits one total order for those messages
 			And every attached terminal observes that same order
 			And Pi receives each message once in that order
 
 ## QUEUE-947D3AC0 — Refuse an unknown queued-message ID
 
 Given a queue edit or delete command names an unknown or deleted message ID
-	When the server evaluates the command
+	When the coordinator evaluates the command
 		Then rr rejects the operation without changing the queue
 			And reports that the message is not queued
 

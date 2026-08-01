@@ -5,7 +5,7 @@ access, and the default-deny network boundary.
 
 ## GATEWAY-3F299566 — Verify the expected gateway
 
-Given the rr server is healthy
+Given the rr gateway component is healthy
 	When the CLI requests the gateway health endpoint
 		Then the gateway returns success
 			And identifies the current deployment

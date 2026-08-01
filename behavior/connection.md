@@ -127,6 +127,10 @@ Given no active model connection is configured
 			And does not accept chat sessions
 			And instructs the user to run `rr connection add`
 			And does not start a container
+	When the user starts only the runner component
+		Then the runner exits non-zero with the same connection instruction
+	When the user starts only the coordinator or gateway component
+		Then that component is not refused solely because the model connection is absent
 
 ## CONNECTION-0FB2F92A — Keep real credentials outside the container
 

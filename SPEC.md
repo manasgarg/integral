@@ -11,7 +11,20 @@ conversation and message queue. Any number of `rr talk` processes may attach to
 it simultaneously; they see the same ordered messages, replies, queue, and Pi
 session state. Closing a terminal only detaches that view. Multiple rr
 deployments may run on one machine when they use different `$RR_HOME` roots and
-different gateway ports.
+non-conflicting component ports.
+
+`RR_HOME` selects the deployment root and defaults to `$HOME/.rr`.
+`RR_GATEWAY_PORT`, `RR_COORDINATOR_PORT`, and `RR_RUNNER_PORT` select distinct
+component ports and default to `7300`, `7301`, and `7302`. These variables are
+resolved once when a process starts. The Pi container does not inherit them or
+the rest of the host shell environment.
+
+The server consists of three components: the coordinator owns terminal clients
+and the durable conversation queue, the runner owns Pi containers, and the
+gateway owns governed egress and credential injection. `rr server start` runs
+all three listeners in one process. `rr server start --component <name>` runs
+one component so the three can instead be operated as separate processes. The
+component boundaries and ports are the same in both modes.
 
 Phase 1 excludes Discord, Slack, multiple users, rooms, channels, research
 workflows, task scheduling, recurring work, host-managed worker storage, worker

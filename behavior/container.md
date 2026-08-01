@@ -1,13 +1,14 @@
 # Container behaviors
 
-These behaviors cover provisioning and managing the warm Pi RPC container.
+These behaviors cover the runner component provisioning and managing the warm
+Pi RPC container.
 
 ## BOX-AB639757 — Start Pi for the first message
 
-Given the server and gateway are healthy
+Given the coordinator, runner, and gateway are healthy
 	And no Pi session is active
 	And the durable queue contains a message ready for delivery
-	When the server claims the next queued message
+	When the runner claims the next queued message from the coordinator
 		Then rr creates a fresh temporary session home
 			And starts one non-root Docker container on the locked network
 			And runs the pinned Pi image in RPC mode
@@ -31,7 +32,7 @@ Given rr is provisioning a Pi container
 ## BOX-B45DEA9B — Keep one warm Pi conversation
 
 Given rr has an active Pi RPC session
-	When the server claims another message after the prior turn completes
+	When the runner claims another message after the prior turn completes
 		Then rr sends it to the same Pi process
 			And sends it to the same Pi session
 			And preserves preceding turns as conversational context
@@ -60,7 +61,7 @@ Given the durable queue is empty
 
 ## BOX-C28F4A61 — Return a message when Pi provisioning fails
 
-Given the server has claimed a queued message
+Given the runner has claimed a queued message
 	When it cannot provision or start the Pi container
 		Then rr durably returns the message to its prior queue position
 			And records the provisioning failure
