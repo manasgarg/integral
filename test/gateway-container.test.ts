@@ -326,13 +326,14 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
       mcp: [],
     });
   assert.equal(spec.image, "rr-pi:0.1.0");
-  assert.deepEqual(spec.args.slice(0, 4), [
+  assert.deepEqual(spec.args.slice(0, 5), [
     "--mode",
     "rpc",
     "--no-session",
     "--no-approve",
+    "--offline",
   ]);
-  assert.deepEqual(spec.args.slice(4, 8), [
+  assert.deepEqual(spec.args.slice(5, 9), [
     "--provider",
     "anthropic",
     "--api-key",

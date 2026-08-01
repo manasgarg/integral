@@ -114,6 +114,7 @@ export function buildContainerSpec(options: {
     "rpc",
     "--no-session",
     "--no-approve",
+    "--offline",
     "--provider",
     provider,
     "--api-key",
