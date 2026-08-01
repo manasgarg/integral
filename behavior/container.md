@@ -19,6 +19,7 @@ Given the coordinator, runner, and gateway are healthy
 		Then rr creates a fresh temporary session home
 			And starts one non-root Docker container on the locked network
 			And runs the immutable Pi image recorded with the conversation selection in RPC mode with session persistence and approval prompts disabled
+			And keeps container standard input attached for the lifetime of the RPC session
 			And supplies the conversation's selected model connection and model
 			And supplies only a sentinel API key
 			And restores conversational context from the durable conversation record

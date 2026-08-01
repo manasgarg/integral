@@ -286,6 +286,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-o
     });
   const args = dockerRunArgs(spec, config, "rr-locked");
   for (const expected of [
+    "--interactive",
     "--network",
     "rr-locked",
     "--user",

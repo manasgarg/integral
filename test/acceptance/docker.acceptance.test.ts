@@ -80,7 +80,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
       encoding: "utf8",
     }),
   )[0] as {
-    Config: { User: string; Env: string[] };
+    Config: { User: string; Env: string[]; OpenStdin: boolean };
     HostConfig: {
       ReadonlyRootfs: boolean;
       CapDrop: string[];
@@ -92,6 +92,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
     Mounts: { Source: string; Destination: string; RW: boolean }[];
   };
   assert.equal(inspection.Config.User, "1000:1000");
+  assert.equal(inspection.Config.OpenStdin, true);
   assert.equal(inspection.HostConfig.ReadonlyRootfs, true);
   assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]);
   assert.equal(

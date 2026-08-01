@@ -144,6 +144,7 @@ export function dockerRunArgs(
   const result = [
     "run",
     "--rm",
+    "--interactive",
     "--name",
     `rr-${spec.sessionId}`,
     "--network",
