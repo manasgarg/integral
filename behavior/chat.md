@@ -20,13 +20,15 @@ Given no healthy coordinator is reachable
 Given the terminal is interactive
 	And the rr coordinator is healthy
 	When the user runs `rr talk`
-		Then the terminal shows a stable input prompt
+		Then the terminal shows a stable `you>` input prompt
 			And displays asynchronous conversation events above the input prompt instead of after its prefix
 			And redraws any input already being typed after an asynchronous event
 			And trims input before interpreting or submitting it
 			And submits each non-empty input line to the coordinator-owned queue
 			And ignores empty or whitespace-only input
-			And displays persisted user, assistant, and error text with its event type
+			And does not repeat a user message already echoed by that terminal's input editor
+			And displays user messages submitted by other attached terminals
+			And displays persisted user, assistant, and error text with a readable speaker label
 			And displays assistant text emitted by Pi as assistant output
 			And does not display protocol events or raw JSON
 			And does not display model credentials

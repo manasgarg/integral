@@ -46,6 +46,19 @@ test("[CHAT-D7E2F609] [QUEUE-5B7C2E91] queue changes broadcast one identical per
   assert.deepEqual(seenA, seenB);
 });
 
+test("[CHAT-888AFAE0] [CHAT-D7E2F609] user broadcasts identify their originating terminal without persisting it", async (t) => {
+  const { coordinator, events } = await coordinatorFixture(t),
+    internals = coordinator as any,
+    item = await internals.submitMessage("hello", "terminal-a"),
+    persisted = coordinator.conversation.snapshot().at(-1),
+    broadcast = events.find((event) => event.type === "conversation.user");
+
+  assert.equal(persisted?.messageId, item.id);
+  assert.equal("terminalId" in persisted!, false);
+  assert.equal((broadcast?.data as any).terminalId, "terminal-a");
+  assert.equal((broadcast?.data as any).messageId, item.id);
+});
+
 test("[CHAT-6E91B4C7] [CHAT-C53A90D2] model choices are validated, persisted, broadcast, and locked during an in-flight turn", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),

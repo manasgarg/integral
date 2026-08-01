@@ -221,14 +221,9 @@ export class Coordinator {
         if (!this.modelSelection.get())
           throw new RrError("select a model before submitting a message", 409);
         const body = await bodyJson(req),
-          text = stringValue(body.text);
-        const item = await this.queue.enqueue(text);
-        const event = await this.conversation.append({
-          type: "user",
-          messageId: item.id,
-          text: item.text,
-        });
-        this.broadcast("conversation.user", event);
+          text = stringValue(body.text),
+          terminalId = stringValue(body.terminalId);
+        const item = await this.submitMessage(text, terminalId);
         json(res, 201, item);
         return;
       }
@@ -345,6 +340,16 @@ export class Coordinator {
     const result = this.workChain.then(work, work);
     this.workChain = result.catch(() => undefined);
     return result;
+  }
+  private async submitMessage(text: string, terminalId: string) {
+    const item = await this.queue.enqueue(text),
+      event = await this.conversation.append({
+        type: "user",
+        messageId: item.id,
+        text: item.text,
+      });
+    this.broadcast("conversation.user", { ...event, terminalId });
+    return item;
   }
   private stream(req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, {

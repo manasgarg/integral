@@ -421,21 +421,21 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
         },
       },
     }),
-    pending = terminal.question("rr> ");
+    pending = terminal.question("you> ");
 
-  terminal.writeEvent!("assistant: hello\n");
+  terminal.writeEvent!("assistant> hello\n");
   assert.deepEqual(actions, [
     "clear",
     "start",
-    "write:assistant: hello\n",
-    "write:rr> draft",
+    "write:assistant> hello\n",
+    "write:you> draft",
     "move:-3",
   ]);
 
   finishQuestion("done");
   assert.equal(await pending, "done");
-  terminal.writeEvent!("assistant: later\n");
-  assert.equal(actions.at(-1), "write:assistant: later\n");
+  terminal.writeEvent!("assistant> later\n");
+  assert.equal(actions.at(-1), "write:assistant> later\n");
 });
 
 test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
@@ -458,6 +458,8 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
     stderr = "";
   const events = new TextEncoder().encode(
     'event: snapshot\ndata: {"conversation":[{"type":"user","text":"persisted"},{"type":"session","text":"hidden"}]}\n\n' +
+      'event: conversation.user\ndata: {"type":"user","text":"local echo","terminalId":"terminal-test"}\n\n' +
+      'event: conversation.user\ndata: {"type":"user","text":"from another terminal","terminalId":"terminal-other"}\n\n' +
       'event: conversation.assistant\ndata: {"type":"assistant","text":"response"}\n\n',
   );
 
@@ -465,6 +467,7 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
     resolvePaths: () => paths,
     componentEndpoint: async () => "http://coordinator.test",
     verifiedFetch: async () => new Response("ok"),
+    createTerminalId: () => "terminal-test",
     createTerminal: () => ({
       async question(prompt) {
         prompts.push(prompt);
@@ -540,10 +543,12 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
   });
 
   assert.equal(code, 0);
-  assert.ok(prompts.every((prompt) => prompt === "rr> "));
+  assert.ok(prompts.every((prompt) => prompt === "you> "));
   assert.doesNotMatch(stdout, /Available models/);
-  assert.match(stdout, /\[event\]user: persisted/);
-  assert.match(stdout, /\[event\]assistant: response/);
+  assert.match(stdout, /\[event\]user> persisted/);
+  assert.doesNotMatch(stdout, /local echo/);
+  assert.match(stdout, /\[event\]user> from another terminal/);
+  assert.match(stdout, /\[event\]assistant> response/);
   assert.doesNotMatch(stdout, /hidden/);
   assert.match(stdout, /gateway.*healthy/s);
   assert.match(stdout, /queued\tmessage-1\tqueued/);
@@ -564,7 +569,11 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
         JSON.stringify({ text: "revised text" }),
       ],
       ["DELETE", "/rr/queue/message-1", undefined],
-      ["POST", "/rr/messages", JSON.stringify({ text: "hello Pi" })],
+      [
+        "POST",
+        "/rr/messages",
+        JSON.stringify({ text: "hello Pi", terminalId: "terminal-test" }),
+      ],
     ],
   );
 });

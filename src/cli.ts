@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { clearLine, cursorTo, moveCursor } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig, initConfig } from "./config.ts";
 import type { EffectiveConfig } from "./config.ts";
@@ -710,6 +711,7 @@ export interface TalkDependencies {
   verifiedFetch: typeof verifiedFetch;
   fetch: typeof globalThis.fetch;
   createTerminal(): TalkTerminal;
+  createTerminalId(): string;
   writeOutput(text: string): void;
   writeError(text: string): void;
 }
@@ -720,6 +722,7 @@ const productionTalkDependencies: TalkDependencies = {
   verifiedFetch,
   fetch: globalThis.fetch,
   createTerminal: createTalkTerminal,
+  createTerminalId: randomUUID,
   writeOutput: (text) => process.stdout.write(text),
   writeError: (text) => process.stderr.write(text),
 };
@@ -815,7 +818,8 @@ export async function talkCommand(
     );
   }
   const abort = new AbortController();
-  const rl = dependencies.createTerminal();
+  const rl = dependencies.createTerminal(),
+    terminalId = dependencies.createTerminalId();
   let follow: Promise<void> | undefined;
   try {
     await chooseConversationModel(
@@ -834,6 +838,7 @@ export async function talkCommand(
     follow = consumeEvents(
       response.body,
       rl.writeEvent?.bind(rl) ?? dependencies.writeOutput,
+      terminalId,
     ).catch((error) => {
       if (!abort.signal.aborted)
         dependencies.writeError(`rr: ${messageOf(error)}\n`);
@@ -841,7 +846,7 @@ export async function talkCommand(
     while (true) {
       let line: string;
       try {
-        line = await rl.question("rr> ");
+        line = await rl.question("you> ");
       } catch {
         break;
       }
@@ -919,7 +924,7 @@ export async function talkCommand(
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, terminalId }),
         },
         dependencies.fetch,
       );
@@ -1063,6 +1068,7 @@ function renderModelChoices(
 async function consumeEvents(
   stream: ReadableStream<Uint8Array>,
   writeOutput: (text: string) => void = (text) => process.stdout.write(text),
+  terminalId?: string,
 ): Promise<void> {
   const reader = stream.getReader(),
     decoder = new TextDecoder();
@@ -1085,14 +1091,21 @@ async function consumeEvents(
         };
         for (const item of snapshot.conversation)
           if (item.text && item.type !== "session")
-            writeOutput(`${item.type}: ${item.text}\n`);
+            writeOutput(`${item.type}> ${item.text}\n`);
+      } else if (event === "conversation.user") {
+        const item = value as {
+          type: string;
+          text?: string;
+          terminalId?: string;
+        };
+        if (item.text && item.terminalId !== terminalId)
+          writeOutput(`user> ${item.text}\n`);
       } else if (
-        event === "conversation.user" ||
         event === "conversation.assistant" ||
         event === "conversation.error"
       ) {
         const item = value as { type: string; text?: string };
-        if (item.text) writeOutput(`${item.type}: ${item.text}\n`);
+        if (item.text) writeOutput(`${item.type}> ${item.text}\n`);
       } else if (event === "queue.edited") {
         const item = (value as { message: { id: string; text: string } })
           .message;
