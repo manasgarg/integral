@@ -30,7 +30,7 @@ test("[SERVER-DF5FD52E] component locks exclude duplicates only within one norma
   await assert.rejects(acquireLock(file), { code: "EEXIST" });
 });
 
-test("[SERVER-A74F29C1] independent RR_HOME roots have independent locks, state, identity, and deployment IDs", async (t) => {
+test("[SERVER-A74F29C1] independent INTEGRAL_HOME roots have independent locks, state, identity, and deployment IDs", async (t) => {
   const a = await fixture(t),
     b = await fixture(t),
     unlockA = await acquireLock(join(a.locks, "gateway.lock")),
@@ -282,7 +282,7 @@ test("[SERVER-F886D80C] [CONNECTION-20778353] startup requires one active model 
   } as const;
   assert.throws(
     () => requireActiveModelConnection([]),
-    /no active model connection.*rr connection add/,
+    /no active model connection.*integral connection add/,
   );
   assert.doesNotThrow(() => requireActiveModelConnection([connection]));
   assert.doesNotThrow(() =>

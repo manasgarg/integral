@@ -6,16 +6,16 @@ runner, and gateway in combined or separate-process operation.
 ## LOG-0A6F3D92 — Configure component logging
 
 Given `[logging]` may define `level` and `format`
-	When an rr process starts
+	When an integral process starts
 		Then `level` accepts only `error`, `warn`, `info`, `debug`, or `trace`
 			And defaults to `info`
 			And `format` accepts only `text` or `json`
 			And defaults to `text`
-			And `RR_LOG_LEVEL` and `RR_LOG_FORMAT` override file values
+			And `INTEGRAL_LOG_LEVEL` and `INTEGRAL_LOG_FORMAT` override file values
 
 ## LOG-4A81D2C7 — Keep command results separate from diagnostics
 
-Given an rr CLI command produces a result and diagnostic logs
+Given an integral CLI command produces a result and diagnostic logs
 	When it writes process output
 		Then command results are written to stdout
 			And diagnostic logs are written to stderr
@@ -24,7 +24,7 @@ Given an rr CLI command produces a result and diagnostic logs
 ## LOG-B7E30A19 — Emit one structured JSON event per line
 
 Given effective log format is `json`
-	When rr emits a log event
+	When integral emits a log event
 		Then it writes one complete JSON object on one stderr line
 			And includes `timestamp`, `level`, `component`, `event`, and `message`
 			And uses a UTC RFC 3339 timestamp
@@ -33,7 +33,7 @@ Given effective log format is `json`
 ## LOG-2C96F4E8 — Emit readable text logs
 
 Given effective log format is `text`
-	When rr emits a log event
+	When integral emits a log event
 		Then it includes timestamp, level, component, event, and message
 			And escapes embedded newlines so each event occupies one diagnostic line
 			And respects `NO_COLOR`
@@ -41,14 +41,14 @@ Given effective log format is `text`
 ## LOG-D18A73C5 — Filter events by level
 
 Given an effective log level is configured
-	When rr considers a diagnostic event
+	When integral considers a diagnostic event
 		Then it emits events at that level or a more severe level
 			And suppresses less severe events
 			And applies the same ordering `error`, `warn`, `info`, `debug`, `trace` in every component
 
 ## LOG-6F20B9A4 — Use stable event names
 
-Given rr emits a diagnostic event
+Given integral emits a diagnostic event
 	When it identifies the event type
 		Then it uses a stable machine-readable event name
 			And does not derive the event name from prose
@@ -64,11 +64,11 @@ Given a user message causes coordinator, runner, gateway, and Pi activity
 
 ## LOG-A42D8F16 — Identify deployment and process context
 
-Given an rr component emits a log event
+Given an integral component emits a log event
 	When it renders structured context
 		Then it identifies its component and process ID
 			And identifies the deployment with a non-secret stable deployment ID
-			And does not log the absolute `RR_HOME` path by default
+			And does not log the absolute `INTEGRAL_HOME` path by default
 
 ## LOG-7B31C9E0 — Log component startup and shutdown transitions
 
@@ -82,7 +82,7 @@ Given a server component starts, becomes ready, fails during startup, or stops c
 ## LOG-E5A81D23 — Log aggregate startup failure
 
 Given combined server startup fails
-	When rr stops partially started components
+	When integral stops partially started components
 		Then it logs the failing component's startup error at `error`
 			And logs successful component stops as lifecycle events
 			And logs stop or unlock failures as `component.cleanup_failed`
@@ -116,14 +116,14 @@ Given Pi emits RPC protocol events on stdout or diagnostics on stderr
 			And does not forward raw protocol JSON to attached terminals
 			And records Pi stderr at `debug` as runner diagnostics with session correlation
 			And escapes embedded newlines in captured Pi diagnostics
-			And applies rr redaction before emitting captured Pi diagnostics
+			And applies integral redaction before emitting captured Pi diagnostics
 
 ## LOG-F19C62A8 — Redact secrets in every format and level
 
 Given a value is supplied to the component logger as a known credential
 	Or appears under a credential-bearing key such as authorization, cookie, secret, token, password, or API key
-	When rr would emit that value in text or JSON logs
-		Then rr replaces it with a redaction marker
+	When integral would emit that value in text or JSON logs
+		Then integral replaces it with a redaction marker
 			And recognizes inline Basic and Bearer authorization values
 			And applies redaction before serialization
 			And applies the same redaction at `trace` level
@@ -132,14 +132,14 @@ Given a value is supplied to the component logger as a known credential
 ## LOG-81A4E7D3 — Avoid persistent log files by default
 
 Given no external process captures stderr
-	When rr emits diagnostic logs
-		Then rr does not create a durable log file under `RR_HOME`
+	When integral emits diagnostic logs
+		Then integral does not create a durable log file under `INTEGRAL_HOME`
 			And leaves persistence and rotation to the invoking terminal or service manager
 
 ## LOG-3E72B5C1 — Report configuration errors before component logging starts
 
 Given logging configuration is invalid
-	When an rr process starts
+	When an integral process starts
 		Then it writes a minimal plain-text error to stderr
 			And identifies the invalid logging option
 			And exits non-zero without starting a component

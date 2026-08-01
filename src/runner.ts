@@ -1,7 +1,7 @@
 import http from "node:http";
 import type { EffectiveConfig } from "./config.ts";
 import { listConnections, type Connection } from "./connections.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 import type { Logger } from "./logging.ts";
 import {
   buildContainerSpec,
@@ -20,7 +20,7 @@ import { deploymentId, readComponentState } from "./state.ts";
 import { updateComponentState } from "./state.ts";
 import { readText } from "./fs.ts";
 import { join } from "node:path";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 import type { ConversationEvent, QueuedMessage } from "./queue.ts";
 import { sameSelection, type ModelSelection } from "./model-selection.ts";
 
@@ -83,7 +83,7 @@ export class Runner {
   private piSelection: ModelSelection | undefined;
   private readonly dependencies: RunnerDependencies;
   constructor(
-    private readonly paths: RrPaths,
+    private readonly paths: IntegralPaths,
     private readonly config: EffectiveConfig,
     private readonly logger: Logger,
     overrides: Partial<RunnerDependencies> = {},
@@ -91,13 +91,13 @@ export class Runner {
     this.dependencies = { ...productionDependencies, ...overrides };
   }
   async start(): Promise<http.Server> {
-    const network = `rr-${deploymentId(this.paths)}`;
+    const network = `integral-${deploymentId(this.paths)}`;
     await this.dependencies.containers.ensureNetwork(network);
     this.dockerGateway =
       await this.dependencies.containers.networkGateway(network);
     await this.ensureGatewayListener().catch(() => undefined);
     const server = http.createServer((req, res) => {
-      if (req.url === "/rr/health") {
+      if (req.url === "/integral/health") {
         void readComponentState(this.paths, "runner").then((state) => {
           res.setHeader("content-type", "application/json");
           res.end(
@@ -159,22 +159,26 @@ export class Runner {
         coordinatorState.connectionGeneration !== generation ||
         gatewayState.connectionGeneration !== generation
       )
-        throw new RrError(
+        throw new IntegralError(
           "component configuration or connection generations disagree",
         );
       await this.ensureGatewayListener();
       const gateway = await this.dependencies.fetch(
-        new URL("/rr/health", await componentEndpoint(this.paths, "gateway")),
+        new URL(
+          "/integral/health",
+          await componentEndpoint(this.paths, "gateway"),
+        ),
       );
-      if (!gateway.ok) throw new RrError("gateway unavailable");
+      if (!gateway.ok) throw new IntegralError("gateway unavailable");
       const response = await this.dependencies.internalFetch(
         this.paths,
         "runner",
         "coordinator",
-        "/rr/internal/claim",
+        "/integral/internal/claim",
         { method: "POST", body: "{}" },
       );
-      if (!response.ok) throw new RrError(`claim failed: ${response.status}`);
+      if (!response.ok)
+        throw new IntegralError(`claim failed: ${response.status}`);
       const body = (await response.json()) as {
         message?: QueuedMessage;
         context: ConversationEvent[];
@@ -190,7 +194,7 @@ export class Runner {
       }
       this.currentMessageId = item.id;
       if (!selection)
-        throw new RrError(
+        throw new IntegralError(
           "conversation has no selected model connection and model",
         );
       this.dependencies.clock.clearTimeout(this.idle);
@@ -200,11 +204,11 @@ export class Runner {
         this.paths,
         "runner",
         "coordinator",
-        `/rr/internal/work/${item.id}/complete`,
+        `/integral/internal/work/${item.id}/complete`,
         { method: "POST", body: JSON.stringify({ text: answer }) },
       );
       if (!completed.ok)
-        throw new RrError(`completion failed: ${completed.status}`);
+        throw new IntegralError(`completion failed: ${completed.status}`);
       this.currentMessageId = undefined;
     } catch (error) {
       await updateComponentState(this.paths, "runner", {
@@ -217,7 +221,7 @@ export class Runner {
             this.paths,
             "runner",
             "coordinator",
-            `/rr/internal/work/${item.id}/release`,
+            `/integral/internal/work/${item.id}/release`,
             {
               method: "POST",
               body: JSON.stringify({
@@ -256,11 +260,11 @@ export class Runner {
       this.paths,
       "runner",
       "gateway",
-      "/rr/internal/docker-listener",
+      "/integral/internal/docker-listener",
       { method: "POST", body: JSON.stringify({ address: this.dockerGateway }) },
     );
     if (!response.ok)
-      throw new RrError(
+      throw new IntegralError(
         `gateway Docker listener unavailable: ${response.status}`,
       );
   }
@@ -274,7 +278,7 @@ export class Runner {
       selection.piVersion,
     );
     if (resolvedImage !== selection.piImage)
-      throw new RrError(
+      throw new IntegralError(
         `selected Pi image ${selection.piImage} is unavailable; run /model to refresh the runtime selection`,
       );
     const all = await listConnections(this.paths),
@@ -286,7 +290,7 @@ export class Runner {
     await this.dependencies.writeMcpExtension(home, mcp);
     await this.dependencies.writePiCredential(home, model);
     const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
-    gatewayUrl.hostname = "host.rr.internal";
+    gatewayUrl.hostname = "host.integral.internal";
     const spec = buildContainerSpec({
       config: this.config,
       gatewayUrl: gatewayUrl.toString(),
@@ -306,7 +310,7 @@ export class Runner {
       this.paths,
       "runner",
       "gateway",
-      "/rr/internal/session",
+      "/integral/internal/session",
       {
         method: "POST",
         body: JSON.stringify({
@@ -318,7 +322,7 @@ export class Runner {
     const pi = this.dependencies.containers.createPi(
       spec,
       this.config,
-      `rr-${deploymentId(this.paths)}`,
+      `integral-${deploymentId(this.paths)}`,
       (line) =>
         this.logger.event("debug", "pi.stderr", line, {
           session_id: identity.sessionId,
@@ -332,7 +336,7 @@ export class Runner {
         this.paths,
         "runner",
         "coordinator",
-        "/rr/internal/session",
+        "/integral/internal/session",
         {
           method: "POST",
           body: JSON.stringify({
@@ -356,10 +360,16 @@ export class Runner {
   }
   private async revoke(token: string): Promise<void> {
     await this.dependencies
-      .internalFetch(this.paths, "runner", "gateway", "/rr/internal/session", {
-        method: "DELETE",
-        body: JSON.stringify({ token }),
-      })
+      .internalFetch(
+        this.paths,
+        "runner",
+        "gateway",
+        "/integral/internal/session",
+        {
+          method: "DELETE",
+          body: JSON.stringify({ token }),
+        },
+      )
       .catch(() => undefined);
   }
   private async destroyPi(): Promise<void> {
@@ -376,7 +386,7 @@ export class Runner {
           this.paths,
           "runner",
           "coordinator",
-          "/rr/internal/session",
+          "/integral/internal/session",
           {
             method: "POST",
             body: JSON.stringify({
@@ -399,7 +409,7 @@ export class Runner {
           this.paths,
           "runner",
           "coordinator",
-          `/rr/internal/work/${messageId}/release`,
+          `/integral/internal/work/${messageId}/release`,
           {
             method: "POST",
             body: JSON.stringify({ reason: "runner stopped" }),
@@ -412,10 +422,11 @@ export class Runner {
   }
 }
 
-export async function validateRunnerHost(paths: RrPaths): Promise<void> {
+export async function validateRunnerHost(paths: IntegralPaths): Promise<void> {
   const connections = await listConnections(paths);
   requireActiveModelConnection(connections);
-  if (!dockerAvailable()) throw new RrError("Docker daemon is unavailable");
+  if (!dockerAvailable())
+    throw new IntegralError("Docker daemon is unavailable");
 }
 
 export function requireActiveModelConnection(connections: Connection[]): void {
@@ -427,7 +438,9 @@ export function requireActiveModelConnection(connections: Connection[]): void {
         connection.state === "active",
     )
   )
-    throw new RrError("no active model connection; run rr connection add");
+    throw new IntegralError(
+      "no active model connection; run integral connection add",
+    );
 }
 
 export function selectModel(
@@ -443,7 +456,7 @@ export function selectModel(
       connection.provider === selection.provider,
   );
   if (!selected)
-    throw new RrError(
+    throw new IntegralError(
       `selected model connection ${selection.connection} is absent, disabled, or no longer matches provider ${selection.provider}`,
     );
   return selected;

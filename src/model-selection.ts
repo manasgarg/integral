@@ -6,7 +6,7 @@ import {
 } from "./container.ts";
 import { DEFAULT_PI_IMAGE } from "./constants.ts";
 import { listConnections } from "./connections.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 import { ensurePiRuntime, type PiRuntimeResolution } from "./pi-runtime.ts";
 
 export interface ModelSelection {
@@ -27,7 +27,7 @@ export interface ModelCatalog {
 }
 
 export interface ModelCatalogDependencies {
-  ensureRuntime(paths: RrPaths): Promise<PiRuntimeResolution>;
+  ensureRuntime(paths: IntegralPaths): Promise<PiRuntimeResolution>;
   ensureImage(
     config: EffectiveConfig,
     piVersion: string,
@@ -47,7 +47,7 @@ const productionDependencies: ModelCatalogDependencies = {
 };
 
 export async function listModelChoices(
-  paths: RrPaths,
+  paths: IntegralPaths,
   config: EffectiveConfig,
   overrides: Partial<ModelCatalogDependencies> = {},
 ): Promise<ModelCatalog> {

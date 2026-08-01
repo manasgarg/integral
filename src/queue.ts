@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFile, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 import type { ModelSelection } from "./model-selection.ts";
 
 export type QueueStatus = "queued" | "in-flight";
@@ -91,7 +91,7 @@ export class DurableQueue {
           parsed.snowflake.sequence < 0 ||
           parsed.snowflake.sequence > MAX_SEQUENCE))
     )
-      throw new RrError(`invalid queue file: ${this.file}`);
+      throw new IntegralError(`invalid queue file: ${this.file}`);
     this.data = parsed;
     for (const item of this.data.items)
       if (item.status === "in-flight") item.status = "queued";
@@ -112,7 +112,7 @@ export class DurableQueue {
   }
   async enqueue(text: string): Promise<QueuedMessage> {
     return this.exclusive(async () => {
-      if (!text.trim()) throw new RrError("message must not be empty");
+      if (!text.trim()) throw new IntegralError("message must not be empty");
       const priorSnowflake = this.data.snowflake
           ? { ...this.data.snowflake }
           : undefined,
@@ -146,10 +146,10 @@ export class DurableQueue {
   }
   async edit(id: string, text: string): Promise<QueuedMessage> {
     return this.exclusive(async () => {
-      if (!text.trim()) throw new RrError("message must not be empty");
+      if (!text.trim()) throw new IntegralError("message must not be empty");
       const item = this.find(id);
       if (item.status === "in-flight")
-        throw new RrError(`message ${id} is in flight`);
+        throw new IntegralError(`message ${id} is in flight`);
       const previous = item.text;
       item.text = text;
       try {
@@ -166,7 +166,7 @@ export class DurableQueue {
     return this.exclusive(async () => {
       const item = this.find(id);
       if (item.status === "in-flight")
-        throw new RrError(`message ${id} is in flight`);
+        throw new IntegralError(`message ${id} is in flight`);
       const index = this.data.items.indexOf(item);
       this.data.items.splice(index, 1);
       try {
@@ -203,7 +203,7 @@ export class DurableQueue {
     return this.exclusive(async () => {
       const item = this.find(id);
       if (item.status !== "in-flight")
-        throw new RrError(`message ${id} is not in flight`);
+        throw new IntegralError(`message ${id} is not in flight`);
       const index = this.data.items.indexOf(item);
       this.data.items.splice(index, 1);
       try {
@@ -235,7 +235,7 @@ export class DurableQueue {
   }
   private find(id: string): QueuedMessage {
     const item = this.data.items.find((m) => m.id === id);
-    if (!item) throw new RrError(`message ${id} is not queued`);
+    if (!item) throw new IntegralError(`message ${id} is not queued`);
     return item;
   }
 }

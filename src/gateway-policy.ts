@@ -1,8 +1,8 @@
 import type { IncomingHttpHeaders } from "node:http";
 import type { Connection } from "./connections.ts";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 
-export const SENTINEL = "rr-managed-credential";
+export const SENTINEL = "integral-managed-credential";
 export const OAUTH_SENTINEL = `e30.${Buffer.from(
   JSON.stringify({
     "https://api.openai.com/auth": { chatgpt_account_id: SENTINEL },
@@ -46,7 +46,8 @@ export function decideRequest(
       prefixMatches(target.pathname, connection.pathPrefix ?? boundary.pathname)
     );
   });
-  if (!match) throw new RrError("policy denied the requested destination", 403);
+  if (!match)
+    throw new IntegralError("policy denied the requested destination", 403);
   const clean: Record<string, string | string[]> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (
@@ -57,7 +58,7 @@ export function decideRequest(
   }
   if (match.connection.auth !== "none") {
     if (!match.credential)
-      throw new RrError(
+      throw new IntegralError(
         `connection ${match.connection.name} has no usable credential; rotate or reconfigure it`,
         403,
       );
@@ -67,7 +68,7 @@ export function decideRequest(
       incoming !== undefined &&
       !String(incoming).toLowerCase().includes(SENTINEL)
     )
-      throw new RrError("gateway refused an unmanaged credential", 403);
+      throw new IntegralError("gateway refused an unmanaged credential", 403);
     clean[header] =
       `${match.connection.scheme ?? "Bearer"} ${match.credential}`.trim();
     for (const [name, value] of Object.entries(match.injectedHeaders ?? {}))

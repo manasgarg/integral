@@ -10,7 +10,7 @@ These behaviors cover failures spanning more than one product area.
 
 Given a chat turn is in progress
 	When the Pi process or container exits unexpectedly
-		Then rr records that the response did not complete
+		Then integral records that the response did not complete
 			And reports the interruption to every attached terminal
 			And does not present partial protocol output as a complete answer
 			And durably returns the interrupted message to the queue
@@ -26,7 +26,7 @@ Given the runner has not claimed its next message
 Given a chat turn is already in progress
 	When the prompt fails with a gateway, container, timeout, or exit error
 		Then the runner removes the failed Pi container
-			And rr does not place a real credential in any replacement container
+			And integral does not place a real credential in any replacement container
 			And the coordinator durably returns the interrupted message to the queue
 			And reports the turn error to attached terminals
 
@@ -34,7 +34,7 @@ Given a chat turn is already in progress
 
 Given the runner has sent a claimed message to Pi
 	When Pi rejects the prompt before beginning a turn
-		Then rr reports the rejection without waiting for the turn timeout
+		Then integral reports the rejection without waiting for the turn timeout
 			And durably returns the interrupted message to the queue
 			And removes the failed Pi container and temporary session material
 

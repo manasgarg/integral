@@ -11,9 +11,9 @@ import {
 import { createInterface } from "node:readline";
 import type { EffectiveConfig } from "./config.ts";
 import type { Connection } from "./connections.ts";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 import { atomicWrite, ensureDir } from "./fs.ts";
-import { DEFAULT_PI_IMAGE, RR_VERSION } from "./constants.ts";
+import { DEFAULT_PI_IMAGE, INTEGRAL_VERSION } from "./constants.ts";
 import { OAUTH_SENTINEL, SENTINEL } from "./gateway-policy.ts";
 
 export interface ContainerSpec {
@@ -66,7 +66,7 @@ const managed = new Set([
   "PI_CODING_AGENT_DIR",
 ]);
 export function isManagedContainerVariable(name: string): boolean {
-  return managed.has(name) || name.startsWith("RR_");
+  return managed.has(name) || name.startsWith("INTEGRAL_");
 }
 
 export function buildContainerSpec(options: {
@@ -84,11 +84,11 @@ export function buildContainerSpec(options: {
   mcp: Connection[];
 }): ContainerSpec {
   const proxy = new URL(options.gatewayUrl);
-  proxy.username = "rr";
+  proxy.username = "integral";
   proxy.password = options.sessionToken;
   const proxyUrl = proxy.toString();
-  const caPath = "/rr-ca/rr-ca.pem",
-    bundlePath = "/rr-ca/ca-bundle.pem";
+  const caPath = "/integral-ca/integral-ca.pem",
+    bundlePath = "/integral-ca/ca-bundle.pem";
   const environment: Record<string, string> = {
     HOME: "/home/pi",
     PATH: "/usr/local/bin:/usr/bin:/bin",
@@ -150,11 +150,11 @@ export function dockerRunArgs(
     "--rm",
     "--interactive",
     "--name",
-    `rr-${spec.sessionId}`,
+    `integral-${spec.sessionId}`,
     "--network",
     network,
     "--add-host",
-    `host.rr.internal:${spec.gatewayAddress}`,
+    `host.integral.internal:${spec.gatewayAddress}`,
     "--user",
     "1000:1000",
     "--security-opt",
@@ -190,8 +190,8 @@ export async function writeMcpExtension(
     auth: connection.auth !== "none",
     transport: connection.transport,
   }));
-  const source = `import { Type } from "typebox";\nconst servers = ${JSON.stringify(declarations)};\nfunction headers(server) { const value = { "content-type": "application/json", accept: "application/json, text/event-stream" }; if (server.auth) value.authorization = "Bearer rr-managed-credential"; return value; }\nasync function call(server, payload, signal) {\n  if (server.transport !== "sse") { const response = await fetch(server.url, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); const body = await response.text(); if (!response.ok) throw new Error("MCP request failed: " + response.status); const data = body.split("\\n").filter(line => line.startsWith("data:")).at(-1)?.slice(5).trim(); return JSON.parse(data || body); }\n  const events = await fetch(server.url, { headers: headers(server), signal }); if (!events.ok || !events.body) throw new Error("MCP SSE connection failed: " + events.status); const reader = events.body.getReader(), decoder = new TextDecoder(); let buffer = "", endpoint;\n  while (!endpoint) { const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before endpoint"); buffer += decoder.decode(part.value, { stream: true }); const match = buffer.match(/event: endpoint\\r?\\ndata: (.+)\\r?\\n\\r?\\n/); if (match) { endpoint = new URL(match[1].trim(), server.url).toString(); buffer = buffer.slice((match.index || 0) + match[0].length); } }\n  const sent = await fetch(endpoint, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); if (!sent.ok) throw new Error("MCP SSE send failed: " + sent.status);\n  while (true) { const match = buffer.match(/data: (.+)\\r?\\n\\r?\\n/); if (match) { buffer = buffer.slice((match.index || 0) + match[0].length); const value = JSON.parse(match[1]); if (value.id === payload.id) { await reader.cancel(); return value; } } const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before response"); buffer += decoder.decode(part.value, { stream: true }); }\n}\nexport default function (pi) {\n  for (const server of servers) pi.registerTool({\n    name: "mcp_" + server.name, label: "MCP " + server.name, description: "Call a tool on the " + server.name + " remote MCP server",\n    parameters: Type.Object({ tool: Type.String(), arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),\n    async execute(_id, params, signal) {\n      const result = await call(server, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: params.tool, arguments: params.arguments || {} } }, signal);\n      return { content: result.result?.content || [{ type: "text", text: JSON.stringify(result.result ?? result) }], details: { server: server.name } };\n    }\n  });\n}\n`;
-  await atomicWrite(join(directory, "rr-mcp.ts"), source);
+  const source = `import { Type } from "typebox";\nconst servers = ${JSON.stringify(declarations)};\nfunction headers(server) { const value = { "content-type": "application/json", accept: "application/json, text/event-stream" }; if (server.auth) value.authorization = "Bearer integral-managed-credential"; return value; }\nasync function call(server, payload, signal) {\n  if (server.transport !== "sse") { const response = await fetch(server.url, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); const body = await response.text(); if (!response.ok) throw new Error("MCP request failed: " + response.status); const data = body.split("\\n").filter(line => line.startsWith("data:")).at(-1)?.slice(5).trim(); return JSON.parse(data || body); }\n  const events = await fetch(server.url, { headers: headers(server), signal }); if (!events.ok || !events.body) throw new Error("MCP SSE connection failed: " + events.status); const reader = events.body.getReader(), decoder = new TextDecoder(); let buffer = "", endpoint;\n  while (!endpoint) { const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before endpoint"); buffer += decoder.decode(part.value, { stream: true }); const match = buffer.match(/event: endpoint\\r?\\ndata: (.+)\\r?\\n\\r?\\n/); if (match) { endpoint = new URL(match[1].trim(), server.url).toString(); buffer = buffer.slice((match.index || 0) + match[0].length); } }\n  const sent = await fetch(endpoint, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); if (!sent.ok) throw new Error("MCP SSE send failed: " + sent.status);\n  while (true) { const match = buffer.match(/data: (.+)\\r?\\n\\r?\\n/); if (match) { buffer = buffer.slice((match.index || 0) + match[0].length); const value = JSON.parse(match[1]); if (value.id === payload.id) { await reader.cancel(); return value; } } const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before response"); buffer += decoder.decode(part.value, { stream: true }); }\n}\nexport default function (pi) {\n  for (const server of servers) pi.registerTool({\n    name: "mcp_" + server.name, label: "MCP " + server.name, description: "Call a tool on the " + server.name + " remote MCP server",\n    parameters: Type.Object({ tool: Type.String(), arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),\n    async execute(_id, params, signal) {\n      const result = await call(server, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: params.tool, arguments: params.arguments || {} } }, signal);\n      return { content: result.result?.content || [{ type: "text", text: JSON.stringify(result.result ?? result) }], details: { server: server.name } };\n    }\n  });\n}\n`;
+  await atomicWrite(join(directory, "integral-mcp.ts"), source);
 }
 
 export async function writePiCredential(
@@ -230,7 +230,7 @@ function inspectImage(image: string): string | undefined {
 }
 
 export function managedPiImage(version: string): string {
-  return `rr-pi:${RR_VERSION}-pi-${version.replace(/[^0-9A-Za-z_.-]/g, "-")}`;
+  return `integral-pi:${INTEGRAL_VERSION}-pi-${version.replace(/[^0-9A-Za-z_.-]/g, "-")}`;
 }
 
 export function ensureContainerImage(
@@ -244,7 +244,7 @@ export function ensureContainerImage(
   const existing = inspectImage(requested);
   if (config.runner.pullPolicy === "never") {
     if (!existing)
-      throw new RrError(
+      throw new IntegralError(
         `container image is unavailable and pull_policy is never: ${requested}`,
       );
     return existing;
@@ -272,24 +272,24 @@ export function ensureContainerImage(
       { encoding: "utf8" },
     );
     if (result.status !== 0)
-      throw new RrError(
+      throw new IntegralError(
         `cannot build Pi ${piVersion} image: ${result.stderr.trim()}`,
       );
     const identity = inspectImage(requested);
     if (!identity)
-      throw new RrError(`cannot resolve Pi ${piVersion} image identity`);
+      throw new IntegralError(`cannot resolve Pi ${piVersion} image identity`);
     return identity;
   }
   const result = spawnSync("docker", ["pull", requested], {
     encoding: "utf8",
   });
   if (result.status !== 0)
-    throw new RrError(
+    throw new IntegralError(
       `cannot pull Pi image ${requested}: ${result.stderr.trim()}`,
     );
   const identity = inspectImage(requested);
   if (!identity)
-    throw new RrError(`cannot resolve Pi image identity: ${requested}`);
+    throw new IntegralError(`cannot resolve Pi image identity: ${requested}`);
   return identity;
 }
 
@@ -299,12 +299,20 @@ export async function discoverPiModels(
 ): Promise<Array<{ provider: string; model: string }>> {
   const result = spawnSync(
     "docker",
-    ["run", "--rm", "--network", "none", "--read-only", image, "rr-pi-models"],
+    [
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      image,
+      "integral-pi-models",
+    ],
     { encoding: "utf8" },
   );
   if (result.status !== 0)
-    throw new RrError(
-      `cannot discover models from Pi image: ${result.stderr.trim() || "container failed; the image must provide rr-pi-models"}`,
+    throw new IntegralError(
+      `cannot discover models from Pi image: ${result.stderr.trim() || "container failed; the image must provide integral-pi-models"}`,
     );
   return parsePiModelList(result.stdout, providers);
 }
@@ -318,10 +326,10 @@ export function parsePiModelList(
   try {
     parsed = JSON.parse(output);
   } catch {
-    throw new RrError("Pi image returned an invalid model catalog");
+    throw new IntegralError("Pi image returned an invalid model catalog");
   }
   if (!Array.isArray(parsed))
-    throw new RrError("Pi image returned an invalid model catalog");
+    throw new IntegralError("Pi image returned an invalid model catalog");
   return (parsed as unknown[]).filter(
     (entry: unknown): entry is { provider: string; model: string } =>
       typeof entry === "object" &&
@@ -352,7 +360,7 @@ export function discoverPiVersion(image: string): string {
   );
   const version = result.stdout.trim();
   if (result.status !== 0 || !version)
-    throw new RrError(
+    throw new IntegralError(
       `cannot identify Pi image version: ${result.stderr.trim() || "container failed"}`,
     );
   return version;
@@ -368,7 +376,7 @@ export async function createLockedNetwork(name: string): Promise<void> {
     { encoding: "utf8" },
   );
   if (created.status !== 0)
-    throw new RrError(
+    throw new IntegralError(
       `cannot create locked Docker network: ${created.stderr.trim()}`,
     );
 }
@@ -385,7 +393,7 @@ export function dockerNetworkGateway(name: string): string {
     { encoding: "utf8" },
   );
   if (result.status !== 0 || !result.stdout.trim())
-    throw new RrError("cannot discover locked Docker network gateway");
+    throw new IntegralError("cannot discover locked Docker network gateway");
   return result.stdout.trim();
 }
 
@@ -456,7 +464,7 @@ export class PiContainer {
       this.diagnostic(line.replace(/[\r\n]/g, " ")),
     );
     child.once("exit", (code) => {
-      const error = new RrError(
+      const error = new IntegralError(
         `Pi container exited unexpectedly (${code ?? "signal"})`,
       );
       this.pending?.reject(error);
@@ -475,7 +483,7 @@ export class PiContainer {
       const pending = this.pending;
       this.pending = undefined;
       clearTimeout(pending.timer);
-      pending.reject(new RrError(event.error));
+      pending.reject(new IntegralError(event.error));
       return;
     }
     if (event.type === "text") this.response += event.text;
@@ -488,9 +496,9 @@ export class PiContainer {
   }
   prompt(text: string): Promise<string> {
     if (!this.child)
-      return Promise.reject(new RrError("Pi container is not running"));
+      return Promise.reject(new IntegralError("Pi container is not running"));
     if (this.pending)
-      return Promise.reject(new RrError("Pi turn already in flight"));
+      return Promise.reject(new IntegralError("Pi turn already in flight"));
     this.response = "";
     this.child.stdin.write(
       `${JSON.stringify({ type: "prompt", message: text })}\n`,
@@ -498,7 +506,7 @@ export class PiContainer {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         void this.stop();
-        reject(new RrError("Pi turn timed out"));
+        reject(new IntegralError("Pi turn timed out"));
       }, this.config.runner.turnTimeoutSeconds * 1000);
       this.pending = { resolve, reject, timer };
     });
@@ -520,9 +528,13 @@ export class PiContainer {
         new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000)),
       ]);
       if (!stopped) {
-        spawnSync("docker", ["rm", "--force", `rr-${this.spec.sessionId}`], {
-          stdio: "ignore",
-        });
+        spawnSync(
+          "docker",
+          ["rm", "--force", `integral-${this.spec.sessionId}`],
+          {
+            stdio: "ignore",
+          },
+        );
         await exited;
       }
     }
@@ -540,7 +552,7 @@ export const dockerContainerBackend: ContainerBackend = {
 };
 
 export async function freshSessionHome(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "rr-pi-"));
+  return mkdtemp(join(tmpdir(), "integral-pi-"));
 }
 export function newSessionIdentity(): {
   sessionId: string;

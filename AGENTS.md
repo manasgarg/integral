@@ -111,9 +111,9 @@ Use this exact layout:
 
 Given the server is healthy
 	And the terminal is interactive
-	When the user runs `rr talk`
+	When the user runs `integral talk`
 		And submits a non-empty message
-		Then rr sends the message to Pi
+		Then integral sends the message to Pi
 			And displays Pi's response
 ```
 

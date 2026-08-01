@@ -1,9 +1,9 @@
 {
-  "name": "rr",
+  "name": "@pirogram/integral",
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "rr": "bin/rr.js"
+    "integral": "bin/integral.js"
   },
   "files": [
     "bin",

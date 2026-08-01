@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import http from "node:http";
 import type { Connection } from "./connections.ts";
-import { RrError } from "./errors.ts";
-import type { RrPaths } from "./paths.ts";
+import { IntegralError } from "./errors.ts";
+import type { IntegralPaths } from "./paths.ts";
 import {
   ensurePiRuntime,
   loadPiRuntimeModule,
@@ -43,12 +43,12 @@ export interface OAuthCallback {
 export type OAuthCallbackFactory = (state: string) => Promise<OAuthCallback>;
 
 export async function runModelOAuth(
-  paths: RrPaths,
+  paths: IntegralPaths,
   provider: string,
   method: "oauth" | "device-code",
   ui: OAuthUi,
   runtime: {
-    ensure(paths: RrPaths): Promise<PiRuntimeResolution>;
+    ensure(paths: IntegralPaths): Promise<PiRuntimeResolution>;
     load(resolution: PiRuntimeResolution): Promise<PiRuntimeModule>;
   } = { ensure: ensurePiRuntime, load: loadPiRuntimeModule },
 ): Promise<string> {
@@ -105,7 +105,9 @@ export async function runModelOAuth(
     typeof checked.access !== "string" ||
     typeof checked.expires !== "number"
   )
-    throw new RrError(`${provider} OAuth did not return a usable credential`);
+    throw new IntegralError(
+      `${provider} OAuth did not return a usable credential`,
+    );
   return JSON.stringify(checked);
 }
 
@@ -158,7 +160,7 @@ export async function runGenericOAuth(
   if (connection.auth === "device-code")
     return JSON.stringify(await deviceCode(connection, ui, request));
   if (connection.auth !== "oauth")
-    throw new RrError(
+    throw new IntegralError(
       "generic OAuth requires oauth or device-code authentication",
     );
   return JSON.stringify(
@@ -194,7 +196,7 @@ async function deviceCode(
     !device.user_code ||
     !device.verification_uri
   )
-    throw new RrError(
+    throw new IntegralError(
       `device authorization failed: ${device.error ?? start.status}`,
     );
   ui.show(
@@ -220,11 +222,11 @@ async function deviceCode(
       interval += 5000;
       continue;
     }
-    throw new RrError(
+    throw new IntegralError(
       `device authorization failed: ${token.error_description ?? token.error ?? response.status}`,
     );
   }
-  throw new RrError("device authorization timed out");
+  throw new IntegralError("device authorization timed out");
 }
 
 async function authorizationCode(
@@ -270,7 +272,7 @@ async function authorizationCode(
       new Promise<never>(
         (_, reject) =>
           (timeout = setTimeout(
-            () => reject(new RrError("OAuth authorization timed out")),
+            () => reject(new IntegralError("OAuth authorization timed out")),
             600_000,
           )),
       ),
@@ -288,7 +290,7 @@ async function authorizationCode(
     );
     const token = (await response.json()) as TokenResponse;
     if (!response.ok || !token.access_token)
-      throw new RrError(
+      throw new IntegralError(
         `OAuth token exchange failed: ${token.error_description ?? token.error ?? response.status}`,
       );
     return stored(token);
@@ -313,7 +315,7 @@ async function startLocalOAuthCallback(state: string): Promise<OAuthCallback> {
     }
     const value = url.searchParams.get("code");
     if (!value) {
-      const error = new RrError(
+      const error = new IntegralError(
         `OAuth failed: ${url.searchParams.get("error") ?? "missing code"}`,
       );
       rejectCode(error);
@@ -321,7 +323,7 @@ async function startLocalOAuthCallback(state: string): Promise<OAuthCallback> {
       return;
     }
     resolveCode(value);
-    res.end("rr connection authorized; return to the terminal.\n");
+    res.end("integral connection authorized; return to the terminal.\n");
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -340,19 +342,19 @@ export function authorizationCodeFromInput(
   expectedState: string,
 ): string {
   const value = input.trim();
-  if (!value) throw new RrError("missing OAuth authorization code");
+  if (!value) throw new IntegralError("missing OAuth authorization code");
   if (/^https?:\/\//i.test(value)) {
     let redirect: URL;
     try {
       redirect = new URL(value);
     } catch {
-      throw new RrError("invalid OAuth redirect URL");
+      throw new IntegralError("invalid OAuth redirect URL");
     }
     const state = redirect.searchParams.get("state");
     if (state && state !== expectedState)
-      throw new RrError("OAuth state mismatch");
+      throw new IntegralError("OAuth state mismatch");
     const code = redirect.searchParams.get("code");
-    if (!code) throw new RrError("OAuth redirect URL is missing code");
+    if (!code) throw new IntegralError("OAuth redirect URL is missing code");
     return code;
   }
   return value;
@@ -394,14 +396,14 @@ export function oauthAccess(raw: string): string | undefined {
 }
 
 export async function refreshOAuth(
-  paths: RrPaths,
+  paths: IntegralPaths,
   connection: Connection,
   raw: string,
   request: typeof fetch = fetch,
 ): Promise<{ access: string; serialized: string }> {
   const parsed = JSON.parse(raw) as StoredOAuth & Record<string, unknown>;
   if (parsed.type !== "oauth" || !parsed.access)
-    throw new RrError(
+    throw new IntegralError(
       `connection ${connection.name} has an invalid OAuth credential`,
     );
   if (parsed.expires > Date.now() + 60_000)
@@ -430,11 +432,11 @@ export async function refreshOAuth(
       current = storage.get(connection.provider!);
     }
     if (!access || !current)
-      throw new RrError(`OAuth refresh failed for ${connection.name}`);
+      throw new IntegralError(`OAuth refresh failed for ${connection.name}`);
     return { access, serialized: JSON.stringify(current) };
   }
   if (!parsed.refresh)
-    throw new RrError(
+    throw new IntegralError(
       `OAuth credential expired for ${connection.name}; rotate or reconfigure it`,
     );
   const response = await postForm(
@@ -448,7 +450,7 @@ export async function refreshOAuth(
   );
   const token = (await response.json()) as TokenResponse;
   if (!response.ok || !token.access_token)
-    throw new RrError(
+    throw new IntegralError(
       `OAuth refresh failed for ${connection.name}: ${token.error_description ?? token.error ?? response.status}`,
     );
   if (!token.refresh_token) token.refresh_token = parsed.refresh;

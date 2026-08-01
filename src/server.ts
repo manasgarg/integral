@@ -4,7 +4,7 @@ import type { Component } from "./constants.ts";
 import { COMPONENTS } from "./constants.ts";
 import type { EffectiveConfig } from "./config.ts";
 import { acquireLock, readText } from "./fs.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 import {
   componentStatePath,
   deploymentId,
@@ -15,7 +15,7 @@ import { Coordinator } from "./coordinator.ts";
 import { Gateway } from "./gateway.ts";
 import { Runner, validateRunnerHost } from "./runner.ts";
 import { Logger } from "./logging.ts";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 import { credentialSecretValues } from "./connections.ts";
 
 interface Started {
@@ -31,10 +31,10 @@ export interface ComponentRuntime {
 }
 
 export interface StartComponentsDependencies {
-  validateRunnerHost(paths: RrPaths): Promise<void>;
+  validateRunnerHost(paths: IntegralPaths): Promise<void>;
   createRuntime(
     component: Component,
-    paths: RrPaths,
+    paths: IntegralPaths,
     config: EffectiveConfig,
     logger: Logger,
   ): ComponentRuntime;
@@ -43,7 +43,7 @@ export interface StartComponentsDependencies {
 
 function createProductionRuntime(
   component: Component,
-  paths: RrPaths,
+  paths: IntegralPaths,
   config: EffectiveConfig,
   logger: Logger,
 ): ComponentRuntime {
@@ -96,7 +96,9 @@ const productionDependencies: StartComponentsDependencies = {
   waitForShutdown: waitForShutdownSignal,
 };
 
-export async function connectionGeneration(paths: RrPaths): Promise<number> {
+export async function connectionGeneration(
+  paths: IntegralPaths,
+): Promise<number> {
   return Number(
     (await readText(join(paths.state, "connection-generation")))?.trim() || "0",
   );
@@ -106,7 +108,7 @@ function portFor(config: EffectiveConfig, component: Component): number {
 }
 
 export async function startComponents(
-  paths: RrPaths,
+  paths: IntegralPaths,
   config: EffectiveConfig,
   selected?: Component,
   overrides: Partial<StartComponentsDependencies> = {},
@@ -154,7 +156,9 @@ export async function startComponents(
         unlock = await acquireLock(join(paths.locks, `${component}.lock`));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST")
-          throw new RrError(`${component} component lock is already held`);
+          throw new IntegralError(
+            `${component} component lock is already held`,
+          );
         throw error;
       }
       const logger = new Logger({
@@ -239,7 +243,7 @@ export interface DeploymentStatus {
   >;
 }
 export async function serverStatus(
-  paths: RrPaths,
+  paths: IntegralPaths,
   probe: (
     endpoint: string,
     component: Component,
@@ -291,7 +295,7 @@ async function probeComponent(
   deployment: string,
 ): Promise<boolean> {
   try {
-    const response = await fetch(new URL("/rr/health", endpoint), {
+    const response = await fetch(new URL("/integral/health", endpoint), {
       signal: AbortSignal.timeout(500),
     });
     if (!response.ok) return false;

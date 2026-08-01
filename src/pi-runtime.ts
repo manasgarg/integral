@@ -3,9 +3,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PI_PACKAGE } from "./constants.ts";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 
 export interface PiRuntimeResolution {
   version: string;
@@ -53,13 +53,13 @@ const productionOperations: PiPackageOperations = {
       { encoding: "utf8", env: process.env },
     );
     if (result.status !== 0)
-      throw new RrError(
+      throw new IntegralError(
         `cannot install Pi ${version}: ${result.stderr.trim() || "npm failed"}`,
       );
   },
 };
 
-function versionRoot(paths: RrPaths, version: string): string {
+function versionRoot(paths: IntegralPaths, version: string): string {
   return join(paths.piRuntime, "versions", version);
 }
 
@@ -79,7 +79,7 @@ async function installedVersion(prefix: string): Promise<string | undefined> {
 }
 
 async function cachedState(
-  paths: RrPaths,
+  paths: IntegralPaths,
 ): Promise<PiRuntimeState | undefined> {
   try {
     const raw = await readText(paths.piRuntimeState);
@@ -100,7 +100,7 @@ async function cachedState(
 }
 
 export async function ensurePiRuntime(
-  paths: RrPaths,
+  paths: IntegralPaths,
   operations: PiPackageOperations = productionOperations,
 ): Promise<PiRuntimeResolution> {
   const cached = await cachedState(paths);
@@ -109,7 +109,7 @@ export async function ensurePiRuntime(
     version = operations.latestVersion();
   } catch (error) {
     if (!cached)
-      throw new RrError(
+      throw new IntegralError(
         `cannot check for the latest Pi version and no cached Pi runtime is available: ${error instanceof Error ? error.message : String(error)}`,
       );
     return {
@@ -119,7 +119,7 @@ export async function ensurePiRuntime(
     };
   }
   if (!versionPattern.test(version))
-    throw new RrError(
+    throw new IntegralError(
       `npm registry returned an invalid Pi version: ${version}`,
     );
   const prefix = versionRoot(paths, version);
@@ -127,7 +127,7 @@ export async function ensurePiRuntime(
     await ensureDir(prefix);
     operations.install(prefix, version);
     if ((await installedVersion(prefix)) !== version)
-      throw new RrError(`Pi ${version} installation is incomplete`);
+      throw new IntegralError(`Pi ${version} installation is incomplete`);
   }
   await atomicWrite(paths.piRuntimeState, `${JSON.stringify({ version })}\n`);
   return { version, packageRoot: packageRoot(prefix) };
@@ -239,8 +239,8 @@ export async function loadPiRuntimeModule(
   const entry = pathToFileURL(join(resolution.packageRoot, "dist", "index.js"));
   const loaded = (await import(entry.href)) as Partial<PiRuntimeModule>;
   if (!loaded.ModelRuntime?.create && !loaded.AuthStorage?.inMemory)
-    throw new RrError(
-      `Pi ${resolution.version} is incompatible with rr's runtime interface`,
+    throw new IntegralError(
+      `Pi ${resolution.version} is incompatible with integral's runtime interface`,
     );
   return loaded;
 }

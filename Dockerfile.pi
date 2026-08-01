@@ -6,7 +6,7 @@ RUN npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && groupmod --new-name pi node \
     && usermod --login pi --home /home/pi --move-home --shell /usr/sbin/nologin node
 
-COPY --chmod=0555 bin/rr-pi-models.mjs /usr/local/bin/rr-pi-models
+COPY --chmod=0555 bin/integral-pi-models.mjs /usr/local/bin/integral-pi-models
 
 USER 1000:1000
 WORKDIR /home/pi

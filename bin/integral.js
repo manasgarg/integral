@@ -7,7 +7,7 @@ main(process.argv.slice(2)).then(
   },
   (error) => {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`rr: ${message}\n`);
+    process.stderr.write(`integral: ${message}\n`);
     process.exitCode = 1;
   },
 );

@@ -123,7 +123,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
       fetch: async () => new Response("ok"),
       async internalFetch(_paths, _caller, _target, path, init) {
         calls.push(`${init?.method ?? "GET"}:${path}`);
-        if (path === "/rr/internal/claim") {
+        if (path === "/integral/internal/claim") {
           claims++;
           return Response.json({
             message:
@@ -175,7 +175,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
   assert.deepEqual(spec?.args.slice(-2), ["--model", "claude-sonnet-4-6"]);
   await clock.fire(config.runner.idleTimeoutSeconds * 1000);
   assert.ok(calls.includes("pi:stop"));
-  assert.ok(calls.includes("DELETE:/rr/internal/session"));
+  assert.ok(calls.includes("DELETE:/integral/internal/session"));
   await runner.stop();
 });
 
@@ -252,7 +252,7 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-A4C19E72] runner
       fetch: async () => new Response("ok"),
       async internalFetch(_paths, _caller, _target, path) {
         calls.push(path);
-        if (path === "/rr/internal/claim")
+        if (path === "/integral/internal/claim")
           return Response.json({
             message: {
               id: "message-2",
@@ -288,9 +288,9 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-A4C19E72] runner
 
   await runner.runOnce();
 
-  assert.ok(calls.includes("/rr/internal/work/message-2/release"));
+  assert.ok(calls.includes("/integral/internal/work/message-2/release"));
   assert.ok(calls.includes("pi:stop"));
-  assert.ok(calls.includes("/rr/internal/session"));
+  assert.ok(calls.includes("/integral/internal/session"));
 });
 
 test("[CHAT-C53A90D2] runner recycles an idle Pi container after the conversation selection changes", async (t) => {
@@ -347,7 +347,7 @@ test("[CHAT-C53A90D2] runner recycles an idle Pi container after the conversatio
       fetch: async () => new Response("ok"),
       async internalFetch(_paths, _caller, _target, path, init) {
         calls.push(`${init?.method ?? "GET"}:${path}`);
-        if (path === "/rr/internal/claim")
+        if (path === "/integral/internal/claim")
           return Response.json({
             message: null,
             selection: {
@@ -375,6 +375,6 @@ test("[CHAT-C53A90D2] runner recycles an idle Pi container after the conversatio
   await runner.runOnce();
 
   assert.ok(calls.includes("pi:stop"));
-  assert.ok(calls.includes("DELETE:/rr/internal/session"));
+  assert.ok(calls.includes("DELETE:/integral/internal/session"));
   assert.equal((runner as any).pi, undefined);
 });

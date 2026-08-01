@@ -43,7 +43,7 @@ async function capture(
 test("[ENV-0E6A92C4] help, version, and catalog do not resolve invalid deployment state", async () => {
   for (const args of [["--help"], ["version"], ["connection", "catalog"]]) {
     const result = await capture(args, {
-      RR_HOME: "relative",
+      INTEGRAL_HOME: "relative",
       HOME: undefined,
     });
     assert.equal(result.code, 0, result.stderr);
@@ -65,7 +65,7 @@ test("[CLI-A7D3E91B] -h prints applicable help at every command depth without pe
     ["talk", "-h"],
   ]) {
     const result = await capture(args, {
-      RR_HOME: "relative",
+      INTEGRAL_HOME: "relative",
       HOME: undefined,
     });
     assert.equal(result.code, 0, `${args.join(" ")}: ${result.stderr}`);
@@ -102,7 +102,7 @@ test("[CONNECTION-75EC27E8] catalog describes model, HTTP, MCP and every support
 
 test("[CONNECTION-A61E2C9D] [CONNECTION-E73B40C6] explicit no-auth HTTP setup and listing work end-to-end", async (t) => {
   const paths = await fixture(t),
-    env = { RR_HOME: paths.root };
+    env = { INTEGRAL_HOME: paths.root };
   const add = await capture(
     [
       "connection",
@@ -136,7 +136,7 @@ test("[CONNECTION-512D9A25] unsupported authentication is rejected before creati
   const paths = await fixture(t),
     result = await capture(
       ["connection", "add", "anthropic", "--auth", "none"],
-      { RR_HOME: paths.root },
+      { INTEGRAL_HOME: paths.root },
     );
   assert.equal(result.code, 1);
   assert.match(result.stderr, /not supported/);
@@ -169,7 +169,7 @@ test("[CONNECTION-2F7C9A61] interactive connection setup asks for a supported au
 test("[CONNECTION-2F7C9A61] non-interactive connection setup requires --auth and names supported choices", async (t) => {
   const paths = await fixture(t),
     result = await capture(["connection", "add", "anthropic"], {
-      RR_HOME: paths.root,
+      INTEGRAL_HOME: paths.root,
     });
   assert.equal(result.code, 1);
   assert.match(result.stderr, /use --auth.*oauth, key/);
@@ -181,7 +181,9 @@ test("[CONNECTION-2F7C9A61] non-interactive connection setup requires --auth and
 
 test("[CONNECTION-03C4E791] bare add clearly requires the guided interactive terminal", async (t) => {
   const paths = await fixture(t),
-    result = await capture(["connection", "add"], { RR_HOME: paths.root });
+    result = await capture(["connection", "add"], {
+      INTEGRAL_HOME: paths.root,
+    });
   assert.equal(result.code, 1);
   assert.match(
     result.stderr,
@@ -204,11 +206,11 @@ test("[CONNECTION-1D691391] verification occurs before setup is committed", asyn
         "none",
         "--verify",
       ],
-      { RR_HOME: paths.root },
+      { INTEGRAL_HOME: paths.root },
     );
   assert.equal(result.code, 1);
   const ls = await capture(["connection", "ls", "--json"], {
-    RR_HOME: paths.root,
+    INTEGRAL_HOME: paths.root,
   });
   assert.deepEqual(JSON.parse(ls.stdout), []);
 });
@@ -227,7 +229,7 @@ test("[CONFIG-5F20A9D3] config help lists init, path, effective show, and valida
 
 test("[CONFIG-17D6C8A4] [CONFIG-C41E8B75] config path and init use only the resolved deployment", async (t) => {
   const paths = await fixture(t),
-    env = { RR_HOME: paths.root };
+    env = { INTEGRAL_HOME: paths.root };
   assert.equal(
     (await capture(["config", "path"], env)).stdout.trim(),
     paths.mainConfig,
@@ -238,7 +240,7 @@ test("[CONFIG-17D6C8A4] [CONFIG-C41E8B75] config path and init use only the reso
 
 test("[CONFIG-B93A4E70] [CONFIG-D4A70C31] validate and show offer equivalent machine-readable configuration", async (t) => {
   const paths = await fixture(t),
-    env = { RR_HOME: paths.root };
+    env = { INTEGRAL_HOME: paths.root };
   const valid = await capture(["config", "validate", "--json"], env);
   assert.equal(JSON.parse(valid.stdout).valid, true);
   const shown = await capture(["config", "show", "--json"], env);
@@ -250,8 +252,8 @@ test("[CONFIG-B93A4E70] [CONFIG-D4A70C31] validate and show offer equivalent mac
 test("[CONFIG-D4A70C31] human config output uses readable sourced sections instead of inline JSON", async (t) => {
   const paths = await fixture(t),
     shown = await capture(["config", "show"], {
-      RR_HOME: paths.root,
-      RR_GATEWAY_PORT: "7400",
+      INTEGRAL_HOME: paths.root,
+      INTEGRAL_GATEWAY_PORT: "7400",
     });
   assert.equal(shown.code, 0, shown.stderr);
   assert.match(shown.stdout, /^Effective configuration$/m);
@@ -298,7 +300,7 @@ test("[QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUEUE-2F6B9D04] top-level queue command
         method: init?.method ?? "GET",
         ...(typeof init?.body === "string" ? { body: init.body } : {}),
       });
-      if (url.pathname === "/rr/snapshot")
+      if (url.pathname === "/integral/snapshot")
         return Response.json({
           queue: [
             { id: "message-1", text: "first", status: "in-flight" },
@@ -333,18 +335,18 @@ test("[QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUEUE-2F6B9D04] top-level queue command
   assert.deepEqual(
     requests.map((request) => [request.method, request.path, request.body]),
     [
-      ["GET", "/rr/snapshot", undefined],
-      ["GET", "/rr/snapshot", undefined],
+      ["GET", "/integral/snapshot", undefined],
+      ["GET", "/integral/snapshot", undefined],
       [
         "PATCH",
-        "/rr/queue/message-2",
+        "/integral/queue/message-2",
         JSON.stringify({ text: "revised message" }),
       ],
-      ["DELETE", "/rr/queue/message-2", undefined],
+      ["DELETE", "/integral/queue/message-2", undefined],
     ],
   );
   assert.equal(
-    requests.some((request) => request.path === "/rr/events"),
+    requests.some((request) => request.path === "/integral/events"),
     false,
   );
 });
@@ -383,9 +385,12 @@ test("[CHAT-84D839CE] talk help documents every local command and never contacts
 
 test("[CHAT-DB0EF523] talk refuses to start an ungoverned Pi when no coordinator is discoverable", async (t) => {
   const paths = await fixture(t),
-    result = await capture(["talk"], { RR_HOME: paths.root });
+    result = await capture(["talk"], { INTEGRAL_HOME: paths.root });
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /coordinator is not reachable.*rr server start/);
+  assert.match(
+    result.stderr,
+    /coordinator is not reachable.*integral server start/,
+  );
 });
 
 test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve pending input", async () => {
@@ -562,8 +567,8 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
         method: init?.method ?? "GET",
         ...(typeof init?.body === "string" ? { body: init.body } : {}),
       });
-      if (url.pathname === "/rr/events") return new Response(events);
-      if (url.pathname === "/rr/models")
+      if (url.pathname === "/integral/events") return new Response(events);
+      if (url.pathname === "/integral/models")
         return Response.json({
           choices: [
             {
@@ -582,7 +587,7 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
             piImage: "sha256:old",
           },
         });
-      if (url.pathname === "/rr/status")
+      if (url.pathname === "/integral/status")
         return Response.json({
           gateway: "healthy",
           runner: "healthy",
@@ -597,7 +602,7 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
           inFlight: null,
           attached: 1,
         });
-      if (url.pathname === "/rr/snapshot")
+      if (url.pathname === "/integral/snapshot")
         return Response.json({
           queue: [{ id: "message-1", text: "queued", status: "queued" }],
         });
@@ -626,25 +631,25 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
     [
       [
         "PUT",
-        "/rr/selection",
+        "/integral/selection",
         JSON.stringify({ connection: "work", model: "gpt-5.5" }),
       ],
       [
         "PATCH",
-        "/rr/queue/message-1",
+        "/integral/queue/message-1",
         JSON.stringify({ text: "revised text" }),
       ],
-      ["DELETE", "/rr/queue/message-1", undefined],
+      ["DELETE", "/integral/queue/message-1", undefined],
       [
         "POST",
-        "/rr/messages",
+        "/integral/messages",
         JSON.stringify({ text: "hello Pi", terminalId: "terminal-test" }),
       ],
     ],
   );
 });
 
-test("[CHAT-6E91B4C7] [CHAT-C53A90D2] rr talk patterns and /model use one provider-and-model chooser", async (t) => {
+test("[CHAT-6E91B4C7] [CHAT-C53A90D2] integral talk patterns and /model use one provider-and-model chooser", async (t) => {
   const paths = await fixture(t),
     choices = [
       {
@@ -697,9 +702,9 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] rr talk patterns and /model use one provid
             ? input
             : input.url,
       );
-      if (url.pathname === "/rr/models")
+      if (url.pathname === "/integral/models")
         return Response.json({ choices, current });
-      if (url.pathname === "/rr/selection") {
+      if (url.pathname === "/integral/selection") {
         const raw = init?.body;
         if (typeof raw !== "string") throw new Error("missing request body");
         const body = JSON.parse(raw) as {
@@ -715,7 +720,7 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] rr talk patterns and /model use one provid
         updates.push(body);
         return Response.json(current);
       }
-      if (url.pathname === "/rr/events") return new Response("");
+      if (url.pathname === "/integral/events") return new Response("");
       return new Response(null, { status: 204 });
     },
   });
@@ -790,9 +795,9 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] chooser handles stale defaults, ambiguity,
             ? input
             : input.url,
       );
-      if (url.pathname === "/rr/models")
+      if (url.pathname === "/integral/models")
         return Response.json({ choices, current });
-      if (url.pathname === "/rr/selection") {
+      if (url.pathname === "/integral/selection") {
         const raw = init?.body;
         if (typeof raw !== "string") throw new Error("missing request body");
         const body = JSON.parse(raw) as {
@@ -809,7 +814,7 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] chooser handles stale defaults, ambiguity,
         updates.push(body);
         return Response.json(selected);
       }
-      if (url.pathname === "/rr/events") return new Response("");
+      if (url.pathname === "/integral/events") return new Response("");
       return new Response(null, { status: 204 });
     },
   });
@@ -821,10 +826,13 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] chooser handles stale defaults, ambiguity,
   assert.match(stdout, /Previous model removed/);
   assert.match(stdout, /Multiple models match/);
   assert.match(stdout, /No provider and model match/);
-  assert.match(stdout, /rr talk <pattern>\.\.\. or \/model <pattern>\.\.\./);
+  assert.match(
+    stdout,
+    /integral talk <pattern>\.\.\. or \/model <pattern>\.\.\./,
+  );
 });
 
-test("[CHAT-6E91B4C7] rr talk refuses attachment when no active provider and model choices remain", async (t) => {
+test("[CHAT-6E91B4C7] integral talk refuses attachment when no active provider and model choices remain", async (t) => {
   const paths = await fixture(t);
   await assert.rejects(
     talkCommand([], {
@@ -847,11 +855,11 @@ test("[CHAT-6E91B4C7] rr talk refuses attachment when no active provider and mod
               ? input
               : input.url,
         );
-        if (url.pathname === "/rr/models")
+        if (url.pathname === "/integral/models")
           return Response.json({ choices: [], current: null });
         throw new Error(`unexpected request: ${url.pathname}`);
       },
     }),
-    /no provider and model choices.*rr connection add/,
+    /no provider and model choices.*integral connection add/,
   );
 });

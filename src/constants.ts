@@ -1,6 +1,6 @@
-export const RR_VERSION = "0.1.0";
+export const INTEGRAL_VERSION = "0.1.0";
 export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
-export const DEFAULT_PI_IMAGE = `rr-pi:${RR_VERSION}`;
+export const DEFAULT_PI_IMAGE = `integral-pi:${INTEGRAL_VERSION}`;
 
 export const COMPONENTS = ["coordinator", "runner", "gateway"] as const;
 export type Component = (typeof COMPONENTS)[number];

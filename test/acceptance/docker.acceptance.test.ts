@@ -23,7 +23,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
   );
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
-    network = `rr-acceptance-${deploymentId(paths)}`,
+    network = `integral-acceptance-${deploymentId(paths)}`,
     sessionHome = join(paths.root, "session"),
     caCert = join(paths.root, "ca.pem"),
     caBundle = join(paths.root, "bundle.pem");
@@ -37,7 +37,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
       config,
       selectedModel: "claude-sonnet-4-6",
       image,
-      gatewayUrl: "http://host.rr.internal:7310",
+      gatewayUrl: "http://host.integral.internal:7310",
       gatewayAddress: dockerNetworkGateway(network),
       caCert,
       caBundle,
@@ -51,7 +51,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
       }),
       mcp: [],
     }),
-    name = `rr-${identity.sessionId}`,
+    name = `integral-${identity.sessionId}`,
     runArgs = dockerRunArgs(spec, config, network),
     imageIndex = runArgs.indexOf(spec.image),
     createArgs = runArgs
@@ -128,7 +128,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
   );
 });
 
-test("[BOX-E1F472A1] managed Pi image exposes its model catalog through rr's JSON bridge", async (t) => {
+test("[BOX-E1F472A1] managed Pi image exposes its model catalog through integral's JSON bridge", async (t) => {
   assert.doesNotThrow(
     () => execFileSync("docker", ["info"], { stdio: "ignore" }),
     "Docker acceptance requires a reachable Docker daemon",
@@ -145,7 +145,7 @@ test("[BOX-E1F472A1] managed Pi image exposes its model catalog through rr's JSO
         "none",
         "--read-only",
         image,
-        "rr-pi-models",
+        "integral-pi-models",
       ],
       { encoding: "utf8" },
     ),

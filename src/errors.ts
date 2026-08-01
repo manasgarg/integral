@@ -1,9 +1,9 @@
-export class RrError extends Error {
+export class IntegralError extends Error {
   readonly exitCode: number;
 
   constructor(message: string, exitCode = 1) {
     super(message);
-    this.name = "RrError";
+    this.name = "IntegralError";
     this.exitCode = exitCode;
   }
 }

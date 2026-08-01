@@ -6,8 +6,8 @@ import {
   DEFAULT_PORTS,
   type Component,
 } from "./constants.ts";
-import { RrError } from "./errors.ts";
-import type { RrPaths } from "./paths.ts";
+import { IntegralError } from "./errors.ts";
+import type { IntegralPaths } from "./paths.ts";
 
 export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 export type LogFormat = "text" | "json";
@@ -71,7 +71,7 @@ function int(value: unknown, key: string, positive = true): number {
     !Number.isInteger(value) ||
     (positive ? Number(value) <= 0 : Number(value) < 0)
   ) {
-    throw new RrError(
+    throw new IntegralError(
       `${key} must be a ${positive ? "positive" : "non-negative"} integer`,
     );
   }
@@ -80,7 +80,8 @@ function int(value: unknown, key: string, positive = true): number {
 
 function port(value: unknown, key: string): number {
   const result = int(value, key);
-  if (result > 65535) throw new RrError(`${key} must be between 1 and 65535`);
+  if (result > 65535)
+    throw new IntegralError(`${key} must be between 1 and 65535`);
   return result;
 }
 
@@ -90,20 +91,20 @@ function stringChoice<T extends string>(
   choices: readonly T[],
 ): T {
   if (typeof value !== "string" || !choices.includes(value as T)) {
-    throw new RrError(`${key} must be one of: ${choices.join(", ")}`);
+    throw new IntegralError(`${key} must be one of: ${choices.join(", ")}`);
   }
   return value as T;
 }
 
 function stringValue(value: unknown, key: string): string {
   if (typeof value !== "string" || !value.trim())
-    throw new RrError(`${key} must be a non-empty string`);
+    throw new IntegralError(`${key} must be a non-empty string`);
   return value;
 }
 
 export function validateMain(
   raw: unknown,
-  file = "rr.toml",
+  file = "integral.toml",
 ): Record<string, unknown> {
   const root = object(raw);
   const errors: string[] = [];
@@ -121,11 +122,11 @@ export function validateMain(
         errors.push(`${file}: unknown option ${section}.${key}`);
       if (/credential|secret|token|api[_-]?key|password/i.test(key))
         errors.push(
-          `${file}: ${section}.${key}: credentials must be stored through rr connection add`,
+          `${file}: ${section}.${key}: credentials must be stored through integral connection add`,
         );
     }
   }
-  if (errors.length) throw new RrError(errors.join("\n"));
+  if (errors.length) throw new IntegralError(errors.join("\n"));
   return root;
 }
 
@@ -136,12 +137,14 @@ function parseEnvPort(
   const raw = env[name]?.trim();
   if (!raw) return undefined;
   if (!/^\d+$/.test(raw))
-    throw new RrError(`${name} must be a decimal port from 1 through 65535`);
+    throw new IntegralError(
+      `${name} must be a decimal port from 1 through 65535`,
+    );
   return port(Number(raw), name);
 }
 
 export async function loadConfig(
-  paths: RrPaths,
+  paths: IntegralPaths,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<EffectiveConfig> {
   const text = await readText(paths.mainConfig);
@@ -150,8 +153,8 @@ export async function loadConfig(
     try {
       root = validateMain(parse(text), paths.mainConfig);
     } catch (error) {
-      if (error instanceof RrError) throw error;
-      throw new RrError(`${paths.mainConfig}: ${String(error)}`);
+      if (error instanceof IntegralError) throw error;
+      throw new IntegralError(`${paths.mainConfig}: ${String(error)}`);
     }
   }
   const source = (section: string, key: string): ValueSource =>
@@ -166,7 +169,7 @@ export async function loadConfig(
       runner: undefined,
     };
   for (const component of ["gateway", "coordinator", "runner"] as const) {
-    const name = `RR_${component.toUpperCase()}_PORT`;
+    const name = `INTEGRAL_${component.toUpperCase()}_PORT`;
     try {
       envPorts[component] = parseEnvPort(env, name);
     } catch (error) {
@@ -175,7 +178,7 @@ export async function loadConfig(
       );
     }
   }
-  if (envPortErrors.length) throw new RrError(envPortErrors.join("\n"));
+  if (envPortErrors.length) throw new IntegralError(envPortErrors.join("\n"));
   const server = {
     gatewayPort:
       envPorts.gateway ??
@@ -195,26 +198,30 @@ export async function loadConfig(
         ),
       )
       .map(([name, value]) => `${name}=${value}`);
-    throw new RrError(
+    throw new IntegralError(
       `gateway, coordinator, and runner ports must be distinct; conflicts: ${conflicts.join(", ")}`,
     );
   }
   const fileLogging = object(root.logging);
   const logLevelRaw =
-    env.RR_LOG_LEVEL?.trim() || fileLogging.level || defaults["logging.level"];
+    env.INTEGRAL_LOG_LEVEL?.trim() ||
+    fileLogging.level ||
+    defaults["logging.level"];
   const logFormatRaw =
-    env.RR_LOG_FORMAT?.trim() ||
+    env.INTEGRAL_LOG_FORMAT?.trim() ||
     fileLogging.format ||
     defaults["logging.format"];
   const logging = {
     level: stringChoice(
       logLevelRaw,
-      env.RR_LOG_LEVEL?.trim() ? "RR_LOG_LEVEL" : "logging.level",
+      env.INTEGRAL_LOG_LEVEL?.trim() ? "INTEGRAL_LOG_LEVEL" : "logging.level",
       ["error", "warn", "info", "debug", "trace"],
     ),
     format: stringChoice(
       logFormatRaw,
-      env.RR_LOG_FORMAT?.trim() ? "RR_LOG_FORMAT" : "logging.format",
+      env.INTEGRAL_LOG_FORMAT?.trim()
+        ? "INTEGRAL_LOG_FORMAT"
+        : "logging.format",
       ["text", "json"],
     ),
   };
@@ -237,7 +244,7 @@ export async function loadConfig(
     tmpfsMb: int(val("runner", "tmpfs_mb"), "runner.tmpfs_mb"),
   };
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$/.test(runner.image))
-    throw new RrError("runner.image must be a valid OCI image reference");
+    throw new IntegralError("runner.image must be a valid OCI image reference");
   const conversation = {
     contextMaxMessages: int(
       val("conversation", "context_max_messages"),
@@ -258,8 +265,9 @@ export async function loadConfig(
   for (const [component, envValue] of Object.entries(envPorts))
     if (envValue !== undefined)
       sources[`server.${component}_port`] = "environment";
-  if (env.RR_LOG_LEVEL?.trim()) sources["logging.level"] = "environment";
-  if (env.RR_LOG_FORMAT?.trim()) sources["logging.format"] = "environment";
+  if (env.INTEGRAL_LOG_LEVEL?.trim()) sources["logging.level"] = "environment";
+  if (env.INTEGRAL_LOG_FORMAT?.trim())
+    sources["logging.format"] = "environment";
   const shared = { server, runner, conversation, logging };
   const fingerprinted = {
     ...shared,
@@ -281,11 +289,11 @@ export async function loadConfig(
   };
 }
 
-export const STARTER_CONFIG = `# rr Phase 1 configuration\n\n[server]\ngateway_port = 7310\ncoordinator_port = 7311\nrunner_port = 7312\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[logging]\nlevel = "info"\nformat = "text"\n`;
+export const STARTER_CONFIG = `# integral Phase 1 configuration\n\n[server]\ngateway_port = 7310\ncoordinator_port = 7311\nrunner_port = 7312\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[logging]\nlevel = "info"\nformat = "text"\n`;
 
-export async function initConfig(paths: RrPaths): Promise<void> {
+export async function initConfig(paths: IntegralPaths): Promise<void> {
   if ((await readText(paths.mainConfig)) !== undefined)
-    throw new RrError(
+    throw new IntegralError(
       `${paths.mainConfig} already exists; refusing to overwrite it`,
     );
   validateMain(parse(STARTER_CONFIG), paths.mainConfig);

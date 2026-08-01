@@ -10,16 +10,16 @@ single-user conversation.
 ## CHAT-DB0EF523 — Refuse chat without the server
 
 Given no healthy coordinator is reachable
-	When the user runs `rr talk`
+	When the user runs `integral talk`
 		Then the command exits non-zero
-			And tells the user to start the coordinator or run `rr server start`
+			And tells the user to start the coordinator or run `integral server start`
 			And does not start an ungoverned local Pi process
 
 ## CHAT-888AFAE0 — Hold an interactive conversation
 
 Given the terminal is interactive
-	And the rr coordinator is healthy
-	When the user runs `rr talk`
+	And the integral coordinator is healthy
+	When the user runs `integral talk`
 		Then the terminal shows a stable person-symbol input prompt
 			And displays asynchronous conversation events above the input prompt instead of after its prefix
 			And redraws any input already being typed after an asynchronous event
@@ -36,9 +36,9 @@ Given the terminal is interactive
 			And does not display protocol events or raw JSON
 			And does not display model credentials
 	When the user enters an unrecognized line beginning with `/`
-		Then rr reports an unknown local command on stderr
+		Then integral reports an unknown local command on stderr
 			And does not submit the line to the coordinator or Pi
-Given the user is in `rr talk`
+Given the user is in `integral talk`
 	When a Pi process is active inside its container
 		And that Pi process is working on an in-flight message
 		Then the terminal animates a `∮` working indicator on its own line
@@ -49,7 +49,7 @@ Given the user is in `rr talk`
 
 ## CHAT-84D839CE — Show local chat help
 
-Given the user is in `rr talk`
+Given the user is in `integral talk`
 	When the user enters `/help`
 		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/queue ls`, `/queue edit`, `/queue delete`, and `/exit`
 			And handles the command on the host
@@ -57,7 +57,7 @@ Given the user is in `rr talk`
 
 ## CHAT-989F5C14 — Show chat status
 
-Given the user is in `rr talk`
+Given the user is in `integral talk`
 	When the user enters `/status`
 		Then the terminal reports whether the gateway is healthy
 			And reports whether the runner is healthy
@@ -72,42 +72,42 @@ Given the user is in `rr talk`
 ## CHAT-6E91B4C7 — Select and reuse the conversation model
 
 Given the terminal is interactive
-	And the rr coordinator is healthy
-	When the user runs `rr talk`
+	And the integral coordinator is healthy
+	When the user runs `integral talk`
 		And at least one active model connection exists
 		And the conversation has no selected model connection and model
-		Then rr opens the model chooser
+		Then integral opens the model chooser
 			And records both selections as durable conversation state
 			And does not write either selection to the main configuration
 			And attaches the terminal only after both selections are valid
-	When the user runs `rr talk`
+	When the user runs `integral talk`
 		And the conversation has a previously selected model connection and model
 		And both selections remain available
-		Then rr reuses the previous selections without opening the model chooser
+		Then integral reuses the previous selections without opening the model chooser
 			And refreshes the selected Pi runtime identity when the available runtime changed
 			And attaches the terminal to the same conversation
-	When the user runs `rr talk <pattern>...`
+	When the user runs `integral talk <pattern>...`
 		And at least one active model connection exists
-		Then rr opens the model chooser and applies each pattern argument as a search term
+		Then integral opens the model chooser and applies each pattern argument as a search term
 			And attaches the terminal only after the terms resolve to a valid selection
 			And does not write the selection to the main configuration
-	When the user runs `rr talk`
+	When the user runs `integral talk`
 		And at least one active model connection exists
 		And the conversation has a previously selected model connection and model
 		And either selection is no longer available
-		Then rr explains why the previous selections cannot be reused
+		Then integral explains why the previous selections cannot be reused
 			And opens the model chooser without a default
 			And replaces both selections in durable conversation state
 			And does not write either selection to the main configuration
-	When the user runs `rr talk`
+	When the user runs `integral talk`
 		And no active model connection exists
 		Then the command exits non-zero
-			And instructs the user to run `rr connection add`
+			And instructs the user to run `integral connection add`
 			And does not attach the terminal or change the conversation's selections
 
 ## CHAT-C53A90D2 — Choose a provider and model with friendly matching
 
-Given rr opens the model chooser for `rr talk` or `/model`
+Given integral opens the model chooser for `integral talk` or `/model`
 	When it displays the available choices
 		And at least one active model connection exists
 		Then it groups models under each active model connection
@@ -116,51 +116,51 @@ Given rr opens the model chooser for `rr talk` or `/model`
 			And identifies the Pi runtime version that supplied the choices
 			And marks the conversation's current choice when it remains available
 			And explains that the user may enter a choice number or one or more search terms
-			And shows `rr talk [<pattern>...]` and `/model [<pattern>...]` as equivalent ways to search
+			And shows `integral talk [<pattern>...]` and `/model [<pattern>...]` as equivalent ways to search
 	When no active model connection exists
-		Then rr reports that no provider and model choices are available
-			And instructs the user to run `rr connection add`
+		Then integral reports that no provider and model choices are available
+			And instructs the user to run `integral connection add`
 			And does not change the conversation's selection
 	When the user enters a choice number
-		Then rr selects the corresponding displayed connection, provider, and model
+		Then integral selects the corresponding displayed connection, provider, and model
 	When the user enters one or more search terms
-		Then rr treats each term as a case-insensitive substring
+		Then integral treats each term as a case-insensitive substring
 			And compares it with connection names, provider names, and model names
 			And keeps choices for which every term matches at least one of those fields
 	When the terms identify exactly one choice
-		Then rr selects that connection, provider, and model
+		Then integral selects that connection, provider, and model
 	When the terms identify multiple choices
-		Then rr displays only the matching choices
+		Then integral displays only the matching choices
 			And asks the user to narrow the selection or enter a displayed choice number
 			And does not change the conversation's selection
 	When no choice matches the terms
-		Then rr reports that no provider and model match
+		Then integral reports that no provider and model match
 			And displays all available choices again
 			And does not change the conversation's selection
-Given the user is in `rr talk`
+Given the user is in `integral talk`
 	When the user enters `/model`
-		Then rr opens the same model chooser used by `rr talk`
+		Then integral opens the same model chooser used by `integral talk`
 			And handles the command on the host
 			And does not send the command to Pi
 	When the user enters `/model <pattern>...`
-		Then rr applies each pattern argument as a search term in that chooser
+		Then integral applies each pattern argument as a search term in that chooser
 			And handles the command on the host
 			And does not send the command to Pi
 Given the model chooser resolves a valid choice
 	When no Pi turn is in flight
 		And the conversation has no current choice or the resolved choice is different
-		Then rr records the new connection, model, and Pi runtime identity as durable conversation state
+		Then integral records the new connection, model, and Pi runtime identity as durable conversation state
 			And terminates any active Pi container
 			And uses that exact Pi runtime when the next message provisions Pi
 	When a Pi turn is in flight
 		And the resolved choice is different from the conversation's current choice
-		Then rr refuses to change the selection until the turn finishes
+		Then integral refuses to change the selection until the turn finishes
 			And leaves the current connection, model, and Pi session unchanged
 
 ## CHAT-54B8A1C3 — Attach every terminal to the same conversation
 
-Given one `rr talk` terminal is attached to the deployment conversation
-	When the user starts another `rr talk` with the same `$RR_HOME`
+Given one `integral talk` terminal is attached to the deployment conversation
+	When the user starts another `integral talk` with the same `$INTEGRAL_HOME`
 		Then the second terminal attaches to the same logical conversation
 			And receives the same ordered conversation record
 			And receives the same queue contents and order
@@ -188,7 +188,7 @@ Given two or more terminals are attached to the same conversation
 
 Given one or more terminals are attached to the conversation
 	When one terminal enters `/exit`, sends EOF, or is interrupted
-		Then rr detaches only that terminal
+		Then integral detaches only that terminal
 			And returns control to that terminal's shell
 			And does not end the logical conversation
 			And does not discard queued messages or persisted conversation events
@@ -197,8 +197,8 @@ Given one or more terminals are attached to the conversation
 ## CHAT-93E7D20B — Reattach to the durable conversation
 
 Given every terminal has detached
-	And the rr coordinator still owns the conversation
-	When the user runs `rr talk` with the same `$RR_HOME`
+	And the integral coordinator still owns the conversation
+	When the user runs `integral talk` with the same `$INTEGRAL_HOME`
 		Then the terminal receives a snapshot containing the existing conversation record and queue
 			And omits session records from rendered conversation text
 			And continues following new events without a snapshot-to-live gap
@@ -209,15 +209,15 @@ Given every terminal has detached
 Given the logical conversation has persisted completed turns
 	And no Pi container is active
 	When the runner starts a replacement Pi session for a queued message
-		Then rr supplies the persisted conversation context to Pi
+		Then integral supplies the persisted conversation context to Pi
 			And the replacement session can continue the same conversation
 			And temporary files from the previous container remain unavailable
 
 ## CHAT-4F29A6D8 — Recover the conversation after a server restart
 
 Given conversation events were acknowledged before the coordinator stopped or crashed
-	When the coordinator starts again with the same `$RR_HOME`
-		Then rr restores the events in their committed order
+	When the coordinator starts again with the same `$INTEGRAL_HOME`
+		Then integral restores the events in their committed order
 			And restores any selected model connection and model
 	When a terminal attaches after that restart
 		Then it receives the restored conversation and current queue

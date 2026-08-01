@@ -1,8 +1,8 @@
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 
-export interface RrPaths {
+export interface IntegralPaths {
   root: string;
   config: string;
   data: string;
@@ -39,21 +39,23 @@ function canonicalize(path: string): string {
   }
 }
 
-export function resolveRrHome(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveIntegralHome(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const candidate =
-    env.RR_HOME?.trim() || (env.HOME ? join(env.HOME, ".rr") : "");
+    env.INTEGRAL_HOME?.trim() || (env.HOME ? join(env.HOME, ".integral") : "");
   if (!candidate) {
-    throw new RrError(
-      "RR_HOME is not set and HOME is unavailable; set RR_HOME to an absolute path",
+    throw new IntegralError(
+      "INTEGRAL_HOME is not set and HOME is unavailable; set INTEGRAL_HOME to an absolute path",
     );
   }
   if (!isAbsolute(candidate)) {
-    throw new RrError("RR_HOME must be an absolute path");
+    throw new IntegralError("INTEGRAL_HOME must be an absolute path");
   }
   return canonicalize(candidate);
 }
 
-export function pathsFor(root: string): RrPaths {
+export function pathsFor(root: string): IntegralPaths {
   const config = join(root, "config");
   const data = join(root, "data");
   const state = join(root, "state");
@@ -62,7 +64,7 @@ export function pathsFor(root: string): RrPaths {
     config,
     data,
     state,
-    mainConfig: join(config, "rr.toml"),
+    mainConfig: join(config, "integral.toml"),
     connections: join(config, "connections"),
     credentials: join(data, "credentials"),
     componentState: join(state, "components"),
@@ -76,6 +78,8 @@ export function pathsFor(root: string): RrPaths {
   };
 }
 
-export function resolvePaths(env: NodeJS.ProcessEnv = process.env): RrPaths {
-  return pathsFor(resolveRrHome(env));
+export function resolvePaths(
+  env: NodeJS.ProcessEnv = process.env,
+): IntegralPaths {
+  return pathsFor(resolveIntegralHome(env));
 }

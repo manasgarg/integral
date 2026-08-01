@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig, initConfig } from "./config.ts";
 import type { EffectiveConfig } from "./config.ts";
-import { RR_VERSION, COMPONENTS, type Component } from "./constants.ts";
+import { INTEGRAL_VERSION, COMPONENTS, type Component } from "./constants.ts";
 import {
   CATALOG,
   listConnections,
@@ -18,11 +18,11 @@ import {
   type Connection,
 } from "./connections.ts";
 import { resolvePaths } from "./paths.ts";
-import { messageOf, RrError } from "./errors.ts";
+import { messageOf, IntegralError } from "./errors.ts";
 import { serverStatus, startComponents } from "./server.ts";
 import { componentEndpoint, verifiedFetch } from "./http-client.ts";
 import { oauthAccess, runGenericOAuth, runModelOAuth } from "./oauth.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 import {
   matchModelChoices,
   sameModel,
@@ -31,9 +31,9 @@ import {
   type ModelSelection,
 } from "./model-selection.ts";
 
-const TOP_HELP = `rr — a governed, containerized Pi conversation
+const TOP_HELP = `integral — a governed, containerized Pi conversation
 
-Usage: rr <command>
+Usage: integral <command>
 
 Commands:
   server       run or inspect server components
@@ -43,9 +43,9 @@ Commands:
   config       inspect and validate configuration
   version      print implementation versions
 
-Run rr <command> --help for command details.
+Run integral <command> --help for command details.
 `;
-const CONFIG_HELP = `Usage: rr config <command>
+const CONFIG_HELP = `Usage: integral config <command>
 
 Commands:
   init       create a commented starter configuration
@@ -53,7 +53,7 @@ Commands:
   show       show effective configuration after overrides
   validate   validate configuration without side effects
 `;
-const CONNECTION_HELP = `Usage: rr connection <command>
+const CONNECTION_HELP = `Usage: integral connection <command>
 
 Commands:
   catalog    show model providers and generic connection types
@@ -63,13 +63,13 @@ Commands:
 
 All active connections are available automatically. There are no grant or revoke commands.
 `;
-const SERVER_HELP = `Usage: rr server start [--component <name>]
-       rr server status [--json]
+const SERVER_HELP = `Usage: integral server start [--component <name>]
+       integral server status [--json]
 
 Combined mode is the default. --component <name> starts one component only.
 Component values: coordinator, runner, gateway
 `;
-const QUEUE_HELP = `Usage: rr queue <command>
+const QUEUE_HELP = `Usage: integral queue <command>
 
 Commands:
   ls [--json]             list queued and in-flight messages
@@ -87,9 +87,9 @@ const TALK_HELP = `/help                         show this help
 const TALK_USER_STYLE = "\u001b[48;5;238m\u001b[97m";
 const TALK_STYLE_RESET = "\u001b[0m";
 const TALK_WORK_FRAMES = ["∮   ", "∮·  ", "∮·· ", "∮···"] as const;
-const VERSION_HELP = `Usage: rr version
+const VERSION_HELP = `Usage: integral version
 
-Print the rr, Node.js, and supported Pi versions.
+Print the integral, Node.js, and supported Pi versions.
 `;
 
 function flag(args: string[], name: string): string | undefined {
@@ -197,7 +197,7 @@ export async function main(args: string[]): Promise<number> {
         return 0;
       }
       process.stdout.write(
-        `rr ${RR_VERSION}\nNode.js ${process.versions.node}\nPi runtime: latest (resolved when needed)\n`,
+        `integral ${INTEGRAL_VERSION}\nNode.js ${process.versions.node}\nPi runtime: latest (resolved when needed)\n`,
       );
       return 0;
     }
@@ -206,10 +206,10 @@ export async function main(args: string[]): Promise<number> {
     if (command === "server") return await serverCommand(rest);
     if (command === "queue") return await queueCommand(rest);
     if (command === "talk") return await talkCommand(rest);
-    throw new RrError(`unknown command: ${command}`);
+    throw new IntegralError(`unknown command: ${command}`);
   } catch (error) {
-    process.stderr.write(`rr: ${messageOf(error)}\n`);
-    return error instanceof RrError ? error.exitCode : 1;
+    process.stderr.write(`integral: ${messageOf(error)}\n`);
+    return error instanceof IntegralError ? error.exitCode : 1;
   }
 }
 
@@ -256,7 +256,7 @@ async function configCommand(args: string[]): Promise<number> {
   if (command === "show") {
     const config = await loadConfig(paths),
       loaded = await loadConnections(paths);
-    if (loaded.errors.length) throw new RrError(loaded.errors.join("\n"));
+    if (loaded.errors.length) throw new IntegralError(loaded.errors.join("\n"));
     const result = {
       server: config.server,
       runner: config.runner,
@@ -270,7 +270,7 @@ async function configCommand(args: string[]): Promise<number> {
       process.stdout.write(renderEffectiveConfig(config, result.connections));
     return 0;
   }
-  throw new RrError(`unknown config command: ${command}`);
+  throw new IntegralError(`unknown config command: ${command}`);
 }
 
 async function connectionCommand(args: string[]): Promise<number> {
@@ -315,7 +315,7 @@ async function connectionCommand(args: string[]): Promise<number> {
       (e) => e.name === (setup.provider ?? setup.kind),
     );
     if (!entry || !entry.auth.includes(setup.auth as never))
-      throw new RrError(
+      throw new IntegralError(
         `${setup.provider ?? setup.kind} does not support ${setup.auth} authentication`,
       );
     let credential: string | undefined;
@@ -332,9 +332,9 @@ async function connectionCommand(args: string[]): Promise<number> {
   }
   if (command === "rm") {
     const name = args[1];
-    if (!name) throw new RrError("connection name is required");
+    if (!name) throw new IntegralError("connection name is required");
     const found = (await listConnections(paths)).find((c) => c.name === name);
-    if (!found) throw new RrError(`connection not found: ${name}`);
+    if (!found) throw new IntegralError(`connection not found: ${name}`);
     const rl = createInterface({ input, output });
     try {
       if (found.auth !== "none") {
@@ -365,13 +365,13 @@ async function connectionCommand(args: string[]): Promise<number> {
       rl.close();
     }
   }
-  throw new RrError(`unknown connection command: ${command}`);
+  throw new IntegralError(`unknown connection command: ${command}`);
 }
 
 async function explicitConnection(args: string[]): Promise<Connection> {
   const entryName = args[0]!,
     entry = CATALOG.find((e) => e.name === entryName);
-  if (!entry) throw new RrError(`unknown catalog entry: ${entryName}`);
+  if (!entry) throw new IntegralError(`unknown catalog entry: ${entryName}`);
   const name = flag(args, "--name") ?? entryName;
   const requestedAuth = flag(args, "--auth");
   let ask: ((message: string) => Promise<string>) | undefined;
@@ -414,27 +414,27 @@ export async function selectAuthentication(
 ): Promise<AuthMethod> {
   if (requested) {
     if (!supported.includes(requested as AuthMethod))
-      throw new RrError(
+      throw new IntegralError(
         `authentication method ${requested} is not supported; choose one of: ${supported.join(", ")}`,
       );
     return requested as AuthMethod;
   }
   if (!ask)
-    throw new RrError(
+    throw new IntegralError(
       `authentication method is required in a non-interactive terminal; use --auth with one of: ${supported.join(", ")}`,
     );
   const selected = (await ask(`Authentication (${supported.join("/")}): `))
     .trim()
     .toLowerCase();
   if (!supported.includes(selected as AuthMethod))
-    throw new RrError(
+    throw new IntegralError(
       `authentication method must be one of: ${supported.join(", ")}`,
     );
   return selected as AuthMethod;
 }
 async function guidedConnection(): Promise<Connection> {
   if (!input.isTTY)
-    throw new RrError(
+    throw new IntegralError(
       "guided connection setup requires an interactive terminal",
     );
   const rl = createInterface({ input, output });
@@ -446,7 +446,7 @@ async function guidedConnection(): Promise<Connection> {
     );
     const selected = Number(await rl.question("Select connection: ")) - 1,
       entry = CATALOG[selected];
-    if (!entry) throw new RrError("invalid selection");
+    if (!entry) throw new IntegralError("invalid selection");
     const name =
         (await rl.question(`Name [${entry.name}]: `)).trim() || entry.name,
       defaultAuth = "defaultAuth" in entry ? entry.defaultAuth : entry.auth[0];
@@ -496,14 +496,14 @@ async function readCredential(fromStdin: boolean): Promise<string> {
     const rl = createInterface({ input, output });
     try {
       const value = (await rl.question("")).trim();
-      if (!value) throw new RrError("credential must not be empty");
+      if (!value) throw new IntegralError("credential must not be empty");
       return value;
     } finally {
       rl.close();
     }
   }
   if (!input.isTTY)
-    throw new RrError(
+    throw new IntegralError(
       "credential input requires a terminal or --credential-stdin",
     );
   process.stdout.write("Credential (hidden; stored outside configuration): ");
@@ -515,7 +515,7 @@ async function readCredential(fromStdin: boolean): Promise<string> {
       for (const byte of chunk) {
         if (byte === 3) {
           cleanup();
-          reject(new RrError("credential entry cancelled"));
+          reject(new IntegralError("credential entry cancelled"));
           return;
         }
         if (byte === 10 || byte === 13) {
@@ -535,15 +535,15 @@ async function readCredential(fromStdin: boolean): Promise<string> {
     };
     input.on("data", data);
   });
-  if (!value.trim()) throw new RrError("credential must not be empty");
+  if (!value.trim()) throw new IntegralError("credential must not be empty");
   return value.trim();
 }
 async function authenticateOAuth(
-  paths: RrPaths,
+  paths: IntegralPaths,
   connection: Connection,
 ): Promise<string> {
   if (!input.isTTY)
-    throw new RrError("OAuth setup requires an interactive terminal");
+    throw new IntegralError("OAuth setup requires an interactive terminal");
   const rl = createInterface({ input, output });
   const ui = {
     show: (message: string) => process.stdout.write(`${message}\n`),
@@ -577,7 +577,7 @@ async function verifySetup(
       `${connection.scheme ?? "Bearer"} ${effective}`;
   const response = await fetch(connection.url, { method: "HEAD", headers });
   if (!response.ok)
-    throw new RrError(
+    throw new IntegralError(
       `connection verification failed: HTTP ${response.status}`,
     );
 }
@@ -610,12 +610,12 @@ async function serverCommand(args: string[]): Promise<number> {
   if (command === "start") {
     const selected = flag(args, "--component");
     if (selected && !COMPONENTS.includes(selected as Component))
-      throw new RrError(`invalid component: ${selected}`);
+      throw new IntegralError(`invalid component: ${selected}`);
     const config = await loadConfig(paths);
     await startComponents(paths, config, selected as Component | undefined);
     return 0;
   }
-  throw new RrError(`unknown server command: ${command}`);
+  throw new IntegralError(`unknown server command: ${command}`);
 }
 
 interface QueueItem {
@@ -625,7 +625,7 @@ interface QueueItem {
 }
 
 export interface QueueDependencies {
-  resolvePaths(): RrPaths;
+  resolvePaths(): IntegralPaths;
   componentEndpoint: typeof componentEndpoint;
   verifiedFetch: typeof verifiedFetch;
   fetch: typeof globalThis.fetch;
@@ -653,16 +653,16 @@ export async function queueCommand(
   let endpoint: string;
   try {
     endpoint = await dependencies.componentEndpoint(paths, "coordinator");
-    await dependencies.verifiedFetch(paths, "coordinator", "/rr/health");
+    await dependencies.verifiedFetch(paths, "coordinator", "/integral/health");
   } catch {
-    throw new RrError(
-      "coordinator is not reachable; start it with rr server start",
+    throw new IntegralError(
+      "coordinator is not reachable; start it with integral server start",
     );
   }
   const command = args[0];
   if (command === "ls") {
     const snapshot = (await fetchJson(
-      new URL("/rr/snapshot", endpoint),
+      new URL("/integral/snapshot", endpoint),
       dependencies.fetch,
     )) as { queue: QueueItem[] };
     if (has(args, "--json"))
@@ -675,9 +675,10 @@ export async function queueCommand(
   if (command === "edit") {
     const id = args[1],
       text = args.slice(2).join(" ").trim();
-    if (!id || !text) throw new RrError("usage: rr queue edit <id> <text>");
+    if (!id || !text)
+      throw new IntegralError("usage: integral queue edit <id> <text>");
     await requestOk(
-      new URL(`/rr/queue/${id}`, endpoint),
+      new URL(`/integral/queue/${id}`, endpoint),
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -690,16 +691,16 @@ export async function queueCommand(
   }
   if (command === "delete") {
     const id = args[1];
-    if (!id) throw new RrError("usage: rr queue delete <id>");
+    if (!id) throw new IntegralError("usage: integral queue delete <id>");
     await requestOk(
-      new URL(`/rr/queue/${id}`, endpoint),
+      new URL(`/integral/queue/${id}`, endpoint),
       { method: "DELETE" },
       dependencies.fetch,
     );
     dependencies.writeOutput(`Deleted ${id}.\n`);
     return 0;
   }
-  throw new RrError(`unknown queue command: ${command}`);
+  throw new IntegralError(`unknown queue command: ${command}`);
 }
 
 export interface TalkTerminal {
@@ -711,7 +712,7 @@ export interface TalkTerminal {
 }
 
 export interface TalkDependencies {
-  resolvePaths(): RrPaths;
+  resolvePaths(): IntegralPaths;
   componentEndpoint: typeof componentEndpoint;
   verifiedFetch: typeof verifiedFetch;
   fetch: typeof globalThis.fetch;
@@ -865,7 +866,7 @@ export async function talkCommand(
   const dependencies = { ...productionTalkDependencies, ...overrides };
   if (helpRequested(args)) {
     dependencies.writeOutput(
-      `Usage: rr talk [<pattern>...]\n\nAttach this terminal to the one durable deployment conversation. Optional patterns search connection, provider, and model names.\n${TALK_HELP}`,
+      `Usage: integral talk [<pattern>...]\n\nAttach this terminal to the one durable deployment conversation. Optional patterns search connection, provider, and model names.\n${TALK_HELP}`,
     );
     return 0;
   }
@@ -873,10 +874,10 @@ export async function talkCommand(
   let endpoint: string;
   try {
     endpoint = await dependencies.componentEndpoint(paths, "coordinator");
-    await dependencies.verifiedFetch(paths, "coordinator", "/rr/health");
+    await dependencies.verifiedFetch(paths, "coordinator", "/integral/health");
   } catch {
-    throw new RrError(
-      "coordinator is not reachable; start it with rr server start",
+    throw new IntegralError(
+      "coordinator is not reachable; start it with integral server start",
     );
   }
   const abort = new AbortController();
@@ -892,11 +893,14 @@ export async function talkCommand(
       dependencies.writeOutput,
       args.length === 0,
     );
-    const response = await dependencies.fetch(new URL("/rr/events", endpoint), {
-      signal: abort.signal,
-    });
+    const response = await dependencies.fetch(
+      new URL("/integral/events", endpoint),
+      {
+        signal: abort.signal,
+      },
+    );
     if (!response.ok || !response.body)
-      throw new RrError("could not attach to coordinator");
+      throw new IntegralError("could not attach to coordinator");
     follow = consumeEvents(
       response.body,
       rl.writeEvent?.bind(rl) ?? dependencies.writeOutput,
@@ -905,7 +909,7 @@ export async function talkCommand(
       (working) => rl.setWorking?.(working),
     ).catch((error) => {
       if (!abort.signal.aborted)
-        dependencies.writeError(`rr: ${messageOf(error)}\n`);
+        dependencies.writeError(`integral: ${messageOf(error)}\n`);
     });
     while (true) {
       let line: string;
@@ -923,7 +927,7 @@ export async function talkCommand(
       }
       if (text === "/status") {
         const status = await fetchJson(
-          new URL("/rr/status", endpoint),
+          new URL("/integral/status", endpoint),
           dependencies.fetch,
         );
         dependencies.writeOutput(`${JSON.stringify(status, null, 2)}\n`);
@@ -940,13 +944,13 @@ export async function talkCommand(
             dependencies.writeOutput,
           );
         } catch (error) {
-          dependencies.writeError(`rr: ${messageOf(error)}\n`);
+          dependencies.writeError(`integral: ${messageOf(error)}\n`);
         }
         continue;
       }
       if (text === "/queue ls") {
         const snap = (await fetchJson(
-          new URL("/rr/snapshot", endpoint),
+          new URL("/integral/snapshot", endpoint),
           dependencies.fetch,
         )) as {
           queue: { id: string; text: string; status: string }[];
@@ -960,7 +964,7 @@ export async function talkCommand(
       const edit = text.match(/^\/queue edit\s+(\S+)\s+(.+)$/);
       if (edit) {
         await requestOk(
-          new URL(`/rr/queue/${edit[1]}`, endpoint),
+          new URL(`/integral/queue/${edit[1]}`, endpoint),
           {
             method: "PATCH",
             headers: { "content-type": "application/json" },
@@ -973,7 +977,7 @@ export async function talkCommand(
       const del = text.match(/^\/queue delete\s+(\S+)$/);
       if (del) {
         await requestOk(
-          new URL(`/rr/queue/${del[1]}`, endpoint),
+          new URL(`/integral/queue/${del[1]}`, endpoint),
           { method: "DELETE" },
           dependencies.fetch,
         );
@@ -984,7 +988,7 @@ export async function talkCommand(
         continue;
       }
       await requestOk(
-        new URL("/rr/messages", endpoint),
+        new URL("/integral/messages", endpoint),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1018,13 +1022,13 @@ async function chooseConversationModel(
   reuseCurrent = false,
 ): Promise<ModelChoice> {
   const menu = (await fetchJson(
-    new URL("/rr/models", endpoint),
+    new URL("/integral/models", endpoint),
     fetcher,
   )) as ModelMenu;
   if (menu.warning) writeOutput(`Warning: ${menu.warning}\n`);
   if (!menu.choices.length)
-    throw new RrError(
-      "no provider and model choices are available; run rr connection add",
+    throw new IntegralError(
+      "no provider and model choices are available; run integral connection add",
     );
   const current = menu.choices.find((choice) =>
     sameModel(menu.current ?? undefined, choice),
@@ -1091,7 +1095,7 @@ async function saveConversationSelection(
   fetcher: typeof globalThis.fetch,
 ): Promise<void> {
   await requestOk(
-    new URL("/rr/selection", endpoint),
+    new URL("/integral/selection", endpoint),
     {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -1124,7 +1128,7 @@ function renderModelChoices(
   });
   lines.push(
     "Enter a number or case-insensitive search terms.",
-    "Search directly with: rr talk <pattern>... or /model <pattern>...",
+    "Search directly with: integral talk <pattern>... or /model <pattern>...",
     "",
   );
   writeOutput(lines.join("\n"));
@@ -1241,7 +1245,7 @@ async function fetchJson(
 ): Promise<unknown> {
   const response = await fetcher(url);
   if (!response.ok)
-    throw new RrError(
+    throw new IntegralError(
       ((await response.json()) as { error?: string }).error ??
         `request failed: ${response.status}`,
     );
@@ -1257,6 +1261,6 @@ async function requestOk(
     const body = (await response.json().catch(() => ({}))) as {
       error?: string;
     };
-    throw new RrError(body.error ?? `request failed: ${response.status}`);
+    throw new IntegralError(body.error ?? `request failed: ${response.status}`);
   }
 }

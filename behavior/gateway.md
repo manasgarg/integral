@@ -8,7 +8,7 @@ access, and the default-deny network boundary.
 
 ## GATEWAY-3F299566 — Verify the expected gateway
 
-Given the rr gateway component is healthy
+Given the integral gateway component is healthy
 	When the CLI requests the gateway health endpoint
 		Then the gateway returns success
 			And identifies the current deployment
@@ -41,7 +41,7 @@ Given an authenticated chat container is active
 	When Pi sends the request through the gateway
 		Then the gateway establishes a verified upstream TLS connection
 			And replaces the managed sentinel with the connection's real credential when authentication requires it
-			And refuses a caller-supplied credential that is not the rr sentinel
+			And refuses a caller-supplied credential that is not the integral sentinel
 			And forwards the upstream response to Pi
 			And does not log the real credential
 
@@ -72,4 +72,4 @@ Given a request matches an active credentialed connection
 Given a chat container is running
 	When software in the container attempts internet access without the gateway
 		Then the connection cannot reach the destination
-			And rr fails container startup when it cannot create the locked network
+			And integral fails container startup when it cannot create the locked network

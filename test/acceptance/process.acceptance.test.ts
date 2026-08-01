@@ -80,15 +80,19 @@ level = "error"
 
   const childEnv = {
     ...process.env,
-    RR_HOME: paths.root,
+    INTEGRAL_HOME: paths.root,
     PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
   };
 
-  const child = spawn(process.execPath, ["bin/rr.js", "server", "start"], {
-    cwd: process.cwd(),
-    env: childEnv,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(
+    process.execPath,
+    ["bin/integral.js", "server", "start"],
+    {
+      cwd: process.cwd(),
+      env: childEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   let stdout = "",
     stderr = "";
   child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
@@ -109,7 +113,7 @@ level = "error"
     () => `${stdout}\n${stderr}`,
   );
   const runQueue = (args: string[]) =>
-    execFileSync(process.execPath, ["bin/rr.js", "queue", ...args], {
+    execFileSync(process.execPath, ["bin/integral.js", "queue", ...args], {
       cwd: process.cwd(),
       env: childEnv,
       encoding: "utf8",
