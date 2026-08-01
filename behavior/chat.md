@@ -21,6 +21,8 @@ Given the terminal is interactive
 	And the rr coordinator is healthy
 	When the user runs `rr talk`
 		Then the terminal shows a stable input prompt
+			And displays asynchronous conversation events above the input prompt instead of after its prefix
+			And redraws any input already being typed after an asynchronous event
 			And trims input before interpreting or submitting it
 			And submits each non-empty input line to the coordinator-owned queue
 			And ignores empty or whitespace-only input

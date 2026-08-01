@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createTalkTerminal,
   main,
   queueCommand,
   selectAuthentication,
@@ -387,6 +388,56 @@ test("[CHAT-DB0EF523] talk refuses to start an ungoverned Pi when no coordinator
   assert.match(result.stderr, /coordinator is not reachable.*rr server start/);
 });
 
+test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve pending input", async () => {
+  const actions: string[] = [];
+  let finishQuestion!: (answer: string) => void;
+  const questionResult = new Promise<string>((resolve) => {
+      finishQuestion = resolve;
+    }),
+    terminal = createTalkTerminal({
+      terminal: {
+        line: "draft",
+        cursor: 2,
+        question: async () => questionResult,
+        close() {
+          actions.push("close");
+        },
+      },
+      output: {
+        isTTY: true,
+        write(text) {
+          actions.push(`write:${text}`);
+        },
+      },
+      controls: {
+        clearLine() {
+          actions.push("clear");
+        },
+        cursorTo() {
+          actions.push("start");
+        },
+        moveCursor(_output, offset) {
+          actions.push(`move:${offset}`);
+        },
+      },
+    }),
+    pending = terminal.question("rr> ");
+
+  terminal.writeEvent!("assistant: hello\n");
+  assert.deepEqual(actions, [
+    "clear",
+    "start",
+    "write:assistant: hello\n",
+    "write:rr> draft",
+    "move:-3",
+  ]);
+
+  finishQuestion("done");
+  assert.equal(await pending, "done");
+  terminal.writeEvent!("assistant: later\n");
+  assert.equal(actions.at(-1), "write:assistant: later\n");
+});
+
 test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
     lines = [
@@ -420,6 +471,9 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
         const line = lines.shift();
         if (line === undefined) throw new Error("EOF");
         return line;
+      },
+      writeEvent(text) {
+        stdout += `[event]${text}`;
       },
       close() {},
     }),
@@ -488,8 +542,8 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
   assert.equal(code, 0);
   assert.ok(prompts.every((prompt) => prompt === "rr> "));
   assert.doesNotMatch(stdout, /Available models/);
-  assert.match(stdout, /user: persisted/);
-  assert.match(stdout, /assistant: response/);
+  assert.match(stdout, /\[event\]user: persisted/);
+  assert.match(stdout, /\[event\]assistant: response/);
   assert.doesNotMatch(stdout, /hidden/);
   assert.match(stdout, /gateway.*healthy/s);
   assert.match(stdout, /queued\tmessage-1\tqueued/);

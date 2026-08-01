@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline/promises";
+import { clearLine, cursorTo, moveCursor } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig, initConfig } from "./config.ts";
 import type { EffectiveConfig } from "./config.ts";
@@ -699,6 +700,7 @@ export async function queueCommand(
 
 export interface TalkTerminal {
   question(prompt: string): Promise<string>;
+  writeEvent?(text: string): void;
   close(): void;
 }
 
@@ -717,11 +719,79 @@ const productionTalkDependencies: TalkDependencies = {
   componentEndpoint,
   verifiedFetch,
   fetch: globalThis.fetch,
-  createTerminal: () =>
-    createInterface({ input, output, terminal: Boolean(input.isTTY) }),
+  createTerminal: createTalkTerminal,
   writeOutput: (text) => process.stdout.write(text),
   writeError: (text) => process.stderr.write(text),
 };
+
+interface TalkReadline {
+  readonly line: string;
+  readonly cursor: number;
+  question(prompt: string): Promise<string>;
+  close(): void;
+}
+
+interface TalkOutput {
+  readonly isTTY?: boolean;
+  write(text: string): unknown;
+}
+
+interface TalkTerminalControls {
+  clearLine(destination: TalkOutput): void;
+  cursorTo(destination: TalkOutput): void;
+  moveCursor(destination: TalkOutput, offset: number): void;
+}
+
+export function createTalkTerminal(overrides?: {
+  terminal: TalkReadline;
+  output: TalkOutput;
+  controls: TalkTerminalControls;
+}): TalkTerminal {
+  const destination = overrides?.output ?? output,
+    terminal =
+      overrides?.terminal ??
+      createInterface({
+        input,
+        output,
+        terminal: Boolean(input.isTTY),
+      }),
+    controls = overrides?.controls ?? {
+      clearLine: (stream: TalkOutput) =>
+        clearLine(stream as NodeJS.WriteStream, 0),
+      cursorTo: (stream: TalkOutput) =>
+        cursorTo(stream as NodeJS.WriteStream, 0),
+      moveCursor: (stream: TalkOutput, offset: number) =>
+        moveCursor(stream as NodeJS.WriteStream, offset, 0),
+    };
+  let activePrompt: string | undefined;
+  return {
+    async question(prompt) {
+      activePrompt = prompt;
+      try {
+        return await terminal.question(prompt);
+      } finally {
+        activePrompt = undefined;
+      }
+    },
+    writeEvent(text) {
+      if (!activePrompt || !destination.isTTY) {
+        destination.write(text);
+        return;
+      }
+      const pendingInput = terminal.line,
+        pendingCursor = terminal.cursor;
+      controls.clearLine(destination);
+      controls.cursorTo(destination);
+      destination.write(text);
+      destination.write(`${activePrompt}${pendingInput}`);
+      if (pendingCursor < pendingInput.length)
+        controls.moveCursor(destination, pendingCursor - pendingInput.length);
+    },
+    close() {
+      terminal.close();
+    },
+  };
+}
 
 export async function talkCommand(
   args: string[],
@@ -761,12 +831,13 @@ export async function talkCommand(
     });
     if (!response.ok || !response.body)
       throw new RrError("could not attach to coordinator");
-    follow = consumeEvents(response.body, dependencies.writeOutput).catch(
-      (error) => {
-        if (!abort.signal.aborted)
-          dependencies.writeError(`rr: ${messageOf(error)}\n`);
-      },
-    );
+    follow = consumeEvents(
+      response.body,
+      rl.writeEvent?.bind(rl) ?? dependencies.writeOutput,
+    ).catch((error) => {
+      if (!abort.signal.aborted)
+        dependencies.writeError(`rr: ${messageOf(error)}\n`);
+    });
     while (true) {
       let line: string;
       try {
