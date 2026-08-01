@@ -62,10 +62,10 @@ export async function main(args: string[]): Promise<number> {
     const [command, ...rest] = args;
     if (!command || command === "--help" || command === "-h" || command === "help") { process.stdout.write(TOP_HELP); return 0; }
     if (command === "version" || command === "--version" || command === "-V") { process.stdout.write(`rr ${RR_VERSION}\nNode.js ${process.versions.node}\nPi ${PI_VERSION}\n`); return 0; }
-    if (command === "config") return configCommand(rest);
-    if (command === "connection") return connectionCommand(rest);
-    if (command === "server") return serverCommand(rest);
-    if (command === "talk") return talkCommand(rest);
+    if (command === "config") return await configCommand(rest);
+    if (command === "connection") return await connectionCommand(rest);
+    if (command === "server") return await serverCommand(rest);
+    if (command === "talk") return await talkCommand(rest);
     throw new RrError(`unknown command: ${command}`);
   } catch (error) { process.stderr.write(`rr: ${messageOf(error)}\n`); return error instanceof RrError ? error.exitCode : 1; }
 }

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { atomicWrite, readText } from "./fs.ts";
+import { atomicWrite, ensureDir, readText } from "./fs.ts";
+import { open } from "node:fs/promises";
 import type { Component } from "./constants.ts";
 import type { RrPaths } from "./paths.ts";
 
@@ -26,8 +27,9 @@ export async function componentIdentity(paths: RrPaths): Promise<string> {
   const file = join(paths.state, "component-identity");
   const existing = (await readText(file))?.trim();
   if (existing) return existing;
-  const created = randomBytes(32).toString("base64url");
-  try { await atomicWrite(file, `${created}\n`); } catch { return (await readText(file))!.trim(); }
+  const created = randomBytes(32).toString("base64url"); await ensureDir(paths.state);
+  try { const handle = await open(file, "wx", 0o600); try { await handle.writeFile(`${created}\n`); await handle.sync(); } finally { await handle.close(); } }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return (await readText(file))!.trim(); throw error; }
   return created;
 }
 export function internalHeaders(component: Component, token: string, deployment: string): Record<string, string> {

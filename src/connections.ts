@@ -54,8 +54,8 @@ function oauthUrl(raw: unknown, key: string): string {
 export function validateConnection(raw: unknown, stem?: string): Connection {
   const value = table(raw);
   for (const key of Object.keys(value)) {
+    if (/^(credential|secret|password|api[_-]?key|access_token|refresh_token|oauth_code)$/i.test(key)) throw new RrError(`${key}: credentials must be stored through rr connection add`);
     if (!knownKeys.has(key)) throw new RrError(`unknown connection option: ${key}`);
-    if (/credential|secret|token|password|api[_-]?key/i.test(key)) throw new RrError(`${key}: credentials must be stored through rr connection add`);
   }
   const name = requiredString(value.name, "name");
   if (!namePattern.test(name)) throw new RrError("name must be filesystem-safe (letters, numbers, dot, underscore, or hyphen)");
@@ -153,6 +153,9 @@ export async function saveConnection(paths: RrPaths, connection: Connection, cre
     const all = await loadConnections(paths);
     if (all.connections.some((c) => c.name === connection.name)) throw new RrError(`connection ${connection.name} already exists`);
     await atomicWrite(declaration, connectionToml(validateConnection(connection)));
+  } else {
+    const current = validateConnection(parse(existed), connection.name);
+    if (current.auth === "none" || current.kind !== connection.kind || current.provider !== connection.provider) throw new RrError(`connection name already used: ${connection.name}`);
   }
   if (connection.auth !== "none") {
     if (!credential) throw new RrError(`authentication credential is required for ${connection.auth}`);

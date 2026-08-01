@@ -15,7 +15,7 @@
     "prepare": "npm run build",
     "behavior:coverage": "node scripts/check-behavior-coverage.ts",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --experimental-transform-types --test --test-concurrency=1 test/*.test.ts"
+    "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.3",

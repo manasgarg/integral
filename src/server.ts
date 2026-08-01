@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type { Component } from "./constants.ts";
 import { COMPONENTS } from "./constants.ts";
 import type { EffectiveConfig } from "./config.ts";
-import { loadConfig } from "./config.ts";
 import { acquireLock, readText } from "./fs.ts";
 import type { RrPaths } from "./paths.ts";
 import { componentStatePath, deploymentId, readComponentState, writeComponentState } from "./state.ts";
@@ -41,9 +40,12 @@ export async function startComponents(paths: RrPaths, config: EffectiveConfig, s
 }
 
 export interface DeploymentStatus { overall: "healthy" | "degraded" | "stopped"; components: Record<Component, { status: string; endpoint?: string; pid?: number; fingerprint?: string; connectionGeneration?: number }> }
-export async function serverStatus(paths: RrPaths): Promise<DeploymentStatus> {
-  const entries = await Promise.all(COMPONENTS.map((component) => readComponentState(paths, component))); const components = Object.fromEntries(COMPONENTS.map((component, i) => [component, entries[i] ? { status: entries[i]!.status, endpoint: entries[i]!.endpoint, pid: entries[i]!.pid, fingerprint: entries[i]!.fingerprint, connectionGeneration: entries[i]!.connectionGeneration } : { status: "stopped" }])) as DeploymentStatus["components"];
+export async function serverStatus(paths: RrPaths, probe: (endpoint: string, component: Component, deployment: string) => Promise<boolean> = probeComponent): Promise<DeploymentStatus> {
+  const recorded = await Promise.all(COMPONENTS.map((component) => readComponentState(paths, component))); const entries = await Promise.all(recorded.map(async (state, i) => {
+    if (!state) return undefined; return await probe(state.endpoint, COMPONENTS[i]!, deploymentId(paths)) ? state : undefined;
+  })); const components = Object.fromEntries(COMPONENTS.map((component, i) => [component, entries[i] ? { status: entries[i]!.status, endpoint: entries[i]!.endpoint, pid: entries[i]!.pid, fingerprint: entries[i]!.fingerprint, connectionGeneration: entries[i]!.connectionGeneration } : { status: "stopped" }])) as DeploymentStatus["components"];
   const running = entries.filter(Boolean); const fingerprints = new Set(running.map((s) => s!.fingerprint)), generations = new Set(running.map((s) => s!.connectionGeneration));
   const overall = running.length === 0 ? "stopped" : running.length === 3 && fingerprints.size === 1 && generations.size === 1 && running.every((s) => s!.status === "ready") ? "healthy" : "degraded";
   return { overall, components };
 }
+async function probeComponent(endpoint: string, component: Component, deployment: string): Promise<boolean> { try { const response = await fetch(new URL("/rr/health", endpoint), { signal: AbortSignal.timeout(500) }); if (!response.ok) return false; const body = await response.json() as { component?: string; deploymentId?: string }; return body.component === component && body.deploymentId === deployment; } catch { return false; } }

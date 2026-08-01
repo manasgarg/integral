@@ -4,20 +4,22 @@ import type { EffectiveConfig } from "./config.ts";
 import { listConnections, type Connection } from "./connections.ts";
 import type { RrPaths } from "./paths.ts";
 import type { Logger } from "./logging.ts";
-import { buildContainerSpec, createLockedNetwork, dockerAvailable, dockerNetworkGateway, freshSessionHome, newSessionIdentity, PiContainer } from "./container.ts";
+import { buildContainerSpec, createLockedNetwork, dockerAvailable, dockerNetworkGateway, ensureContainerImage, freshSessionHome, newSessionIdentity, PiContainer } from "./container.ts";
 import { ensureCa } from "./ca.ts";
 import { componentEndpoint, internalFetch } from "./http-client.ts";
-import { deploymentId } from "./state.ts";
+import { deploymentId, readComponentState } from "./state.ts";
+import { readText } from "./fs.ts";
+import { join } from "node:path";
 import { RrError } from "./errors.ts";
 import type { ConversationEvent, QueuedMessage } from "./queue.ts";
 
 export class Runner {
-  private server: http.Server | undefined; private pi: PiContainer | undefined; private stopped = false; private polling: NodeJS.Timeout | undefined; private busy = false; private idle: NodeJS.Timeout | undefined;
+  private server: http.Server | undefined; private pi: PiContainer | undefined; private stopped = false; private polling: NodeJS.Timeout | undefined; private busy = false; private idle: NodeJS.Timeout | undefined; private dockerGateway = "";
   constructor(private readonly paths: RrPaths, private readonly config: EffectiveConfig, private readonly logger: Logger) {}
   async start(): Promise<http.Server> {
-    const connections = await listConnections(this.paths); selectModel(connections, this.config); if (!dockerAvailable()) throw new RrError("Docker daemon is unavailable");
+    const connections = await listConnections(this.paths); selectModel(connections, this.config); if (!dockerAvailable()) throw new RrError("Docker daemon is unavailable"); ensureContainerImage(this.config);
     const network = `rr-${deploymentId(this.paths)}`; await createLockedNetwork(network);
-    const address = dockerNetworkGateway(network); await internalFetch(this.paths, "runner", "gateway", "/rr/internal/docker-listener", { method: "POST", body: JSON.stringify({ address }) }).catch(() => undefined);
+    this.dockerGateway = dockerNetworkGateway(network); await this.ensureGatewayListener().catch(() => undefined);
     const server = http.createServer((req, res) => { if (req.url === "/rr/health") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ component: "runner", deploymentId: deploymentId(this.paths), status: "ready", session: this.pi?.spec.sessionId ?? null })); } else res.writeHead(404).end(); }); this.server = server;
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(this.config.server.runnerPort, "127.0.0.1", resolve); }); this.schedule(0); return server;
   }
@@ -26,6 +28,9 @@ export class Runner {
     if (this.busy || this.stopped) return this.schedule(); this.busy = true;
     let item: QueuedMessage | undefined;
     try {
+      const [coordinatorState, gatewayState, generationRaw] = await Promise.all([readComponentState(this.paths, "coordinator"), readComponentState(this.paths, "gateway"), readText(join(this.paths.state, "connection-generation"))]); const generation = Number(generationRaw?.trim() || "0");
+      if (!coordinatorState || !gatewayState || coordinatorState.fingerprint !== this.config.fingerprint || gatewayState.fingerprint !== this.config.fingerprint || coordinatorState.connectionGeneration !== generation || gatewayState.connectionGeneration !== generation) throw new RrError("component configuration or connection generations disagree");
+      await this.ensureGatewayListener();
       const gateway = await fetch(new URL("/rr/health", await componentEndpoint(this.paths, "gateway"))); if (!gateway.ok) throw new RrError("gateway unavailable");
       const response = await internalFetch(this.paths, "runner", "coordinator", "/rr/internal/claim", { method: "POST", body: "{}" }); if (!response.ok) throw new RrError(`claim failed: ${response.status}`);
       const body = await response.json() as { message?: QueuedMessage; context: ConversationEvent[] }; item = body.message; if (!item) { this.armIdle(); return; }
@@ -37,6 +42,7 @@ export class Runner {
       const context = item ? { message_id: item.id, ...(this.pi ? { session_id: this.pi.spec.sessionId } : {}) } : {}; this.logger.event("warn", "runner.turn_failed", error instanceof Error ? error.message : String(error), context);
     } finally { this.busy = false; this.schedule(); }
   }
+  private async ensureGatewayListener(): Promise<void> { const response = await internalFetch(this.paths, "runner", "gateway", "/rr/internal/docker-listener", { method: "POST", body: JSON.stringify({ address: this.dockerGateway }) }); if (!response.ok) throw new RrError(`gateway Docker listener unavailable: ${response.status}`); }
   private async ensurePi(context: ConversationEvent[]): Promise<void> {
     if (this.pi) return; const all = await listConnections(this.paths), model = selectModel(all, this.config), mcp = all.filter((c) => c.kind === "mcp"); const identity = newSessionIdentity(), ca = await ensureCa(this.paths), home = await freshSessionHome();
     const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway")); gatewayUrl.hostname = "host.rr.internal";

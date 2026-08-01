@@ -38,6 +38,18 @@ export function dockerRunArgs(spec: ContainerSpec, config: EffectiveConfig, netw
 }
 
 export function dockerAvailable(): boolean { return spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0; }
+export function ensureContainerImage(config: EffectiveConfig): void {
+  const inspect = spawnSync("docker", ["image", "inspect", config.runner.image], { stdio: "ignore" });
+  if (config.runner.pullPolicy === "never") { if (inspect.status !== 0) throw new RrError(`container image is unavailable and pull_policy is never: ${config.runner.image}`); return; }
+  if (config.runner.pullPolicy === "if-not-present" && inspect.status === 0) return;
+  if (config.runner.image === "rr-pi:0.1.0") {
+    const dockerfile = new URL("../../Dockerfile.pi", import.meta.url).pathname;
+    const root = new URL("../../", import.meta.url).pathname;
+    const result = spawnSync("docker", ["build", "--pull", "--build-arg", "PI_VERSION=0.80.3", "--tag", config.runner.image, "--file", dockerfile, root], { encoding: "utf8" });
+    if (result.status !== 0) throw new RrError(`cannot build pinned Pi image: ${result.stderr.trim()}`); return;
+  }
+  const result = spawnSync("docker", ["pull", config.runner.image], { encoding: "utf8" }); if (result.status !== 0) throw new RrError(`cannot pull Pi image ${config.runner.image}: ${result.stderr.trim()}`);
+}
 export async function createLockedNetwork(name: string): Promise<void> {
   const inspect = spawnSync("docker", ["network", "inspect", name], { stdio: "ignore" });
   if (inspect.status === 0) return;

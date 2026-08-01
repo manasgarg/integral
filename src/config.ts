@@ -149,7 +149,8 @@ export async function loadConfig(paths: RrPaths, env: NodeJS.ProcessEnv = proces
   if (env.RR_LOG_LEVEL?.trim()) sources["logging.level"] = "environment";
   if (env.RR_LOG_FORMAT?.trim()) sources["logging.format"] = "environment";
   const shared = { server, runner, conversation, logging, model };
-  return { ...shared, sources, fingerprint: createHash("sha256").update(JSON.stringify(shared)).digest("hex") };
+  const fingerprinted = { ...shared, server: { gatewayPort: port(val("server", "gateway_port"), "server.gateway_port"), coordinatorPort: port(val("server", "coordinator_port"), "server.coordinator_port"), runnerPort: port(val("server", "runner_port"), "server.runner_port") } };
+  return { ...shared, sources, fingerprint: createHash("sha256").update(JSON.stringify(fingerprinted)).digest("hex") };
 }
 
 export const STARTER_CONFIG = `# rr Phase 1 configuration\n\n[server]\ngateway_port = 7300\ncoordinator_port = 7301\nrunner_port = 7302\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[logging]\nlevel = "info"\nformat = "text"\n`;

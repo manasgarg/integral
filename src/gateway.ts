@@ -64,7 +64,8 @@ export class Gateway {
     if (!host || port !== 443) { socket.end("HTTP/1.1 403 Forbidden\r\n\r\npolicy denied CONNECT\n"); return; }
     try {
       // Deny before TLS interception when no HTTPS connection can possibly match this host and port.
-      decideRequest("GET", new URL(`https://${host}:${port}/`), {}, this.candidates);
+      const possible = this.candidates.some(({ connection }) => { if (!connection.url) return false; const url = new URL(connection.url); return url.protocol === "https:" && url.hostname.toLowerCase() === host.toLowerCase() && Number(url.port || 443) === port; });
+      if (!possible) throw new RrError("policy denied the requested destination", 403);
       const cert = await certificateFor(this.paths, host, this.ca!); const key = await readFile(cert.key), certificate = await readFile(cert.cert);
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head.length) socket.unshift(head);
       const tlsServer = tls.createServer({ key, cert: certificate }, (secure) => {

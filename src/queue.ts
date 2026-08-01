@@ -29,7 +29,7 @@ export class DurableQueue {
   async enqueue(text: string): Promise<QueuedMessage> { return this.exclusive(async () => {
     if (!text.trim()) throw new RrError("message must not be empty");
     const item: QueuedMessage = { id: randomUUID(), text, order: this.data.nextOrder++, status: "queued", attempts: 0, createdAt: new Date().toISOString() };
-    this.data.items.push(item); await this.persist(); this.onChange({ type: "queued", message: { ...item } }); return { ...item };
+    this.data.items.push(item); try { await this.persist(); } catch (error) { this.data.items.pop(); this.data.nextOrder--; throw error; } this.onChange({ type: "queued", message: { ...item } }); return { ...item };
   }); }
   async edit(id: string, text: string): Promise<QueuedMessage> { return this.exclusive(async () => {
     if (!text.trim()) throw new RrError("message must not be empty");
@@ -47,14 +47,14 @@ export class DurableQueue {
   async claim(): Promise<QueuedMessage | undefined> { return this.exclusive(async () => {
     if (this.data.items.some((item) => item.status === "in-flight")) return undefined;
     const item = this.data.items.filter((m) => m.status === "queued").sort((a, b) => a.order - b.order)[0];
-    if (!item) return undefined; item.status = "in-flight"; item.attempts++; await this.persist(); this.onChange({ type: "claimed", message: { ...item } }); return { ...item };
+    if (!item) return undefined; item.status = "in-flight"; item.attempts++; try { await this.persist(); } catch (error) { item.status = "queued"; item.attempts--; throw error; } this.onChange({ type: "claimed", message: { ...item } }); return { ...item };
   }); }
   async complete(id: string): Promise<void> { return this.exclusive(async () => {
     const item = this.find(id); if (item.status !== "in-flight") throw new RrError(`message ${id} is not in flight`);
-    this.data.items.splice(this.data.items.indexOf(item), 1); await this.persist(); this.onChange({ type: "completed", messageId: id });
+    const index = this.data.items.indexOf(item); this.data.items.splice(index, 1); try { await this.persist(); } catch (error) { this.data.items.splice(index, 0, item); throw error; } this.onChange({ type: "completed", messageId: id });
   }); }
   async release(id: string, reason?: string): Promise<void> { return this.exclusive(async () => {
-    const item = this.find(id); item.status = "queued"; await this.persist(); this.onChange(reason === undefined ? { type: "released", message: { ...item } } : { type: "released", message: { ...item }, reason });
+    const item = this.find(id), previous = item.status; item.status = "queued"; try { await this.persist(); } catch (error) { item.status = previous; throw error; } this.onChange(reason === undefined ? { type: "released", message: { ...item } } : { type: "released", message: { ...item }, reason });
   }); }
   private find(id: string): QueuedMessage { const item = this.data.items.find((m) => m.id === id); if (!item) throw new RrError(`message ${id} is not queued`); return item; }
 }
