@@ -1,7 +1,7 @@
 # Terminal chat behaviors
 
-These behaviors cover the single-user terminal interface and ephemeral
-conversation lifecycle.
+These behaviors cover interchangeable terminal views over the server-owned
+single-user conversation.
 
 ## CHAT-DB0EF523 — Refuse chat without the server
 
@@ -17,7 +17,7 @@ Given the terminal is interactive
 	And the rr server is healthy
 	When the user runs `rr talk`
 		Then the terminal shows a stable input prompt
-			And treats each non-empty input line as user content
+			And submits each non-empty input line to the server-owned queue
 			And displays assistant text emitted by Pi as assistant output
 			And does not display protocol events or raw JSON
 			And does not display model credentials
@@ -26,7 +26,7 @@ Given the terminal is interactive
 
 Given the user is in `rr talk`
 	When the user enters `/help`
-		Then the terminal describes `/help`, `/status`, and `/exit`
+		Then the terminal describes `/help`, `/status`, `/queue ls`, `/queue edit`, `/queue delete`, and `/exit`
 			And handles the command on the host
 			And does not send the command to Pi
 
@@ -37,22 +37,63 @@ Given the user is in `rr talk`
 		Then the terminal reports whether the gateway is healthy
 			And reports whether the Pi container is healthy
 			And identifies the configured provider and current session
+			And reports the queue depth and number of attached terminals
 			And does not print secrets
 
-## CHAT-A2EAD40A — Leave a chat
+## CHAT-54B8A1C3 — Attach every terminal to the same conversation
 
-Given the user is in an active chat
-	When the user enters `/exit`, sends EOF, or interrupts the client
-		Then rr ends the Pi RPC session
-			And terminates and removes the chat container
-			And revokes the session token
-			And removes the temporary chat home and transcript
-			And returns terminal control to the user
+Given one `rr talk` terminal is attached to the deployment conversation
+	When the user starts another `rr talk` with the same `$RR_HOME`
+		Then the second terminal attaches to the same logical conversation
+			And receives the same ordered conversation record
+			And receives the same queue contents and order
+			And observes the same Pi session and in-flight message
+			And does not start another logical conversation or Pi container
 
-## CHAT-7C6DE818 — Start a fresh later conversation
+## CHAT-D7E2F609 — Broadcast conversation events to every terminal
 
-Given a previous `rr talk` invocation ended
-	When the user runs `rr talk` again
-		Then rr starts a new Pi session with a new identity token
-			And does not include previous messages
-			And does not expose previous worker-created files
+Given two or more terminals are attached to the same conversation
+	When any terminal submits a message
+		Then every attached terminal displays that same persisted user message once
+	When Pi completes a response
+		Then the server persists the complete assistant response
+			And every attached terminal displays that same response once
+	When queue or session state changes
+		Then every attached terminal observes the same resulting state
+
+## CHAT-1C4A8B7E — Detach one terminal without ending the conversation
+
+Given one or more terminals are attached to the conversation
+	When one terminal enters `/exit`, sends EOF, or is interrupted
+		Then rr detaches only that terminal
+			And returns control to that terminal's shell
+			And does not end the logical conversation
+			And does not discard queued messages or persisted conversation events
+			And does not disturb other attached terminals
+
+## CHAT-93E7D20B — Reattach to the durable conversation
+
+Given every terminal has detached
+	And the rr server still owns the conversation
+	When the user runs `rr talk` with the same `$RR_HOME`
+		Then the terminal receives the existing conversation record and queue
+			And continues following new events without a snapshot-to-live gap
+			And does not create a blank logical conversation
+
+## CHAT-B46C81F5 — Restore conversation context in a replacement Pi session
+
+Given the logical conversation has persisted completed turns
+	And no Pi container is active
+	When the server starts a replacement Pi session for a queued message
+		Then rr supplies the persisted conversation context to Pi
+			And the replacement session can continue the same conversation
+			And temporary files from the previous container remain unavailable
+
+## CHAT-4F29A6D8 — Recover the conversation after a server restart
+
+Given conversation events were acknowledged before the server stopped or crashed
+	When the server starts again with the same `$RR_HOME`
+		Then rr restores the events in their committed order
+	When a terminal attaches after that restart
+		Then it receives the restored conversation and current queue
+			And follows subsequent events in the same logical conversation

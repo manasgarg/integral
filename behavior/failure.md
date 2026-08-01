@@ -6,8 +6,10 @@ These behaviors cover failures spanning more than one product area.
 
 Given a chat turn is in progress
 	When the Pi process or container exits unexpectedly
-		Then the terminal reports that the response did not complete
+		Then rr records that the response did not complete
+			And reports the interruption to every attached terminal
 			And does not present partial protocol output as a complete answer
+			And durably returns the interrupted message to the queue
 			And removes the container and temporary session material
 
 ## FAILURE-3780301D — Report loss of the gateway

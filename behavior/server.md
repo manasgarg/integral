@@ -45,6 +45,7 @@ Given the Docker daemon cannot be reached
 Given the foreground server is running
 	When it receives SIGINT or SIGTERM
 		Then it stops accepting gateway connections
+			And durably returns any interrupted in-flight message to the queue
 			And terminates any active chat container
 			And revokes temporary session identity material
 			And removes temporary session identity material
