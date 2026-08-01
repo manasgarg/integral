@@ -2,7 +2,17 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { EventEmitter } from "node:events";
 import type { EffectiveConfig } from "./config.ts";
 import type { RrPaths } from "./paths.ts";
-import { ConversationStore, DurableQueue } from "./queue.ts";
+import {
+  ConversationStore,
+  DurableQueue,
+  ModelSelectionStore,
+} from "./queue.ts";
+import {
+  listModelChoices,
+  sameSelection,
+  type ModelCatalog,
+  type ModelChoice,
+} from "./model-selection.ts";
 import {
   componentIdentity,
   deploymentId,
@@ -28,20 +38,27 @@ export interface ClientEvent {
 export interface CoordinatorDependencies {
   servers: HttpServerRuntime;
   intervals: IntervalRuntime;
+  listModelChoices(
+    paths: RrPaths,
+    config: EffectiveConfig,
+  ): Promise<ModelCatalog>;
 }
 const productionDependencies: CoordinatorDependencies = {
   servers: nodeHttpServerRuntime,
   intervals: nodeIntervalRuntime,
+  listModelChoices,
 };
 export class Coordinator {
   readonly queue: DurableQueue;
   readonly conversation: ConversationStore;
+  readonly modelSelection: ModelSelectionStore;
   private readonly events = new EventEmitter();
   private server: http.Server | undefined;
   private eventSequence = 0;
   private attached = 0;
   private token = "";
   private refreshTimer: unknown;
+  private workChain: Promise<unknown> = Promise.resolve();
   private readonly dependencies: CoordinatorDependencies;
   constructor(
     private readonly paths: RrPaths,
@@ -53,10 +70,12 @@ export class Coordinator {
       this.broadcast(`queue.${event.type}`, event),
     );
     this.conversation = new ConversationStore(paths.conversation);
+    this.modelSelection = new ModelSelectionStore(paths.modelSelection);
   }
   async start(): Promise<http.Server> {
     await this.queue.load();
     await this.conversation.load();
+    await this.modelSelection.load();
     this.token = await componentIdentity(this.paths);
     const server = http.createServer((req, res) => void this.route(req, res));
     this.server = server;
@@ -92,6 +111,7 @@ export class Coordinator {
       deploymentId: deploymentId(this.paths),
       conversation: this.conversation.snapshot(),
       queue: this.queue.snapshot(),
+      modelSelection: this.modelSelection.get() ?? null,
       eventSequence: this.eventSequence,
       attached: this.attached,
     };
@@ -103,6 +123,54 @@ export class Coordinator {
       this.token,
       deploymentId(this.paths),
     );
+  }
+  async modelMenu(): Promise<{
+    choices: ModelChoice[];
+    current: ModelChoice | null;
+    piVersion?: string;
+    warning?: string;
+  }> {
+    const catalog = await this.dependencies.listModelChoices(
+      this.paths,
+      this.config,
+    );
+    return {
+      choices: catalog.choices,
+      current: this.modelSelection.get() ?? null,
+      ...(catalog.piVersion ? { piVersion: catalog.piVersion } : {}),
+      ...(catalog.warning ? { warning: catalog.warning } : {}),
+    };
+  }
+  async selectConversationModel(
+    connection: string,
+    model: string,
+  ): Promise<ModelChoice> {
+    return this.exclusiveWork(async () => {
+      if (this.queue.snapshot().some((item) => item.status === "in-flight"))
+        throw new RrError(
+          "cannot change model selection while a Pi turn is in flight",
+          409,
+        );
+      const catalog = await this.dependencies.listModelChoices(
+          this.paths,
+          this.config,
+        ),
+        choice = catalog.choices.find(
+          (candidate) =>
+            candidate.connection === connection && candidate.model === model,
+        );
+      if (!choice)
+        throw new RrError(
+          "selected model connection or model is no longer available",
+          409,
+        );
+      const previous = this.modelSelection.get();
+      if (!sameSelection(previous, choice)) {
+        await this.modelSelection.set(choice);
+        this.broadcast("conversation.selection", choice);
+      }
+      return choice;
+    });
   }
   private async route(
     req: IncomingMessage,
@@ -137,7 +205,21 @@ export class Coordinator {
         this.stream(req, res);
         return;
       }
+      if (url.pathname === "/rr/models" && req.method === "GET") {
+        json(res, 200, await this.modelMenu());
+        return;
+      }
+      if (url.pathname === "/rr/selection" && req.method === "PUT") {
+        const body = await bodyJson(req),
+          connection = stringValue(body.connection),
+          model = stringValue(body.model);
+        const selection = await this.selectConversationModel(connection, model);
+        json(res, 200, selection);
+        return;
+      }
       if (url.pathname === "/rr/messages" && req.method === "POST") {
+        if (!this.modelSelection.get())
+          throw new RrError("select a model before submitting a message", 409);
         const body = await bodyJson(req),
           text = stringValue(body.text);
         const item = await this.queue.enqueue(text);
@@ -166,9 +248,15 @@ export class Coordinator {
       }
       if (url.pathname === "/rr/internal/claim" && req.method === "POST") {
         if (!this.internal(req)) return unauthorized(res);
-        const item = await this.queue.claim();
+        const result = await this.exclusiveWork(async () => ({
+          item: this.modelSelection.get()
+            ? await this.queue.claim()
+            : undefined,
+          selection: this.modelSelection.get(),
+        }));
         json(res, 200, {
-          message: item,
+          message: result.item,
+          selection: result.selection ?? null,
           context: this.conversation.context(
             this.config.conversation.contextMaxMessages,
             this.config.conversation.contextMaxChars,
@@ -238,7 +326,7 @@ export class Coordinator {
           container: sessionEvent?.text === "started" ? "healthy" : "stopped",
           session:
             sessionEvent?.text === "started" ? sessionEvent.sessionId : null,
-          provider: this.config.model.connection ?? "auto",
+          selection: this.modelSelection.get() ?? null,
           queueDepth: queue.filter((m) => m.status === "queued").length,
           inFlight: queue.find((m) => m.status === "in-flight")?.id ?? null,
           attached: this.attached,
@@ -252,6 +340,11 @@ export class Coordinator {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+  private exclusiveWork<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.workChain.then(work, work);
+    this.workChain = result.catch(() => undefined);
+    return result;
   }
   private stream(req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, {

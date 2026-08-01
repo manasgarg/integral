@@ -13,10 +13,11 @@ combined and separate-process modes.
 ## SERVER-F886D80C — Start all components in one foreground process
 
 Given Docker is available
-	And an active model connection is configured
+	And at least one active model connection exists
 	And no server component is running for this deployment
 	When the user runs `rr server start`
-		Then rr validates the runner's model connection and Docker daemon before starting listeners
+		Then rr validates that an active model connection and the Docker daemon are available before starting listeners
+			And does not select a model connection or model
 			And starts the coordinator, gateway, and runner in that order in one process
 			And each component listens on its own configured port
 			And publishes each component as ready after its listener starts

@@ -1,8 +1,18 @@
 import { createHash, randomBytes } from "node:crypto";
 import http from "node:http";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import type { Connection } from "./connections.ts";
 import { RrError } from "./errors.ts";
+import type { RrPaths } from "./paths.ts";
+import {
+  ensurePiRuntime,
+  loadPiRuntimeModule,
+  type PiRuntimeModule,
+  type PiRuntimeResolution,
+  type PiAuthEvent,
+  type PiAuthPrompt,
+  type PiCredential,
+  type PiCredentialStore,
+} from "./pi-runtime.ts";
 
 export interface OAuthUi {
   show(message: string): void;
@@ -33,43 +43,110 @@ export interface OAuthCallback {
 export type OAuthCallbackFactory = (state: string) => Promise<OAuthCallback>;
 
 export async function runModelOAuth(
+  paths: RrPaths,
   provider: string,
   method: "oauth" | "device-code",
   ui: OAuthUi,
+  runtime: {
+    ensure(paths: RrPaths): Promise<PiRuntimeResolution>;
+    load(resolution: PiRuntimeResolution): Promise<PiRuntimeModule>;
+  } = { ensure: ensurePiRuntime, load: loadPiRuntimeModule },
 ): Promise<string> {
-  const storage = AuthStorage.inMemory();
+  const resolution = await runtime.ensure(paths);
+  if (resolution.warning) ui.show(`Warning: ${resolution.warning}`);
+  const module = await runtime.load(resolution);
   const manualAbort = new AbortController();
+  let credential: unknown;
   try {
-    await storage.login(provider, {
-      onAuth: (info) =>
-        ui.show(
-          `${info.instructions ? `${info.instructions}\n` : ""}${info.url}`,
-        ),
-      onDeviceCode: (info) =>
-        ui.show(`Open ${info.verificationUri} and enter code ${info.userCode}`),
-      onPrompt: async (prompt) =>
-        ui.prompt(
-          `${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `,
-        ),
-      onManualCodeInput: () =>
-        ui.prompt(
-          "Paste the authorization code or full redirect URL: ",
-          manualAbort.signal,
-        ),
-      onProgress: (message) => ui.show(message),
-      onSelect: async (prompt) =>
-        method === "device-code"
-          ? prompt.options.find((o) => o.id.includes("device"))?.id
-          : (prompt.options.find((o) => o.id.includes("browser"))?.id ??
-            prompt.options[0]?.id),
-    });
+    if (module.ModelRuntime) {
+      const models = await module.ModelRuntime.create({
+        credentials: memoryCredentialStore(provider),
+      });
+      credential = await models.login(provider, "oauth", {
+        signal: manualAbort.signal,
+        notify: (event) => showPiAuthEvent(event, ui),
+        prompt: (prompt) =>
+          answerPiAuthPrompt(prompt, method, ui, manualAbort.signal),
+      });
+    } else if (module.AuthStorage) {
+      const storage = module.AuthStorage.inMemory();
+      await storage.login(provider, {
+        onAuth: (info) =>
+          ui.show(
+            `${info.instructions ? `${info.instructions}\n` : ""}${info.url}`,
+          ),
+        onDeviceCode: (info) =>
+          ui.show(
+            `Open ${info.verificationUri} and enter code ${info.userCode}`,
+          ),
+        onPrompt: async (prompt) =>
+          ui.prompt(
+            `${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `,
+          ),
+        onManualCodeInput: () =>
+          ui.prompt(
+            "Paste the authorization code or full redirect URL: ",
+            manualAbort.signal,
+          ),
+        onProgress: (message) => ui.show(message),
+        onSelect: async (prompt) => selectPiAuthOption(prompt.options, method),
+      });
+      credential = storage.get(provider);
+    }
   } finally {
     manualAbort.abort();
   }
-  const credential = storage.get(provider);
-  if (!credential || credential.type !== "oauth")
+  const checked = credential as
+    | { type?: unknown; access?: unknown; refresh?: unknown; expires?: unknown }
+    | undefined;
+  if (
+    !checked ||
+    checked.type !== "oauth" ||
+    typeof checked.access !== "string" ||
+    typeof checked.expires !== "number"
+  )
     throw new RrError(`${provider} OAuth did not return a usable credential`);
-  return JSON.stringify(credential);
+  return JSON.stringify(checked);
+}
+
+function selectPiAuthOption(
+  options: ReadonlyArray<{ id: string }>,
+  method: "oauth" | "device-code",
+): string {
+  return (
+    (
+      (method === "device-code"
+        ? options.find((option) => option.id.includes("device"))
+        : options.find((option) => option.id.includes("browser"))) ?? options[0]
+    )?.id ?? ""
+  );
+}
+
+function showPiAuthEvent(event: PiAuthEvent, ui: OAuthUi): void {
+  if (event.type === "auth_url")
+    ui.show(
+      `${event.instructions ? `${event.instructions}\n` : ""}${event.url}`,
+    );
+  else if (event.type === "device_code")
+    ui.show(`Open ${event.verificationUri} and enter code ${event.userCode}`);
+  else ui.show(event.message);
+}
+
+async function answerPiAuthPrompt(
+  prompt: PiAuthPrompt,
+  method: "oauth" | "device-code",
+  ui: OAuthUi,
+  signal: AbortSignal,
+): Promise<string> {
+  if (prompt.type === "select")
+    return (
+      (await ui.select?.(prompt.message, [...prompt.options])) ??
+      selectPiAuthOption(prompt.options, method)
+    );
+  return ui.prompt(
+    `${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `,
+    prompt.signal ?? signal,
+  );
 }
 
 export async function runGenericOAuth(
@@ -317,6 +394,7 @@ export function oauthAccess(raw: string): string | undefined {
 }
 
 export async function refreshOAuth(
+  paths: RrPaths,
   connection: Connection,
   raw: string,
   request: typeof fetch = fetch,
@@ -329,13 +407,28 @@ export async function refreshOAuth(
   if (parsed.expires > Date.now() + 60_000)
     return { access: parsed.access, serialized: raw };
   if (connection.kind === "model") {
-    const storage = AuthStorage.inMemory({
-      [connection.provider!]: parsed as never,
-    });
-    const access = await storage.getApiKey(connection.provider!, {
-      includeFallback: false,
-    });
-    const current = storage.get(connection.provider!);
+    const runtime = await ensurePiRuntime(paths);
+    const module = await loadPiRuntimeModule(runtime);
+    let access: string | undefined, current: unknown;
+    if (module.ModelRuntime) {
+      const store = memoryCredentialStore(connection.provider!, parsed),
+        models = await module.ModelRuntime.create({ credentials: store }),
+        resolved = await models.getAuth(connection.provider!, {
+          minOAuthValidityMs: 60_000,
+        });
+      access =
+        resolved?.auth.apiKey ??
+        bearerValue(resolved?.auth.headers?.authorization);
+      current = await store.read(connection.provider!);
+    } else if (module.AuthStorage) {
+      const storage = module.AuthStorage.inMemory({
+        [connection.provider!]: parsed,
+      });
+      access = await storage.getApiKey(connection.provider!, {
+        includeFallback: false,
+      });
+      current = storage.get(connection.provider!);
+    }
     if (!access || !current)
       throw new RrError(`OAuth refresh failed for ${connection.name}`);
     return { access, serialized: JSON.stringify(current) };
@@ -361,4 +454,38 @@ export async function refreshOAuth(
   if (!token.refresh_token) token.refresh_token = parsed.refresh;
   const next = stored(token);
   return { access: next.access, serialized: JSON.stringify(next) };
+}
+
+function bearerValue(value: string | undefined): string | undefined {
+  return value?.match(/^Bearer\s+(.+)$/i)?.[1];
+}
+
+function memoryCredentialStore(
+  provider: string,
+  initial?: PiCredential,
+): PiCredentialStore {
+  let credential: PiCredential | undefined = initial
+    ? { ...initial }
+    : undefined;
+  return {
+    async read(requested) {
+      return requested === provider && credential
+        ? { ...credential }
+        : undefined;
+    },
+    async list() {
+      return credential
+        ? [{ providerId: provider, type: credential.type }]
+        : [];
+    },
+    async modify(requested, update) {
+      if (requested !== provider) return undefined;
+      const next = await update(credential ? { ...credential } : undefined);
+      if (next !== undefined) credential = { ...next };
+      return credential ? { ...credential } : undefined;
+    },
+    async delete(requested) {
+      if (requested === provider) credential = undefined;
+    },
+  };
 }

@@ -120,6 +120,7 @@ export class Gateway {
         if (raw && oauthAccess(raw))
           try {
             const refreshed = await this.dependencies.refreshOAuth(
+              this.paths,
               connection,
               raw,
             );

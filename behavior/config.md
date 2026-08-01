@@ -93,7 +93,7 @@ Given `[server]` may define `gateway_port`, `coordinator_port`, and `runner_port
 	When rr resolves those options
 		Then each value must be a decimal port from `1` through `65535`
 			And the three effective ports must be distinct
-			And their built-in defaults are `7300`, `7301`, and `7302`
+			And their built-in defaults are `7310`, `7311`, and `7312`
 			And matching `RR_*_PORT` variables override file values
 
 ## CONFIG-E82C4A19 — Configure the Pi container image
@@ -101,18 +101,17 @@ Given `[server]` may define `gateway_port`, `coordinator_port`, and `runner_port
 Given `[runner]` may define `image` and `pull_policy`
 	When rr resolves those options
 		Then `image` must be a valid OCI image reference
-			And its default is the Pi image pinned as compatible with the rr package version
+			And its default is rr's automatically refreshed Pi image
 			And `pull_policy` accepts only `always`, `if-not-present`, or `never`
 			And its default is `if-not-present`
-	When `pull_policy` is `never`
+	When a custom image uses `pull_policy` `never`
 		Then the runner uses an existing local image
 			And refuses to start when the image is absent
-	When `pull_policy` is `if-not-present`
+	When a custom image uses `pull_policy` `if-not-present`
 		Then the runner reuses an existing local image
-			And otherwise builds the default rr image or pulls a configured custom image
-	When `pull_policy` is `always`
-		Then the runner rebuilds the default rr image with refreshed base layers
-			Or pulls the configured custom image
+			And otherwise pulls the configured image
+	When a custom image uses `pull_policy` `always`
+		Then the runner pulls the configured image before resolving its immutable identity
 
 ## CONFIG-4B97D20E — Configure runner timeouts
 
@@ -292,16 +291,3 @@ Given an `mcp` connection file may define `transport`
 			And rr registers the configured transport and URL with Pi
 			And replaces characters outside letters, numbers, and underscores when forming the Pi tool name
 			And the gateway applies the connection's HTTP boundary and authentication
-
-## CONFIG-A5D19E72 — Select the model connection used by Pi
-
-Given `[model]` may define `connection` and optional `model`
-	When `connection` names an active model connection
-		Then the runner configures Pi to use that connection
-			And passes the optional provider-specific model name when present
-	When `[model].connection` is omitted and exactly one model connection is active
-		Then rr selects that connection automatically
-	When `[model].connection` is omitted and multiple model connections are active
-		Then configuration validation fails with an instruction to select one
-	When the selected connection is absent, disabled, or not a model connection
-		Then the runner refuses to claim queued messages

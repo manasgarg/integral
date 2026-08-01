@@ -15,7 +15,7 @@ non-conflicting component ports.
 
 `RR_HOME` selects the deployment root and defaults to `$HOME/.rr`.
 `RR_GATEWAY_PORT`, `RR_COORDINATOR_PORT`, and `RR_RUNNER_PORT` select distinct
-component ports and default to `7300`, `7301`, and `7302`. `RR_LOG_LEVEL` and
+component ports and default to `7310`, `7311`, and `7312`. `RR_LOG_LEVEL` and
 `RR_LOG_FORMAT` override logging configuration. All rr-specific variables are
 resolved once when a process starts. The Pi container does not inherit them or
 the rest of the host shell environment.

@@ -18,10 +18,37 @@ Given the coordinator, runner, and gateway are healthy
 	When the runner claims the next queued message from the coordinator
 		Then rr creates a fresh temporary session home
 			And starts one non-root Docker container on the locked network
-			And runs the configured Pi image in RPC mode with session persistence and approval prompts disabled
-			And supplies the selected provider, optional model, and only a sentinel API key
+			And runs the immutable Pi image recorded with the conversation selection in RPC mode with session persistence and approval prompts disabled
+			And supplies the conversation's selected model connection and model
+			And supplies only a sentinel API key
 			And restores conversational context from the durable conversation record
 			And sends the claimed message as a Pi `prompt` command
+
+## BOX-E1F472A1 — Refresh one coordinated Pi runtime
+
+Given rr begins Pi-specific OAuth or opens the model chooser
+	When the npm registry reports a newer `latest` Pi version
+		Then rr installs that exact version under deployment runtime state
+			And uses that exact version when the model chooser builds the default Pi image
+			And the chooser discovers providers and models from that image
+			And records the version and immutable image identity when the user selects a model
+	When the npm registry reports the same version as the installed runtime
+		Then rr reuses the installed host runtime
+			And the model chooser reuses the matching image when it is available
+			And does not reinstall Pi
+	When the npm registry cannot be reached
+		And the previously installed Pi runtime and any image required by the operation are valid
+		Then rr reuses the installed runtime
+			And warns that it could not check for a newer Pi version
+	When the npm registry cannot be reached
+		And no valid installed Pi runtime exists
+		Then the Pi-dependent operation exits non-zero
+			And explains that no cached Pi runtime is available
+Given a conversation selection records a Pi version and immutable image identity
+	When the runner provisions or reuses a Pi container
+		Then it uses that immutable image identity
+			And treats a runtime identity change as a model-selection change
+			And never substitutes another locally tagged Pi image
 
 ## BOX-601613D4 — Apply container restrictions
 

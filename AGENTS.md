@@ -62,11 +62,16 @@ increment.
 ## Git workflow
 
 - This project uses Git from the beginning.
-- Commit each coherent, completed increment as work progresses.
+- Commit each coherent, completed increment immediately after its required
+  checks pass. Do this as work progresses rather than waiting until the end of
+  a task or review.
+- Treat commits as review points. Put corrections or requested revisions in
+  follow-up commits instead of keeping a completed increment uncommitted.
 - Before committing, inspect the working tree and include only changes that
   belong to the current increment.
 - Use a concise commit message that states the completed outcome.
-- Do not leave completed work uncommitted unless the user asks for that.
+- Do not batch several independently completed increments into one later
+  commit, and do not leave completed work uncommitted.
 
 ## Behavior specifications
 

@@ -39,5 +39,5 @@ test("[CLI-04301CCA] version reports rr, Node, and Pi versions", async () => {
   assert.equal(result.code, 0);
   assert.match(result.stdout, /^rr 0\.1\.0/m);
   assert.match(result.stdout, /Node\.js 24\./);
-  assert.match(result.stdout, /Pi 0\.80\.3/);
+  assert.match(result.stdout, /Pi runtime: latest \(resolved when needed\)/);
 });

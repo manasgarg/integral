@@ -10,6 +10,7 @@ import {
   dockerRunArgs,
   isManagedContainerVariable,
   newSessionIdentity,
+  parsePiModelList,
   writeMcpExtension,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
@@ -30,7 +31,7 @@ test("[GATEWAY-3F299566] gateway health identifies deployment and publishes the 
   await writeComponentState(paths, {
     component: "gateway",
     deploymentId: deployment,
-    endpoint: "http://127.0.0.1:7300",
+    endpoint: "http://127.0.0.1:7310",
     pid: process.pid,
     status: "degraded",
     fingerprint: "fingerprint",
@@ -206,7 +207,8 @@ test("[ENV-D20B7A48] [ENV-3E85C1F9] [ENV-F19A64B2] [ENV-6C3F91E5] container envi
     identity = newSessionIdentity();
   const spec = buildContainerSpec({
     config,
-    gatewayUrl: "http://host.rr.internal:7300",
+    selectedModel: "claude-sonnet-4-6",
+    gatewayUrl: "http://host.rr.internal:7310",
     caCert: "/host/ca",
     caBundle: "/host/bundle",
     sessionHome: "/tmp/session",
@@ -248,7 +250,8 @@ test("[CONNECTION-0FB2F92A] [CONNECTION-D20F6A85] real credentials are absent fr
     });
   const spec = buildContainerSpec({
     config,
-    gatewayUrl: "http://host.rr.internal:7300",
+    selectedModel: "claude-sonnet-4-6",
+    gatewayUrl: "http://host.rr.internal:7310",
     caCert: "/ca",
     caBundle: "/bundle",
     sessionHome: "/session",
@@ -272,7 +275,8 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-o
     }),
     spec = buildContainerSpec({
       config,
-      gatewayUrl: "http://host.rr.internal:7300",
+      selectedModel: "claude-sonnet-4-6",
+      gatewayUrl: "http://host.rr.internal:7310",
       caCert: "/ca",
       caBundle: "/bundle",
       sessionHome: "/fresh",
@@ -299,7 +303,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-o
   assert.equal(args.includes(process.cwd()), false);
 });
 
-test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the pinned image and prompt-capable Pi mode", async (t) => {
+test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the selected image and prompt-capable Pi mode", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     model = validateConnection({
@@ -311,7 +315,8 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
     identity = newSessionIdentity(),
     spec = buildContainerSpec({
       config,
-      gatewayUrl: "http://host.rr.internal:7300",
+      selectedModel: "claude-sonnet-4-6",
+      gatewayUrl: "http://host.rr.internal:7310",
       caCert: "/ca",
       caBundle: "/bundle",
       sessionHome: "/fresh",
@@ -358,4 +363,14 @@ test("[BOX-BE26C696] runner configuration resolves finite turn and idle deadline
     config = await loadConfig(paths, {});
   assert.equal(config.runner.turnTimeoutSeconds, 1800);
   assert.equal(config.runner.idleTimeoutSeconds, 300);
+});
+
+test("[BOX-E1F472A1] Pi model discovery parses only active provider rows", () => {
+  const output = JSON.stringify([
+    { provider: "openai-codex", model: "gpt-5.6" },
+    { provider: "anthropic", model: "claude-new" },
+  ]);
+  assert.deepEqual(parsePiModelList(output, ["openai-codex"]), [
+    { provider: "openai-codex", model: "gpt-5.6" },
+  ]);
 });

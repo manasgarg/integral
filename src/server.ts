@@ -31,7 +31,7 @@ export interface ComponentRuntime {
 }
 
 export interface StartComponentsDependencies {
-  validateRunnerHost(paths: RrPaths, config: EffectiveConfig): Promise<void>;
+  validateRunnerHost(paths: RrPaths): Promise<void>;
   createRuntime(
     component: Component,
     paths: RrPaths,
@@ -118,7 +118,7 @@ export async function startComponents(
   const started: Started[] = [],
     secrets = await credentialSecretValues(paths);
   if (components.includes("runner"))
-    await dependencies.validateRunnerHost(paths, config);
+    await dependencies.validateRunnerHost(paths);
   const stopAll = async () => {
     for (const item of started.toReversed()) {
       try {

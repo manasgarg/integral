@@ -235,7 +235,7 @@ test("[CONFIG-B93A4E70] [CONFIG-D4A70C31] validate and show offer equivalent mac
   assert.equal(JSON.parse(valid.stdout).valid, true);
   const shown = await capture(["config", "show", "--json"], env);
   const value = JSON.parse(shown.stdout);
-  assert.equal(value.server.gatewayPort, 7300);
+  assert.equal(value.server.gatewayPort, 7310);
   assert.equal(value.sources["server.gateway_port"], "built-in");
 });
 
@@ -271,6 +271,7 @@ test("[CHAT-84D839CE] talk help documents every local command and never contacts
   for (const command of [
     "/help",
     "/status",
+    "/model",
     "/queue ls",
     "/queue edit",
     "/queue delete",
@@ -286,9 +287,10 @@ test("[CHAT-DB0EF523] talk refuses to start an ungoverned Pi when no coordinator
   assert.match(result.stderr, /coordinator is not reachable.*rr server start/);
 });
 
-test("[CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal executes local commands and submits only non-empty conversation text", async (t) => {
+test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal carries the current model onto a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
     lines = [
+      "   ",
       "   ",
       "/help",
       "/status",
@@ -341,13 +343,36 @@ test("[CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal executes
         ...(typeof init?.body === "string" ? { body: init.body } : {}),
       });
       if (url.pathname === "/rr/events") return new Response(events);
+      if (url.pathname === "/rr/models")
+        return Response.json({
+          choices: [
+            {
+              connection: "work",
+              provider: "openai-codex",
+              model: "gpt-5.5",
+              piVersion: "1.2.3",
+              piImage: "sha256:current",
+            },
+          ],
+          current: {
+            connection: "work",
+            provider: "openai-codex",
+            model: "gpt-5.5",
+            piVersion: "1.2.2",
+            piImage: "sha256:old",
+          },
+        });
       if (url.pathname === "/rr/status")
         return Response.json({
           gateway: "healthy",
           runner: "healthy",
           container: "idle",
           session: null,
-          provider: "automatic",
+          selection: {
+            connection: "work",
+            provider: "openai-codex",
+            model: "gpt-5.5",
+          },
           queueDepth: 1,
           inFlight: null,
           attached: 1,
@@ -361,7 +386,8 @@ test("[CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal executes
   });
 
   assert.equal(code, 0);
-  assert.ok(prompts.every((prompt) => prompt === "rr> "));
+  assert.equal(prompts[0], "Model [current]: ");
+  assert.ok(prompts.slice(1).every((prompt) => prompt === "rr> "));
   assert.match(stdout, /user: persisted/);
   assert.match(stdout, /assistant: response/);
   assert.doesNotMatch(stdout, /hidden/);
@@ -374,6 +400,11 @@ test("[CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal executes
       .map((request) => [request.method, request.path, request.body]),
     [
       [
+        "PUT",
+        "/rr/selection",
+        JSON.stringify({ connection: "work", model: "gpt-5.5" }),
+      ],
+      [
         "PATCH",
         "/rr/queue/message-1",
         JSON.stringify({ text: "revised text" }),
@@ -381,5 +412,217 @@ test("[CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal executes
       ["DELETE", "/rr/queue/message-1", undefined],
       ["POST", "/rr/messages", JSON.stringify({ text: "hello Pi" })],
     ],
+  );
+});
+
+test("[CHAT-6E91B4C7] [CHAT-C53A90D2] rr talk patterns and /model use one provider-and-model chooser", async (t) => {
+  const paths = await fixture(t),
+    choices = [
+      {
+        connection: "personal",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        piVersion: "1.2.3",
+        piImage: "sha256:catalog",
+      },
+      {
+        connection: "work",
+        provider: "openai-codex",
+        model: "gpt-5.4-mini",
+        piVersion: "1.2.3",
+        piImage: "sha256:catalog",
+      },
+      {
+        connection: "work",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        piVersion: "1.2.3",
+        piImage: "sha256:catalog",
+      },
+    ];
+  let current: (typeof choices)[number] | null = null,
+    stdout = "";
+  const lines = ["/model anth sonnet", "/exit"],
+    updates: unknown[] = [];
+  const code = await talkCommand(["codex", "5.5"], {
+    resolvePaths: () => paths,
+    componentEndpoint: async () => "http://coordinator.test",
+    verifiedFetch: async () => new Response("ok"),
+    createTerminal: () => ({
+      async question() {
+        const line = lines.shift();
+        if (line === undefined) throw new Error("EOF");
+        return line;
+      },
+      close() {},
+    }),
+    writeOutput(text) {
+      stdout += text;
+    },
+    writeError() {},
+    async fetch(input, init) {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input
+            : input.url,
+      );
+      if (url.pathname === "/rr/models")
+        return Response.json({ choices, current });
+      if (url.pathname === "/rr/selection") {
+        const raw = init?.body;
+        if (typeof raw !== "string") throw new Error("missing request body");
+        const body = JSON.parse(raw) as {
+          connection: string;
+          model: string;
+        };
+        current =
+          choices.find(
+            (choice) =>
+              choice.connection === body.connection &&
+              choice.model === body.model,
+          ) ?? null;
+        updates.push(body);
+        return Response.json(current);
+      }
+      if (url.pathname === "/rr/events") return new Response("");
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(updates, [
+    { connection: "work", model: "gpt-5.5" },
+    { connection: "personal", model: "claude-sonnet-4-6" },
+  ]);
+  assert.match(stdout, /work \(openai-codex\)/);
+  assert.match(stdout, /personal \(anthropic\)/);
+  assert.match(stdout, /Selected work \(openai-codex\) \/ gpt-5\.5/);
+  assert.match(stdout, /Selected personal \(anthropic\) \/ claude-sonnet-4-6/);
+});
+
+test("[CHAT-6E91B4C7] [CHAT-C53A90D2] chooser handles stale defaults, ambiguity, numbers, and unmatched slash patterns", async (t) => {
+  const paths = await fixture(t),
+    choices = [
+      {
+        connection: "personal",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        piVersion: "1.2.3",
+        piImage: "sha256:catalog",
+      },
+      {
+        connection: "work",
+        provider: "openai-codex",
+        model: "gpt-5.4-mini",
+        piVersion: "1.2.3",
+        piImage: "sha256:catalog",
+      },
+      {
+        connection: "work",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        piVersion: "1.2.3",
+        piImage: "sha256:catalog",
+      },
+    ];
+  let current = {
+      connection: "removed",
+      provider: "anthropic",
+      model: "removed-model",
+      piVersion: "1.2.2",
+      piImage: "sha256:removed",
+    },
+    stdout = "";
+  const lines = ["2", "/model missing", "1", "/exit"],
+    updates: { connection: string; model: string }[] = [];
+  await talkCommand(["gpt"], {
+    resolvePaths: () => paths,
+    componentEndpoint: async () => "http://coordinator.test",
+    verifiedFetch: async () => new Response("ok"),
+    createTerminal: () => ({
+      async question() {
+        const line = lines.shift();
+        if (line === undefined) throw new Error("EOF");
+        return line;
+      },
+      close() {},
+    }),
+    writeOutput(text) {
+      stdout += text;
+    },
+    writeError() {},
+    async fetch(input, init) {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input
+            : input.url,
+      );
+      if (url.pathname === "/rr/models")
+        return Response.json({ choices, current });
+      if (url.pathname === "/rr/selection") {
+        const raw = init?.body;
+        if (typeof raw !== "string") throw new Error("missing request body");
+        const body = JSON.parse(raw) as {
+          connection: string;
+          model: string;
+        };
+        const selected = choices.find(
+          (choice) =>
+            choice.connection === body.connection &&
+            choice.model === body.model,
+        );
+        assert.ok(selected);
+        current = selected;
+        updates.push(body);
+        return Response.json(selected);
+      }
+      if (url.pathname === "/rr/events") return new Response("");
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  assert.deepEqual(updates, [
+    { connection: "work", model: "gpt-5.5" },
+    { connection: "personal", model: "claude-sonnet-4-6" },
+  ]);
+  assert.match(stdout, /Previous model removed/);
+  assert.match(stdout, /Multiple models match/);
+  assert.match(stdout, /No provider and model match/);
+  assert.match(stdout, /rr talk <pattern>\.\.\. or \/model <pattern>\.\.\./);
+});
+
+test("[CHAT-6E91B4C7] rr talk refuses attachment when no active provider and model choices remain", async (t) => {
+  const paths = await fixture(t);
+  await assert.rejects(
+    talkCommand([], {
+      resolvePaths: () => paths,
+      componentEndpoint: async () => "http://coordinator.test",
+      verifiedFetch: async () => new Response("ok"),
+      createTerminal: () => ({
+        async question() {
+          throw new Error("chooser must not prompt without choices");
+        },
+        close() {},
+      }),
+      writeOutput() {},
+      writeError() {},
+      async fetch(input) {
+        const url = new URL(
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input
+              : input.url,
+        );
+        if (url.pathname === "/rr/models")
+          return Response.json({ choices: [], current: null });
+        throw new Error(`unexpected request: ${url.pathname}`);
+      },
+    }),
+    /no provider and model choices.*rr connection add/,
   );
 });

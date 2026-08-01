@@ -13,6 +13,9 @@ export interface RrPaths {
   componentState: string;
   locks: string;
   conversation: string;
+  modelSelection: string;
+  piRuntime: string;
+  piRuntimeState: string;
   queue: string;
   ca: string;
 }
@@ -65,6 +68,9 @@ export function pathsFor(root: string): RrPaths {
     componentState: join(state, "components"),
     locks: join(state, "locks"),
     conversation: join(data, "conversation.jsonl"),
+    modelSelection: join(data, "conversation-model.json"),
+    piRuntime: join(data, "pi-runtime"),
+    piRuntimeState: join(state, "pi-runtime.json"),
     queue: join(data, "queue.json"),
     ca: join(data, "ca"),
   };

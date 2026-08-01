@@ -46,6 +46,74 @@ test("[CHAT-D7E2F609] [QUEUE-5B7C2E91] queue changes broadcast one identical per
   assert.deepEqual(seenA, seenB);
 });
 
+test("[CHAT-6E91B4C7] [CHAT-C53A90D2] model choices are validated, persisted, broadcast, and locked during an in-flight turn", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    choices = [
+      {
+        connection: "work",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        piVersion: "1.2.3",
+        piImage: "sha256:new",
+      },
+      {
+        connection: "personal",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        piVersion: "1.2.3",
+        piImage: "sha256:new",
+      },
+    ],
+    coordinator = new Coordinator(paths, config, {
+      async listModelChoices() {
+        return { choices, piVersion: "1.2.3" };
+      },
+    }),
+    events: ClientEvent[] = [],
+    internals = coordinator as any;
+  internals.events.on("event", (event: ClientEvent) => events.push(event));
+  const menu = await coordinator.modelMenu();
+  assert.deepEqual(menu, {
+    choices,
+    current: null,
+    piVersion: "1.2.3",
+  });
+  const selected = choices[0]!;
+  await assert.rejects(
+    coordinator.selectConversationModel("missing", "missing"),
+    /no longer available/,
+  );
+  assert.deepEqual(
+    await coordinator.selectConversationModel(
+      selected.connection,
+      selected.model,
+    ),
+    selected,
+  );
+  assert.deepEqual(internals.snapshot().modelSelection, selected);
+  assert.equal(events.at(-1)?.type, "conversation.selection");
+
+  await coordinator.queue.enqueue("busy");
+  await coordinator.queue.claim();
+  await assert.rejects(
+    coordinator.selectConversationModel(
+      choices[1]!.connection,
+      choices[1]!.model,
+    ),
+    /turn is in flight/,
+  );
+  assert.deepEqual(coordinator.modelSelection.get(), selected);
+
+  const restored = new Coordinator(paths, config, {
+    async listModelChoices() {
+      return { choices, piVersion: "1.2.3" };
+    },
+  });
+  await restored.modelSelection.load();
+  assert.deepEqual(restored.modelSelection.get(), selected);
+});
+
 test("[QUEUE-31A6D84F] [CHAT-D7E2F609] one in-flight claim completes to one persisted assistant event before next work", async (t) => {
   const { coordinator } = await coordinatorFixture(t);
   const first = await coordinator.queue.enqueue("one"),

@@ -2,12 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig, initConfig } from "./config.ts";
 import type { EffectiveConfig } from "./config.ts";
-import {
-  RR_VERSION,
-  PI_VERSION,
-  COMPONENTS,
-  type Component,
-} from "./constants.ts";
+import { RR_VERSION, COMPONENTS, type Component } from "./constants.ts";
 import {
   CATALOG,
   listConnections,
@@ -26,6 +21,13 @@ import { serverStatus, startComponents } from "./server.ts";
 import { componentEndpoint, verifiedFetch } from "./http-client.ts";
 import { oauthAccess, runGenericOAuth, runModelOAuth } from "./oauth.ts";
 import type { RrPaths } from "./paths.ts";
+import {
+  matchModelChoices,
+  sameModel,
+  sameSelection,
+  type ModelChoice,
+  type ModelSelection,
+} from "./model-selection.ts";
 
 const TOP_HELP = `rr — a governed, containerized Pi conversation
 
@@ -66,6 +68,7 @@ Component values: coordinator, runner, gateway
 `;
 const TALK_HELP = `/help                         show this help
 /status                       show shared chat status
+/model [<pattern>...]         show or change the provider and model
 /queue ls                     list queued and in-flight messages
 /queue edit <id> <text>       edit a queued message
 /queue delete <id>            delete a queued message
@@ -151,22 +154,6 @@ function renderEffectiveConfig(
       ],
     ],
   ];
-  if (config.model.connection || config.model.model)
-    sections.push([
-      "model",
-      [
-        ...(config.model.connection
-          ? ([
-              ["connection", config.model.connection, "model.connection"],
-            ] as Array<[string, string, string]>)
-          : []),
-        ...(config.model.model
-          ? ([["model", config.model.model, "model.model"]] as Array<
-              [string, string, string]
-            >)
-          : []),
-      ],
-    ]);
   const lines = ["Effective configuration"];
   for (const [section, values] of sections) {
     lines.push("", `[${section}]`);
@@ -197,7 +184,7 @@ export async function main(args: string[]): Promise<number> {
         return 0;
       }
       process.stdout.write(
-        `rr ${RR_VERSION}\nNode.js ${process.versions.node}\nPi ${PI_VERSION}\n`,
+        `rr ${RR_VERSION}\nNode.js ${process.versions.node}\nPi runtime: latest (resolved when needed)\n`,
       );
       return 0;
     }
@@ -238,26 +225,6 @@ async function configCommand(args: string[]): Promise<number> {
     }
     const loaded = await loadConnections(paths);
     errors.push(...loaded.errors);
-    if (config && loaded.errors.length === 0) {
-      const active = await listConnections(paths);
-      const models = active.filter(
-        (connection) =>
-          connection.kind === "model" && connection.state === "active",
-      );
-      if (!config.model.connection && models.length > 1)
-        errors.push(
-          "multiple model connections are active; select one with [model].connection",
-        );
-      if (
-        config.model.connection &&
-        !models.some(
-          (connection) => connection.name === config.model.connection,
-        )
-      )
-        errors.push(
-          `selected model connection ${config.model.connection} is absent, disabled, or not a model connection`,
-        );
-    }
     const result = {
       valid: errors.length === 0,
       errors,
@@ -281,7 +248,6 @@ async function configCommand(args: string[]): Promise<number> {
       runner: config.runner,
       conversation: config.conversation,
       logging: config.logging,
-      model: config.model,
       connections: loaded.connections.map((c) => c.name),
       sources: config.sources,
     };
@@ -342,7 +308,7 @@ async function connectionCommand(args: string[]): Promise<number> {
     if (setup.auth === "key")
       credential = await readCredential(has(args, "--credential-stdin"));
     else if (setup.auth === "oauth" || setup.auth === "device-code")
-      credential = await authenticateOAuth(setup);
+      credential = await authenticateOAuth(paths, setup);
     if (has(args, "--verify")) await verifySetup(setup, credential);
     const result = await saveConnection(paths, setup, credential);
     process.stdout.write(
@@ -558,7 +524,10 @@ async function readCredential(fromStdin: boolean): Promise<string> {
   if (!value.trim()) throw new RrError("credential must not be empty");
   return value.trim();
 }
-async function authenticateOAuth(connection: Connection): Promise<string> {
+async function authenticateOAuth(
+  paths: RrPaths,
+  connection: Connection,
+): Promise<string> {
   if (!input.isTTY)
     throw new RrError("OAuth setup requires an interactive terminal");
   const rl = createInterface({ input, output });
@@ -570,6 +539,7 @@ async function authenticateOAuth(connection: Connection): Promise<string> {
   try {
     return connection.kind === "model"
       ? await runModelOAuth(
+          paths,
           connection.provider!,
           connection.auth as "oauth" | "device-code",
           ui,
@@ -667,7 +637,7 @@ export async function talkCommand(
   const dependencies = { ...productionTalkDependencies, ...overrides };
   if (helpRequested(args)) {
     dependencies.writeOutput(
-      `Usage: rr talk\n\nAttach this terminal to the one durable deployment conversation.\n${TALK_HELP}`,
+      `Usage: rr talk [<pattern>...]\n\nAttach this terminal to the one durable deployment conversation. Optional patterns search connection, provider, and model names.\n${TALK_HELP}`,
     );
     return 0;
   }
@@ -682,19 +652,27 @@ export async function talkCommand(
     );
   }
   const abort = new AbortController();
-  const response = await dependencies.fetch(new URL("/rr/events", endpoint), {
-    signal: abort.signal,
-  });
-  if (!response.ok || !response.body)
-    throw new RrError("could not attach to coordinator");
-  const follow = consumeEvents(response.body, dependencies.writeOutput).catch(
-    (error) => {
-      if (!abort.signal.aborted)
-        dependencies.writeError(`rr: ${messageOf(error)}\n`);
-    },
-  );
   const rl = dependencies.createTerminal();
+  let follow: Promise<void> | undefined;
   try {
+    await chooseConversationModel(
+      args,
+      rl,
+      endpoint,
+      dependencies.fetch,
+      dependencies.writeOutput,
+    );
+    const response = await dependencies.fetch(new URL("/rr/events", endpoint), {
+      signal: abort.signal,
+    });
+    if (!response.ok || !response.body)
+      throw new RrError("could not attach to coordinator");
+    follow = consumeEvents(response.body, dependencies.writeOutput).catch(
+      (error) => {
+        if (!abort.signal.aborted)
+          dependencies.writeError(`rr: ${messageOf(error)}\n`);
+      },
+    );
     while (true) {
       let line: string;
       try {
@@ -715,6 +693,21 @@ export async function talkCommand(
           dependencies.fetch,
         );
         dependencies.writeOutput(`${JSON.stringify(status, null, 2)}\n`);
+        continue;
+      }
+      const model = text.match(/^\/model(?:\s+(.*))?$/);
+      if (model) {
+        try {
+          await chooseConversationModel(
+            model[1]?.trim().split(/\s+/).filter(Boolean) ?? [],
+            rl,
+            endpoint,
+            dependencies.fetch,
+            dependencies.writeOutput,
+          );
+        } catch (error) {
+          dependencies.writeError(`rr: ${messageOf(error)}\n`);
+        }
         continue;
       }
       if (text === "/queue ls") {
@@ -774,6 +767,128 @@ export async function talkCommand(
   }
 }
 
+interface ModelMenu {
+  choices: ModelChoice[];
+  current: ModelSelection | null;
+  piVersion?: string;
+  warning?: string;
+}
+
+async function chooseConversationModel(
+  initialTerms: readonly string[],
+  terminal: TalkTerminal,
+  endpoint: string,
+  fetcher: typeof globalThis.fetch,
+  writeOutput: (text: string) => void,
+): Promise<ModelChoice> {
+  const menu = (await fetchJson(
+    new URL("/rr/models", endpoint),
+    fetcher,
+  )) as ModelMenu;
+  if (menu.warning) writeOutput(`Warning: ${menu.warning}\n`);
+  if (!menu.choices.length)
+    throw new RrError(
+      "no provider and model choices are available; run rr connection add",
+    );
+  const current = menu.choices.find((choice) =>
+    sameModel(menu.current ?? undefined, choice),
+  );
+  if (menu.current && !current)
+    writeOutput(
+      `Previous model ${menu.current.connection} (${menu.current.provider}) / ${menu.current.model} is no longer available.\n`,
+    );
+  let displayed = menu.choices,
+    pendingTerms = [...initialTerms];
+  while (true) {
+    renderModelChoices(displayed, current, menu.piVersion, writeOutput);
+    const raw = pendingTerms.length
+      ? pendingTerms.join(" ")
+      : (
+          await terminal.question(current ? "Model [current]: " : "Model: ")
+        ).trim();
+    pendingTerms = [];
+    if (!raw && current) {
+      if (!sameSelection(menu.current ?? undefined, current))
+        await saveConversationSelection(current, endpoint, fetcher);
+      return current;
+    }
+    if (!raw) {
+      writeOutput("Select a model by number or search terms.\n");
+      displayed = menu.choices;
+      continue;
+    }
+    const number = /^\d+$/.test(raw) ? Number(raw) : undefined;
+    let matches: ModelChoice[];
+    if (number !== undefined) {
+      const choice = displayed[number - 1];
+      matches = choice ? [choice] : [];
+    } else matches = matchModelChoices(displayed, raw.split(/\s+/));
+    if (matches.length === 1) {
+      const selected = matches[0]!;
+      if (!sameSelection(menu.current ?? undefined, selected))
+        await saveConversationSelection(selected, endpoint, fetcher);
+      writeOutput(
+        `Selected ${selected.connection} (${selected.provider}) / ${selected.model}\n`,
+      );
+      return selected;
+    }
+    if (matches.length > 1) {
+      writeOutput(
+        "Multiple models match; narrow the search or choose a number.\n",
+      );
+      displayed = matches;
+    } else {
+      writeOutput("No provider and model match; showing all choices.\n");
+      displayed = menu.choices;
+    }
+  }
+}
+
+async function saveConversationSelection(
+  selected: ModelChoice,
+  endpoint: string,
+  fetcher: typeof globalThis.fetch,
+): Promise<void> {
+  await requestOk(
+    new URL("/rr/selection", endpoint),
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        connection: selected.connection,
+        model: selected.model,
+      }),
+    },
+    fetcher,
+  );
+}
+
+function renderModelChoices(
+  choices: readonly ModelChoice[],
+  current: ModelSelection | undefined,
+  piVersion: string | undefined,
+  writeOutput: (text: string) => void,
+): void {
+  const lines = [`Available models${piVersion ? ` (Pi ${piVersion})` : ""}:`];
+  let prior = "";
+  choices.forEach((choice, index) => {
+    const group = `${choice.connection}\u0000${choice.provider}`;
+    if (group !== prior) {
+      lines.push(`${choice.connection} (${choice.provider})`);
+      prior = group;
+    }
+    lines.push(
+      `  ${index + 1}. ${choice.model}${sameSelection(current, choice) ? " [current]" : ""}`,
+    );
+  });
+  lines.push(
+    "Enter a number or case-insensitive search terms.",
+    "Search directly with: rr talk <pattern>... or /model <pattern>...",
+    "",
+  );
+  writeOutput(lines.join("\n"));
+}
+
 async function consumeEvents(
   stream: ReadableStream<Uint8Array>,
   writeOutput: (text: string) => void = (text) => process.stdout.write(text),
@@ -818,6 +933,11 @@ async function consumeEvents(
       else if (event === "conversation.session") {
         const item = value as { sessionId?: string; text?: string };
         writeOutput(`session: ${item.text} ${item.sessionId}\n`);
+      } else if (event === "conversation.selection") {
+        const item = value as unknown as ModelSelection;
+        writeOutput(
+          `model: ${item.connection} (${item.provider}) / ${item.model}\n`,
+        );
       }
     }
   }

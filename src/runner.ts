@@ -21,6 +21,7 @@ import { readText } from "./fs.ts";
 import { join } from "node:path";
 import { RrError } from "./errors.ts";
 import type { ConversationEvent, QueuedMessage } from "./queue.ts";
+import { sameSelection, type ModelSelection } from "./model-selection.ts";
 
 export interface RunnerClock {
   setTimeout(callback: () => void, milliseconds: number): unknown;
@@ -76,6 +77,7 @@ export class Runner {
   private idle: unknown;
   private dockerGateway = "";
   private currentMessageId: string | undefined;
+  private piSelection: ModelSelection | undefined;
   private readonly dependencies: RunnerDependencies;
   constructor(
     private readonly paths: RrPaths,
@@ -86,7 +88,6 @@ export class Runner {
     this.dependencies = { ...productionDependencies, ...overrides };
   }
   async start(): Promise<http.Server> {
-    await this.dependencies.containers.ensureImage(this.config);
     const network = `rr-${deploymentId(this.paths)}`;
     await this.dependencies.containers.ensureNetwork(network);
     this.dockerGateway =
@@ -174,15 +175,23 @@ export class Runner {
       const body = (await response.json()) as {
         message?: QueuedMessage;
         context: ConversationEvent[];
+        selection?: ModelSelection | null;
       };
+      const selection = body.selection ?? undefined;
+      if (this.pi && !sameSelection(this.piSelection, selection))
+        await this.destroyPi();
       item = body.message;
       if (!item) {
         this.armIdle();
         return;
       }
       this.currentMessageId = item.id;
+      if (!selection)
+        throw new RrError(
+          "conversation has no selected model connection and model",
+        );
       this.dependencies.clock.clearTimeout(this.idle);
-      await this.ensurePi(body.context);
+      await this.ensurePi(body.context, selection);
       const answer = await this.pi!.prompt(item.text);
       const completed = await this.dependencies.internalFetch(
         this.paths,
@@ -252,10 +261,21 @@ export class Runner {
         `gateway Docker listener unavailable: ${response.status}`,
       );
   }
-  private async ensurePi(context: ConversationEvent[]): Promise<void> {
+  private async ensurePi(
+    context: ConversationEvent[],
+    selection: ModelSelection,
+  ): Promise<void> {
     if (this.pi) return;
+    const resolvedImage = await this.dependencies.containers.ensureImage(
+      this.config,
+      selection.piVersion,
+    );
+    if (resolvedImage !== selection.piImage)
+      throw new RrError(
+        `selected Pi image ${selection.piImage} is unavailable; run /model to refresh the runtime selection`,
+      );
     const all = await listConnections(this.paths),
-      model = selectModel(all, this.config),
+      model = selectModel(all, selection),
       mcp = all.filter((c) => c.kind === "mcp");
     const identity = this.dependencies.newSessionIdentity(),
       ca = await this.dependencies.ensureCa(this.paths),
@@ -272,6 +292,8 @@ export class Runner {
       sessionHome: home,
       ...identity,
       model,
+      selectedModel: selection.model,
+      image: selection.piImage,
       mcp,
     });
     if (context.length)
@@ -301,6 +323,7 @@ export class Runner {
     try {
       await pi.start();
       this.pi = pi;
+      this.piSelection = { ...selection };
       await this.dependencies.internalFetch(
         this.paths,
         "runner",
@@ -340,6 +363,7 @@ export class Runner {
     this.idle = undefined;
     const pi = this.pi;
     this.pi = undefined;
+    this.piSelection = undefined;
     if (pi) {
       await this.revoke(pi.spec.sessionToken);
       await pi.stop();
@@ -384,36 +408,41 @@ export class Runner {
   }
 }
 
-export async function validateRunnerHost(
-  paths: RrPaths,
-  config: EffectiveConfig,
-): Promise<void> {
+export async function validateRunnerHost(paths: RrPaths): Promise<void> {
   const connections = await listConnections(paths);
-  selectModel(connections, config);
+  requireActiveModelConnection(connections);
   if (!dockerAvailable()) throw new RrError("Docker daemon is unavailable");
+}
+
+export function requireActiveModelConnection(connections: Connection[]): void {
+  if (
+    !connections.some(
+      (connection) =>
+        connection.kind === "model" &&
+        "state" in connection &&
+        connection.state === "active",
+    )
+  )
+    throw new RrError("no active model connection; run rr connection add");
 }
 
 export function selectModel(
   connections: Connection[],
-  config: EffectiveConfig,
+  selection: ModelSelection,
 ): Connection {
   const active = connections.filter(
     (c) => c.kind === "model" && "state" in c && c.state === "active",
   );
-  if (config.model.connection) {
-    const selected = active.find((c) => c.name === config.model.connection);
-    if (!selected)
-      throw new RrError(
-        `selected model connection ${config.model.connection} is absent, disabled, or not a model connection`,
-      );
-    return selected;
-  }
-  if (active.length === 1) return active[0]!;
-  if (active.length === 0)
-    throw new RrError("no active model connection; run rr connection add");
-  throw new RrError(
-    "multiple model connections are active; select one with [model].connection",
+  const selected = active.find(
+    (connection) =>
+      connection.name === selection.connection &&
+      connection.provider === selection.provider,
   );
+  if (!selected)
+    throw new RrError(
+      `selected model connection ${selection.connection} is absent, disabled, or no longer matches provider ${selection.provider}`,
+    );
+  return selected;
 }
 export function renderContext(events: ConversationEvent[]): string {
   return `Continue this durable conversation. Prior messages:\n${events

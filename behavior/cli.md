@@ -17,7 +17,7 @@ Given rr is installed
 	When the user runs `rr version`
 		Then the command prints the rr version
 			And prints the Node.js version
-			And prints the supported Pi package version
+			And reports that Pi is resolved to the latest runtime version when needed
 			And exits successfully
 	When the user runs `rr --version` or `rr -V`
 		Then the command prints the same implementation versions

@@ -72,9 +72,9 @@ Given `RR_GATEWAY_PORT`, `RR_COORDINATOR_PORT`, and `RR_RUNNER_PORT` contain dis
 Given all three component port variables are unset or empty
 	And the main config does not define component ports
 	When the user runs `rr server start`
-		Then the gateway uses port `7300`
-			And the coordinator uses port `7301`
-			And the runner uses port `7302`
+		Then the gateway uses port `7310`
+			And the coordinator uses port `7311`
+			And the runner uses port `7312`
 			And rr records all bound component endpoints under the resolved `RR_HOME`
 
 ## ENV-17B6E9C2 — Reject invalid component ports

@@ -3,6 +3,7 @@ import { appendFile, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
 import { RrError } from "./errors.ts";
+import type { ModelSelection } from "./model-selection.ts";
 
 export type QueueStatus = "queued" | "in-flight";
 export interface QueuedMessage {
@@ -252,5 +253,46 @@ export class ConversationStore {
       selected.unshift({ ...event });
     }
     return selected;
+  }
+}
+
+export class ModelSelectionStore {
+  private selection: ModelSelection | undefined;
+  constructor(private readonly file: string) {}
+  async load(): Promise<void> {
+    const raw = await readText(this.file);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Partial<ModelSelection>;
+    if (
+      typeof parsed.connection !== "string" ||
+      typeof parsed.provider !== "string" ||
+      typeof parsed.model !== "string" ||
+      typeof parsed.piVersion !== "string" ||
+      typeof parsed.piImage !== "string" ||
+      !parsed.connection ||
+      !parsed.provider ||
+      !parsed.model ||
+      !parsed.piVersion ||
+      !parsed.piImage
+    ) {
+      // Selections written before runtime identities were introduced are safely
+      // retired and selected again through the current runtime catalog.
+      this.selection = undefined;
+      return;
+    }
+    this.selection = {
+      connection: parsed.connection,
+      provider: parsed.provider,
+      model: parsed.model,
+      piVersion: parsed.piVersion,
+      piImage: parsed.piImage,
+    };
+  }
+  get(): ModelSelection | undefined {
+    return this.selection ? { ...this.selection } : undefined;
+  }
+  async set(selection: ModelSelection): Promise<void> {
+    await atomicWrite(this.file, `${JSON.stringify(selection)}\n`);
+    this.selection = { ...selection };
   }
 }

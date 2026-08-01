@@ -13,7 +13,7 @@ import type { EffectiveConfig } from "./config.ts";
 import type { Connection } from "./connections.ts";
 import { RrError } from "./errors.ts";
 import { atomicWrite, ensureDir } from "./fs.ts";
-import { DEFAULT_PI_IMAGE, PI_VERSION } from "./constants.ts";
+import { DEFAULT_PI_IMAGE, RR_VERSION } from "./constants.ts";
 
 export interface ContainerSpec {
   image: string;
@@ -34,7 +34,10 @@ export interface PiRuntime {
 }
 
 export interface ContainerBackend {
-  ensureImage(config: EffectiveConfig): void | Promise<void>;
+  ensureImage(
+    config: EffectiveConfig,
+    piVersion: string,
+  ): string | Promise<string>;
   ensureNetwork(name: string): Promise<void>;
   networkGateway(name: string): string | Promise<string>;
   createPi(
@@ -74,6 +77,8 @@ export function buildContainerSpec(options: {
   sessionId: string;
   sessionToken: string;
   model: Connection;
+  selectedModel: string;
+  image?: string;
   mcp: Connection[];
 }): ContainerSpec {
   const proxy = new URL(options.gatewayUrl);
@@ -114,10 +119,9 @@ export function buildContainerSpec(options: {
     "--api-key",
     "rr-managed-credential",
   ];
-  if (options.config.model.model)
-    args.push("--model", options.config.model.model);
+  args.push("--model", options.selectedModel);
   return {
-    image: options.config.runner.image,
+    image: options.image ?? options.config.runner.image,
     args,
     environment,
     mounts: [
@@ -188,21 +192,39 @@ export async function writeMcpExtension(
 export function dockerAvailable(): boolean {
   return spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 }
-export function ensureContainerImage(config: EffectiveConfig): void {
-  const inspect = spawnSync(
+function inspectImage(image: string): string | undefined {
+  const result = spawnSync(
     "docker",
-    ["image", "inspect", config.runner.image],
-    { stdio: "ignore" },
+    ["image", "inspect", "--format", "{{.Id}}", image],
+    { encoding: "utf8" },
   );
+  return result.status === 0 && result.stdout.trim()
+    ? result.stdout.trim()
+    : undefined;
+}
+
+export function managedPiImage(version: string): string {
+  return `rr-pi:${RR_VERSION}-pi-${version.replace(/[^0-9A-Za-z_.-]/g, "-")}`;
+}
+
+export function ensureContainerImage(
+  config: EffectiveConfig,
+  piVersion: string,
+): string {
+  const requested =
+    config.runner.image === DEFAULT_PI_IMAGE
+      ? managedPiImage(piVersion)
+      : config.runner.image;
+  const existing = inspectImage(requested);
   if (config.runner.pullPolicy === "never") {
-    if (inspect.status !== 0)
+    if (!existing)
       throw new RrError(
-        `container image is unavailable and pull_policy is never: ${config.runner.image}`,
+        `container image is unavailable and pull_policy is never: ${requested}`,
       );
-    return;
+    return existing;
   }
-  if (config.runner.pullPolicy === "if-not-present" && inspect.status === 0)
-    return;
+  if (config.runner.pullPolicy === "if-not-present" && existing)
+    return existing;
   if (config.runner.image === DEFAULT_PI_IMAGE) {
     const dockerfile = fileURLToPath(
       new URL("../../Dockerfile.pi", import.meta.url),
@@ -214,9 +236,9 @@ export function ensureContainerImage(config: EffectiveConfig): void {
         "build",
         "--pull",
         "--build-arg",
-        `PI_VERSION=${PI_VERSION}`,
+        `PI_VERSION=${piVersion}`,
         "--tag",
-        config.runner.image,
+        requested,
         "--file",
         dockerfile,
         root,
@@ -225,17 +247,89 @@ export function ensureContainerImage(config: EffectiveConfig): void {
     );
     if (result.status !== 0)
       throw new RrError(
-        `cannot build pinned Pi image: ${result.stderr.trim()}`,
+        `cannot build Pi ${piVersion} image: ${result.stderr.trim()}`,
       );
-    return;
+    const identity = inspectImage(requested);
+    if (!identity)
+      throw new RrError(`cannot resolve Pi ${piVersion} image identity`);
+    return identity;
   }
-  const result = spawnSync("docker", ["pull", config.runner.image], {
+  const result = spawnSync("docker", ["pull", requested], {
     encoding: "utf8",
   });
   if (result.status !== 0)
     throw new RrError(
-      `cannot pull Pi image ${config.runner.image}: ${result.stderr.trim()}`,
+      `cannot pull Pi image ${requested}: ${result.stderr.trim()}`,
     );
+  const identity = inspectImage(requested);
+  if (!identity)
+    throw new RrError(`cannot resolve Pi image identity: ${requested}`);
+  return identity;
+}
+
+export async function discoverPiModels(
+  image: string,
+  providers: readonly string[],
+): Promise<Array<{ provider: string; model: string }>> {
+  const result = spawnSync(
+    "docker",
+    ["run", "--rm", "--network", "none", "--read-only", image, "rr-pi-models"],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0)
+    throw new RrError(
+      `cannot discover models from Pi image: ${result.stderr.trim() || "container failed; the image must provide rr-pi-models"}`,
+    );
+  return parsePiModelList(result.stdout, providers);
+}
+
+export function parsePiModelList(
+  output: string,
+  providers: readonly string[],
+): Array<{ provider: string; model: string }> {
+  const allowed = new Set(providers);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new RrError("Pi image returned an invalid model catalog");
+  }
+  if (!Array.isArray(parsed))
+    throw new RrError("Pi image returned an invalid model catalog");
+  return (parsed as unknown[]).filter(
+    (entry: unknown): entry is { provider: string; model: string } =>
+      typeof entry === "object" &&
+      entry !== null &&
+      "provider" in entry &&
+      typeof entry.provider === "string" &&
+      allowed.has(entry.provider) &&
+      "model" in entry &&
+      typeof entry.model === "string" &&
+      Boolean(entry.model),
+  );
+}
+
+export function discoverPiVersion(image: string): string {
+  const result = spawnSync(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      image,
+      "pi",
+      "--version",
+    ],
+    { encoding: "utf8" },
+  );
+  const version = result.stdout.trim();
+  if (result.status !== 0 || !version)
+    throw new RrError(
+      `cannot identify Pi image version: ${result.stderr.trim() || "container failed"}`,
+    );
+  return version;
 }
 export async function createLockedNetwork(name: string): Promise<void> {
   const inspect = spawnSync("docker", ["network", "inspect", name], {

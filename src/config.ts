@@ -26,7 +26,6 @@ export interface EffectiveConfig {
   };
   conversation: { contextMaxMessages: number; contextMaxChars: number };
   logging: { level: LogLevel; format: LogFormat };
-  model: { connection?: string; model?: string };
   sources: Record<string, ValueSource>;
   fingerprint: string;
 }
@@ -59,7 +58,6 @@ const allowed: Record<string, readonly string[]> = {
   ],
   conversation: ["context_max_messages", "context_max_chars"],
   logging: ["level", "format"],
-  model: ["connection", "model"],
 };
 
 function object(value: unknown): Record<string, unknown> {
@@ -252,25 +250,17 @@ export async function loadConfig(
       false,
     ),
   };
-  const modelRaw = object(root.model);
-  const model: EffectiveConfig["model"] = {};
-  if (modelRaw.connection !== undefined)
-    model.connection = stringValue(modelRaw.connection, "model.connection");
-  if (modelRaw.model !== undefined)
-    model.model = stringValue(modelRaw.model, "model.model");
   const sources: Record<string, ValueSource> = {};
   for (const key of Object.keys(defaults)) {
     const [section, option] = key.split(".") as [string, string];
     sources[key] = source(section, option);
   }
-  if (model.connection) sources["model.connection"] = "file";
-  if (model.model) sources["model.model"] = "file";
   for (const [component, envValue] of Object.entries(envPorts))
     if (envValue !== undefined)
       sources[`server.${component}_port`] = "environment";
   if (env.RR_LOG_LEVEL?.trim()) sources["logging.level"] = "environment";
   if (env.RR_LOG_FORMAT?.trim()) sources["logging.format"] = "environment";
-  const shared = { server, runner, conversation, logging, model };
+  const shared = { server, runner, conversation, logging };
   const fingerprinted = {
     ...shared,
     server: {
@@ -291,7 +281,7 @@ export async function loadConfig(
   };
 }
 
-export const STARTER_CONFIG = `# rr Phase 1 configuration\n\n[server]\ngateway_port = 7300\ncoordinator_port = 7301\nrunner_port = 7302\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[logging]\nlevel = "info"\nformat = "text"\n`;
+export const STARTER_CONFIG = `# rr Phase 1 configuration\n\n[server]\ngateway_port = 7310\ncoordinator_port = 7311\nrunner_port = 7312\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[logging]\nlevel = "info"\nformat = "text"\n`;
 
 export async function initConfig(paths: RrPaths): Promise<void> {
   if ((await readText(paths.mainConfig)) !== undefined)

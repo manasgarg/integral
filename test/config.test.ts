@@ -9,9 +9,9 @@ test("[CONFIG-8A31F6C2] [CONFIG-2D7C49E1] [CONFIG-A16F73C8] [CONFIG-E82C4A19] [C
   const paths = await fixture(t);
   const config = await loadConfig(paths, {});
   assert.deepEqual(config.server, {
-    gatewayPort: 7300,
-    coordinatorPort: 7301,
-    runnerPort: 7302,
+    gatewayPort: 7310,
+    coordinatorPort: 7311,
+    runnerPort: 7312,
   });
   assert.deepEqual(config.runner, {
     image: DEFAULT_PI_IMAGE,
@@ -70,7 +70,7 @@ test("[ENV-17B6E9C2] [SERVER-9D42E6A3] invalid or conflicting ports are rejected
       /RR_RUNNER_PORT/.test(error.message),
   );
   await assert.rejects(
-    loadConfig(paths, { RR_GATEWAY_PORT: "7301" }),
+    loadConfig(paths, { RR_GATEWAY_PORT: "7311" }),
     /must be distinct/,
   );
   await assert.rejects(
@@ -84,14 +84,15 @@ test("[CONFIG-6E28D1F9] [CONFIG-0C6A91E4] [CONFIG-E6B40A73] [ENV-7B2D40AC] stric
   await mkdir(paths.config, { recursive: true });
   await writeFile(
     paths.mainConfig,
-    "[runner]\nmemry_mb=2\napi_key='secret'\ndirect_egress=true\n",
+    "[runner]\nmemry_mb=2\napi_key='secret'\ndirect_egress=true\n[model]\nconnection='anthropic'\nmodel='claude'\n",
   );
   await assert.rejects(
     loadConfig(paths, {}),
     (error: Error) =>
       /memry_mb/.test(error.message) &&
       /credentials must be stored/.test(error.message) &&
-      /direct_egress/.test(error.message),
+      /direct_egress/.test(error.message) &&
+      /unknown section \[model\]/.test(error.message),
   );
 });
 
@@ -119,30 +120,4 @@ test("[CONFIG-35D8A2F1] effective shared configuration has a stable fingerprint"
   assert.equal(a.fingerprint, localPort.fingerprint);
   const c = await loadConfig(paths, { RR_LOG_LEVEL: "debug" });
   assert.notEqual(a.fingerprint, c.fingerprint);
-});
-
-test("[CONFIG-A5D19E72] model selection rules are validated by the runner", async () => {
-  const { selectModel } = await import("../src/runner.ts");
-  const config = {
-    model: {},
-    runner: {},
-    server: {},
-    conversation: {},
-    logging: {},
-    sources: {},
-    fingerprint: "",
-  } as never;
-  assert.throws(() => selectModel([], config), /no active model connection/);
-  const one = {
-    name: "a",
-    kind: "model",
-    provider: "anthropic",
-    auth: "key",
-    state: "active",
-  };
-  assert.equal(selectModel([one] as never, config).name, "a");
-  assert.throws(
-    () => selectModel([one, { ...one, name: "b" }] as never, config),
-    /multiple model connections/,
-  );
 });
