@@ -134,16 +134,6 @@ Given `[conversation]` may define `context_max_messages` and `context_max_chars`
 			And zero for either limit disables restored context
 			And the full durable conversation remains available to terminal clients
 
-## CONFIG-9D37B5A0 — Configure component logging
-
-Given `[logging]` may define `level` and `format`
-	When a server component starts
-		Then `level` accepts only `error`, `warn`, `info`, `debug`, or `trace`
-			And defaults to `info`
-			And `format` accepts only `text` or `json`
-			And defaults to `text`
-			And JSON logs contain no ANSI color sequences
-
 ## CONFIG-0C6A91E4 — Keep credentials out of configuration files
 
 Given the main or connection configuration contains a literal credential field

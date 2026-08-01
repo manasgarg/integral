@@ -6,6 +6,7 @@ specifications for Phase 1.
 - [`cli.md`](cli.md) — command discovery and version reporting
 - [`environment.md`](environment.md) — deployment selection and container environment
 - [`config.md`](config.md) — configuration files, validation, and options
+- [`logging.md`](logging.md) — component diagnostics, structure, and redaction
 - [`connection.md`](connection.md) — provider, HTTP, and MCP connection setup
 - [`server.md`](server.md) — combined and separate component lifecycle
 - [`gateway.md`](gateway.md) — health, session identity, and governed egress
@@ -25,3 +26,4 @@ and must not be assigned again. Retired opaque IDs:
 - `BOX-64D9E7BA` — described the message queue as in-memory container state
 - `CHAT-A2EAD40A` — made terminal exit destroy the shared conversation
 - `CHAT-7C6DE818` — made each terminal invocation start a blank conversation
+- `CONFIG-9D37B5A0` — moved logging configuration into the logging behavior group

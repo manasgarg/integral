@@ -164,3 +164,16 @@ Given the user starts one component with `--component <name>`
 		Then it uses its matching environment override
 			And does not require sibling component port variables to be repeated
 			And publishes its actual endpoint for sibling discovery
+
+## ENV-9A4C17E2 — Override logging from the environment
+
+Given logging environment variables may be set
+	When `RR_LOG_LEVEL` contains `error`, `warn`, `info`, `debug`, or `trace`
+		And `RR_LOG_FORMAT` contains `text` or `json`
+		Then the environment values override `[logging]` file values
+			And the Pi container does not inherit either variable
+	When one variable contains a supported value and the other is unset or empty
+		Then rr overrides only the supplied logging option
+			And resolves the other option from main config or its built-in default
+	When either variable contains an unsupported value
+		Then the process exits non-zero before performing its operation
