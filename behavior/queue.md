@@ -8,6 +8,8 @@ conversation in an `$RR_HOME` deployment.
 Given the rr coordinator is healthy
 	When an attached terminal submits a non-empty message
 		Then the coordinator assigns the message a stable opaque ID
+			And formats each new ID as a canonical uppercase base-36 Snowflake
+			And keeps newly assigned IDs unique across coordinator restarts and clock rollback
 			And writes the message durably before acknowledging it
 			And assigns it an order after all previously acknowledged messages
 			And records its creation time, queued state, and zero delivery attempts
@@ -93,6 +95,7 @@ Given one or more messages are durably queued
 Given queued messages were acknowledged before the coordinator stopped or crashed
 	When the coordinator starts again with the same `$RR_HOME`
 		Then every acknowledged queued message is present in its prior order
+			And preserves its stable message ID regardless of the ID format used when it was created
 			And deleted messages remain deleted
 			And edits retain their latest acknowledged text
 			And a message recorded as in flight is returned to queued state
