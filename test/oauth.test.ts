@@ -4,8 +4,56 @@ import {
   authorizationCodeFromInput,
   oauthAccess,
   runGenericOAuth,
+  runModelOAuth,
 } from "../src/oauth.ts";
 import { validateConnection } from "../src/connections.ts";
+import { fixture } from "./helpers.ts";
+
+test("[BOX-E1F472A1] model OAuth loads Pi from the refreshed deployment runtime", async (t) => {
+  const paths = await fixture(t),
+    shown: string[] = [],
+    calls: string[] = [],
+    serialized = await runModelOAuth(
+      paths,
+      "openai-codex",
+      "oauth",
+      { show: (message) => shown.push(message), prompt: async () => "" },
+      {
+        ensure: async () => ({
+          version: "1.2.3",
+          packageRoot: "/runtime/pi",
+          warning: "offline; using cache",
+        }),
+        load: async (resolution) => {
+          calls.push(`${resolution.version}:${resolution.packageRoot}`);
+          return {
+            ModelRuntime: {
+              create: async () => ({
+                async login(_provider, _type, interaction) {
+                  calls.push("login");
+                  interaction.notify({
+                    type: "progress",
+                    message: "authorizing",
+                  });
+                  return {
+                    type: "oauth" as const,
+                    access: "access",
+                    refresh: "refresh",
+                    expires: 123,
+                  };
+                },
+                getAuth: async () => undefined,
+              }),
+            },
+          };
+        },
+      },
+    );
+  assert.deepEqual(calls, ["1.2.3:/runtime/pi", "login"]);
+  assert.match(shown[0]!, /Warning: offline; using cache/);
+  assert.equal(shown[1], "authorizing");
+  assert.equal(JSON.parse(serialized).access, "access");
+});
 
 test("[CONNECTION-512D9A25] generic device-code authentication runs authorization and token exchange without exposing the token to UI", async () => {
   const connection = validateConnection({

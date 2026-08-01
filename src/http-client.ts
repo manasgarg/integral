@@ -1,24 +1,26 @@
 import type { Component } from "./constants.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 import {
   componentIdentity,
   deploymentId,
   internalHeaders,
   readComponentState,
 } from "./state.ts";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 
 export async function componentEndpoint(
-  paths: RrPaths,
+  paths: IntegralPaths,
   component: Component,
 ): Promise<string> {
   const state = await readComponentState(paths, component);
   if (!state)
-    throw new RrError(`${component} is not running; run rr server start`);
+    throw new IntegralError(
+      `${component} is not running; run integral server start`,
+    );
   return state.endpoint;
 }
 export async function internalFetch(
-  paths: RrPaths,
+  paths: IntegralPaths,
   caller: Component,
   target: Component,
   path: string,
@@ -36,7 +38,7 @@ export async function internalFetch(
   });
 }
 export async function verifiedFetch(
-  paths: RrPaths,
+  paths: IntegralPaths,
   component: Component,
   path: string,
   init?: RequestInit,
@@ -46,13 +48,13 @@ export async function verifiedFetch(
     init,
   );
   if (!response.ok)
-    throw new RrError(`${component} request failed: ${response.status}`);
+    throw new IntegralError(`${component} request failed: ${response.status}`);
   const deployment = response.headers.get("content-type")?.includes("json")
     ? ((await response.clone().json()) as { deploymentId?: string })
         .deploymentId
     : undefined;
   if (path.includes("health") && deployment !== deploymentId(paths))
-    throw new RrError(
+    throw new IntegralError(
       `endpoint does not belong to expected ${component} deployment`,
     );
   return response;

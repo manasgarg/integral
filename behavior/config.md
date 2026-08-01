@@ -1,87 +1,87 @@
 # Configuration behaviors
 
-These behaviors define rr's strict TOML configuration files, supported Phase 1
+These behaviors define integral's strict TOML configuration files, supported Phase 1
 options, precedence, validation, and component consistency.
 
 ## CONFIG-8A31F6C2 — Locate the main configuration file
 
-Given rr has resolved an `RR_HOME`
-	When an rr command loads main configuration
-		Then it reads `<RR_HOME>/config/rr.toml`
+Given integral has resolved an `INTEGRAL_HOME`
+	When an integral command loads main configuration
+		Then it reads `<INTEGRAL_HOME>/config/integral.toml`
 			And does not search the current directory or parent directories
 			And does not read another deployment's configuration
 
 ## CONFIG-2D7C49E1 — Run with built-in defaults when the main file is absent
 
-Given `<RR_HOME>/config/rr.toml` does not exist
-	When an rr command loads main configuration
+Given `<INTEGRAL_HOME>/config/integral.toml` does not exist
+	When an integral command loads main configuration
 		Then loading succeeds with built-in defaults
-			And rr does not create the file as a side effect of reading configuration
+			And integral does not create the file as a side effect of reading configuration
 
 ## CONFIG-C41E8B75 — Initialize a starter configuration
 
 Given the main configuration file does not exist
-	When the user runs `rr config init`
-		Then rr creates `<RR_HOME>/config/rr.toml`
+	When the user runs `integral config init`
+		Then integral creates `<INTEGRAL_HOME>/config/integral.toml`
 			And creates missing parent directories
 			And writes valid TOML containing documented defaults and comments
 			And does not write credentials or machine-specific session state
 	When the file already exists
-		Then `rr config init` refuses to overwrite it
+		Then `integral config init` refuses to overwrite it
 			And leaves its bytes unchanged
 
 ## CONFIG-5F20A9D3 — Show config command help
 
-Given rr is installed
-	When the user runs `rr config --help`
+Given integral is installed
+	When the user runs `integral config --help`
 		Then the command lists `init`, `path`, `show`, and `validate`
 			And describes `show` as effective configuration after overrides
 
 ## CONFIG-17D6C8A4 — Print the main configuration path
 
-Given rr has resolved an `RR_HOME`
-	When the user runs `rr config path`
-		Then rr prints the absolute path to `<RR_HOME>/config/rr.toml`
+Given integral has resolved an `INTEGRAL_HOME`
+	When the user runs `integral config path`
+		Then integral prints the absolute path to `<INTEGRAL_HOME>/config/integral.toml`
 			And does not require that file to exist
 
 ## CONFIG-B93A4E70 — Validate configuration without side effects
 
 Given configuration files may be valid or invalid
-	When the user runs `rr config validate`
-		Then rr parses and validates the same effective configuration used by components
+	When the user runs `integral config validate`
+		Then integral parses and validates the same effective configuration used by components
 			And reports all independently discoverable validation errors together
 			And exits non-zero when any error exists
 			And does not start components, create containers, or change configuration
-	When the user runs `rr config validate --json`
-		Then rr reports the same validation result as structured JSON
+	When the user runs `integral config validate --json`
+		Then integral reports the same validation result as structured JSON
 
 ## CONFIG-6E28D1F9 — Reject unknown or malformed main options
 
 Given the main configuration contains malformed TOML, a duplicate key, an unknown section, or an unknown option
-	When rr validates or loads the file
-		Then rr rejects the configuration
+	When integral validates or loads the file
+		Then integral rejects the configuration
 			And identifies the file and offending key or TOML location
 			And does not silently ignore a likely typo
 
 ## CONFIG-D4A70C31 — Show effective configuration and value sources
 
 Given built-in defaults, main configuration, and environment overrides may apply
-	When the user runs `rr config show`
-		Then rr prints the effective configuration
+	When the user runs `integral config show`
+		Then integral prints the effective configuration
 			And identifies each value as built-in, file, or environment sourced
 			And includes component ports and connection names
 			And formats human output as readable sections with one option per line
 			And does not render sections as inline JSON objects
 			And redacts credentials and internal component identities
-	When the user runs `rr config show --json`
-		Then rr returns the same effective values and sources as structured JSON
+	When the user runs `integral config show --json`
+		Then integral returns the same effective values and sources as structured JSON
 
 ## CONFIG-39B8E2F6 — Apply configuration precedence consistently
 
 Given a supported option has a built-in default
 	And the main config may define that option
 	And a documented environment override may define that option
-	When rr resolves effective configuration
+	When integral resolves effective configuration
 		Then the documented environment value wins when present
 			And otherwise the main-config value wins when present
 			And otherwise the built-in default applies
@@ -90,34 +90,33 @@ Given a supported option has a built-in default
 ## CONFIG-A16F73C8 — Configure component ports in the main file
 
 Given `[server]` may define `gateway_port`, `coordinator_port`, and `runner_port`
-	When rr resolves those options
+	When integral resolves those options
 		Then each value must be a decimal port from `1` through `65535`
 			And the three effective ports must be distinct
-			And their built-in defaults are `7300`, `7301`, and `7302`
-			And matching `RR_*_PORT` variables override file values
+			And their built-in defaults are `7310`, `7311`, and `7312`
+			And matching `INTEGRAL_*_PORT` variables override file values
 
 ## CONFIG-E82C4A19 — Configure the Pi container image
 
 Given `[runner]` may define `image` and `pull_policy`
-	When rr resolves those options
+	When integral resolves those options
 		Then `image` must be a valid OCI image reference
-			And its default is the Pi image pinned as compatible with the rr package version
+			And its default is integral's automatically refreshed Pi image
 			And `pull_policy` accepts only `always`, `if-not-present`, or `never`
 			And its default is `if-not-present`
-	When `pull_policy` is `never`
+	When a custom image uses `pull_policy` `never`
 		Then the runner uses an existing local image
 			And refuses to start when the image is absent
-	When `pull_policy` is `if-not-present`
+	When a custom image uses `pull_policy` `if-not-present`
 		Then the runner reuses an existing local image
-			And otherwise builds the default rr image or pulls a configured custom image
-	When `pull_policy` is `always`
-		Then the runner rebuilds the default rr image with refreshed base layers
-			Or pulls the configured custom image
+			And otherwise pulls the configured image
+	When a custom image uses `pull_policy` `always`
+		Then the runner pulls the configured image before resolving its immutable identity
 
 ## CONFIG-4B97D20E — Configure runner timeouts
 
 Given `[runner]` may define `turn_timeout_seconds` and `idle_timeout_seconds`
-	When rr resolves those options
+	When integral resolves those options
 		Then each value must be a positive integer
 			And `turn_timeout_seconds` defaults to `1800`
 			And `idle_timeout_seconds` defaults to `300`
@@ -127,7 +126,7 @@ Given `[runner]` may define `turn_timeout_seconds` and `idle_timeout_seconds`
 ## CONFIG-73E1A6B5 — Configure container resource limits
 
 Given `[runner]` may define `memory_mb` and `tmpfs_mb`
-	When rr resolves those options
+	When integral resolves those options
 		Then each value must be a positive integer
 			And both values default to `2048`
 			And the runner enforces `memory_mb` as the container memory limit
@@ -136,7 +135,7 @@ Given `[runner]` may define `memory_mb` and `tmpfs_mb`
 ## CONFIG-F2C84D16 — Configure restored conversation context
 
 Given `[conversation]` may define `context_max_messages` and `context_max_chars`
-	When rr starts a new or replacement Pi session
+	When integral starts a new or replacement Pi session
 		Then both options must be non-negative integers
 			And it considers only persisted user and assistant messages
 			And it includes the newest contiguous suffix that fits both limits
@@ -151,16 +150,16 @@ Given `[conversation]` may define `context_max_messages` and `context_max_chars`
 ## CONFIG-0C6A91E4 — Keep credentials out of configuration files
 
 Given the main or connection configuration contains a literal credential field
-	When rr validates or loads that file
-		Then rr rejects the credential field
-			And explains that credentials must be stored through `rr connection add`
+	When integral validates or loads that file
+		Then integral rejects the credential field
+			And explains that credentials must be stored through `integral connection add`
 			And does not copy the value into durable credential storage
 
 ## CONFIG-61F3D8B2 — Store connection declarations separately
 
 Given the user successfully adds a connection named `<name>`
-	When rr persists its non-secret declaration
-		Then it writes `<RR_HOME>/config/connections/<name>.toml` atomically
+	When integral persists its non-secret declaration
+		Then it writes `<INTEGRAL_HOME>/config/connections/<name>.toml` atomically
 			And stores the provider or type, endpoint policy, auth method, and non-secret metadata
 			And stores credential material only under the protected data area
 			And requires the file stem and declared connection name to agree
@@ -169,7 +168,7 @@ Given the user successfully adds a connection named `<name>`
 
 Given a connection declaration contains valid operator-edited non-secret options
 	When the user rotates its credential by adding that connection again
-		Then rr replaces only credential material
+		Then integral replaces only credential material
 			And leaves the connection file bytes unchanged
 			And does not overwrite operator edits with catalog defaults
 
@@ -178,35 +177,35 @@ Given a connection declaration contains valid operator-edited non-secret options
 Given a server component is running with a valid main-config snapshot
 	When the main configuration file changes
 		Then the running component continues using its startup snapshot
-			And `rr config validate` evaluates the new file independently
+			And `integral config validate` evaluates the new file independently
 			And restarting the component applies the new valid configuration
 
 ## CONFIG-35D8A2F1 — Keep separate components on one effective configuration
 
-Given server components start as separate processes under one `$RR_HOME`
+Given server components start as separate processes under one `$INTEGRAL_HOME`
 	When each component publishes ready state
 		Then it publishes a fingerprint of its effective shared non-secret configuration
 			And the fingerprint excludes component-local port environment overrides
 	When component fingerprints disagree
-		Then rr reports the deployment as degraded
+		Then integral reports the deployment as degraded
 			And the runner does not claim queued messages
 			And status identifies the mismatched components
 
 ## CONFIG-E6B40A73 — Keep security invariants non-configurable
 
-Given the user authors rr configuration
-	When rr validates the configuration
+Given the user authors integral configuration
+	When integral validates the configuration
 		Then no option can enable direct container egress
 			And no option can place real credentials in a container
 			And no option can disable default-deny gateway behavior
 			And no option can add grant or revoke semantics
-			And no option can add another logical conversation to one `$RR_HOME`
+			And no option can add another logical conversation to one `$INTEGRAL_HOME`
 
 ## CONFIG-58A1E7C3 — Reload connection declarations as one generation
 
 Given server components are running
-	When `rr connection add` or `rr connection rm` commits a valid declaration change
-		Then rr assigns the connection snapshot a new monotonic generation
+	When `integral connection add` or `integral connection rm` commits a valid declaration change
+		Then integral assigns the connection snapshot a new monotonic generation
 			And the gateway reloads all currently valid declarations and credentials
 			And the coordinator mirrors the committed generation in component state
 			And the runner reads current connections when it creates a Pi session
@@ -231,7 +230,7 @@ Given server components have a last known valid connection snapshot
 
 ## CONFIG-1F84C6A2 — Write generated configuration safely
 
-Given an rr command creates or replaces a configuration file
+Given an integral command creates or replaces a configuration file
 	When it commits the file
 		Then it validates generated content before committing it
 			And writes a complete temporary file in the destination directory
@@ -241,7 +240,7 @@ Given an rr command creates or replaces a configuration file
 ## CONFIG-48C2D7A1 — Validate common connection options
 
 Given a connection file may define `name`, `kind`, `provider`, `url`, and `auth`
-	When rr validates the connection
+	When integral validates the connection
 		Then `name` must contain at most 64 filesystem-safe letters, numbers, dots, underscores, or hyphens
 			And must start with a letter or number
 			And must be unique across loaded connection files
@@ -267,7 +266,7 @@ Given an `http` connection file may define `url`, `methods`, and `path_prefix`
 
 Given a connection uses `auth = "key"`
 	And its file may define `header` and `scheme`
-	When rr validates the connection
+	When integral validates the connection
 		Then `header` defaults to `Authorization`
 			And `scheme` defaults to `Bearer`
 			And neither option may contain carriage returns or newlines
@@ -276,7 +275,7 @@ Given a connection uses `auth = "key"`
 ## CONFIG-6A90E2D4 — Configure OAuth authentication metadata
 
 Given a generic connection uses `auth = "oauth"` or `auth = "device-code"`
-	When rr validates its non-secret authentication metadata
+	When integral validates its non-secret authentication metadata
 		Then OAuth requires `authorization_url`, `token_url`, and `client_id`
 			And device-code additionally requires `device_authorization_url`
 			And `scopes` is an optional list of scope strings
@@ -286,22 +285,9 @@ Given a generic connection uses `auth = "oauth"` or `auth = "device-code"`
 ## CONFIG-3F7A81C6 — Configure a remote MCP transport
 
 Given an `mcp` connection file may define `transport`
-	When rr validates the connection
+	When integral validates the connection
 		Then `transport` accepts only `streamable-http` or `sse`
 			And defaults to `streamable-http`
-			And rr registers the configured transport and URL with Pi
+			And integral registers the configured transport and URL with Pi
 			And replaces characters outside letters, numbers, and underscores when forming the Pi tool name
 			And the gateway applies the connection's HTTP boundary and authentication
-
-## CONFIG-A5D19E72 — Select the model connection used by Pi
-
-Given `[model]` may define `connection` and optional `model`
-	When `connection` names an active model connection
-		Then the runner configures Pi to use that connection
-			And passes the optional provider-specific model name when present
-	When `[model].connection` is omitted and exactly one model connection is active
-		Then rr selects that connection automatically
-	When `[model].connection` is omitted and multiple model connections are active
-		Then configuration validation fails with an instruction to select one
-	When the selected connection is absent, disabled, or not a model connection
-		Then the runner refuses to claim queued messages

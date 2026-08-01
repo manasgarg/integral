@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { join } from "node:path";
-import { DurableQueue, ConversationStore } from "../src/queue.ts";
+import {
+  createSnowflakeId,
+  DurableQueue,
+  ConversationStore,
+  SNOWFLAKE_EPOCH,
+} from "../src/queue.ts";
 import { fixture } from "./helpers.ts";
 
 test("[QUEUE-5B7C2E91] [QUEUE-6A1B4E82] concurrent submissions commit one durable opaque-ID order", async (t) => {
@@ -23,7 +29,38 @@ test("[QUEUE-5B7C2E91] [QUEUE-6A1B4E82] concurrent submissions commit one durabl
     [1, 2, 3],
   );
   assert.equal(new Set(items.map((m) => m.id)).size, 3);
+  for (const item of items) assert.match(item.id, /^[0-9A-Z]{1,13}$/);
   assert.equal(events.length, 3);
+});
+
+test("[QUEUE-5B7C2E91] Snowflakes encode time, worker, and sequence as uppercase base 36", () => {
+  const first = createSnowflakeId(SNOWFLAKE_EPOCH + 1, 1),
+    second = createSnowflakeId(SNOWFLAKE_EPOCH + 1, 1, first.state),
+    rollback = createSnowflakeId(SNOWFLAKE_EPOCH, 1, second.state);
+  assert.equal(first.id, "2HZI8");
+  assert.equal(second.id, "2HZI9");
+  assert.equal(rollback.state.timestamp, SNOWFLAKE_EPOCH + 1);
+  assert.equal(rollback.state.sequence, 2);
+  assert.match(rollback.id, /^[0-9A-Z]+$/);
+});
+
+test("[QUEUE-5B7C2E91] persisted Snowflake state prevents reuse after restart and clock rollback", async (t) => {
+  const paths = await fixture(t),
+    before = new DurableQueue(
+      paths.queue,
+      () => undefined,
+      () => SNOWFLAKE_EPOCH + 10,
+    ),
+    first = await before.enqueue("first"),
+    after = new DurableQueue(
+      paths.queue,
+      () => undefined,
+      () => SNOWFLAKE_EPOCH + 5,
+    );
+  await after.load();
+  const second = await after.enqueue("second");
+  assert.notEqual(second.id, first.id);
+  assert.ok(second.id > first.id);
 });
 
 test("[QUEUE-31A6D84F] only one oldest message is in flight and completion exposes the next", async (t) => {
@@ -126,6 +163,46 @@ test("[QUEUE-F0C937AD] restart recovery retains acknowledged edits, deletions, a
   );
 });
 
+test("[QUEUE-F0C937AD] restart recovery preserves legacy UUID and ULID IDs", async (t) => {
+  const paths = await fixture(t),
+    legacyId = "f4e77892-e27d-4df5-8274-1ea268238363",
+    ulid = "01K3Y8N9R7M2X4V6Q8ZACBDEFG";
+  await mkdir(paths.data, { recursive: true });
+  await writeFile(
+    paths.queue,
+    `${JSON.stringify({
+      nextOrder: 3,
+      items: [
+        {
+          id: legacyId,
+          text: "legacy",
+          order: 1,
+          status: "in-flight",
+          attempts: 3,
+          createdAt: "2026-08-01T22:42:12.900Z",
+        },
+        {
+          id: ulid,
+          text: "ulid",
+          order: 2,
+          status: "queued",
+          attempts: 0,
+          createdAt: "2026-08-02T12:00:00.000Z",
+        },
+      ],
+    })}\n`,
+  );
+  const queue = new DurableQueue(paths.queue);
+  await queue.load();
+  assert.deepEqual(
+    queue.snapshot().map(({ id, status }) => ({ id, status })),
+    [
+      { id: legacyId, status: "queued" },
+      { id: ulid, status: "queued" },
+    ],
+  );
+});
+
 test("[QUEUE-947D3AC0] unknown and deleted IDs are refused without changing state", async (t) => {
   const paths = await fixture(t),
     queue = new DurableQueue(paths.queue);
@@ -143,7 +220,6 @@ test("[QUEUE-3C8E71B4] mutations are not acknowledged or broadcast when persiste
     queue = new DurableQueue(join(blocker, "queue.json"), (e) =>
       events.push(e),
     );
-  const { writeFile } = await import("node:fs/promises");
   await writeFile(blocker, "not a directory");
   await assert.rejects(queue.enqueue("no commit"));
   assert.deepEqual(queue.snapshot(), []);

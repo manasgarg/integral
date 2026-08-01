@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { ensureDir } from "./fs.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 
 const exec = promisify(execFile);
 export interface CaFiles {
@@ -12,10 +12,10 @@ export interface CaFiles {
   cert: string;
   bundle: string;
 }
-export async function ensureCa(paths: RrPaths): Promise<CaFiles> {
+export async function ensureCa(paths: IntegralPaths): Promise<CaFiles> {
   await ensureDir(paths.ca);
-  const key = join(paths.ca, "rr-ca.key"),
-    cert = join(paths.ca, "rr-ca.pem"),
+  const key = join(paths.ca, "integral-ca.key"),
+    cert = join(paths.ca, "integral-ca.pem"),
     bundle = join(paths.ca, "ca-bundle.pem");
   try {
     await access(key);
@@ -31,14 +31,14 @@ export async function ensureCa(paths: RrPaths): Promise<CaFiles> {
       "-days",
       "3650",
       "-subj",
-      "/CN=rr local gateway CA",
+      "/CN=integral local gateway CA",
       "-keyout",
       key,
       "-out",
       cert,
     ]);
   }
-  const rr = await readFile(cert);
+  const integral = await readFile(cert);
   let system = Buffer.alloc(0);
   try {
     system = await readFile("/etc/ssl/certs/ca-certificates.crt");
@@ -46,12 +46,15 @@ export async function ensureCa(paths: RrPaths): Promise<CaFiles> {
     /* platform without this bundle */
   }
   const { atomicWrite } = await import("./fs.ts");
-  await atomicWrite(bundle, Buffer.concat([system, Buffer.from("\n"), rr]));
+  await atomicWrite(
+    bundle,
+    Buffer.concat([system, Buffer.from("\n"), integral]),
+  );
   return { key, cert, bundle };
 }
 
 export async function certificateFor(
-  paths: RrPaths,
+  paths: IntegralPaths,
   host: string,
   ca: CaFiles,
 ): Promise<{ key: string; cert: string }> {

@@ -1,10 +1,12 @@
 FROM node:24.15.0-slim
 
-ARG PI_VERSION=0.80.3
+ARG PI_VERSION=latest
 RUN npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && npm cache clean --force \
     && groupmod --new-name pi node \
     && usermod --login pi --home /home/pi --move-home --shell /usr/sbin/nologin node
+
+COPY --chmod=0555 bin/integral-pi-models.mjs /usr/local/bin/integral-pi-models
 
 USER 1000:1000
 WORKDIR /home/pi

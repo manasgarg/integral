@@ -1,8 +1,18 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { EventEmitter } from "node:events";
 import type { EffectiveConfig } from "./config.ts";
-import type { RrPaths } from "./paths.ts";
-import { ConversationStore, DurableQueue } from "./queue.ts";
+import type { IntegralPaths } from "./paths.ts";
+import {
+  ConversationStore,
+  DurableQueue,
+  ModelSelectionStore,
+} from "./queue.ts";
+import {
+  listModelChoices,
+  sameSelection,
+  type ModelCatalog,
+  type ModelChoice,
+} from "./model-selection.ts";
 import {
   componentIdentity,
   deploymentId,
@@ -12,7 +22,7 @@ import {
 } from "./state.ts";
 import { readText } from "./fs.ts";
 import { join } from "node:path";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 import {
   nodeHttpServerRuntime,
   nodeIntervalRuntime,
@@ -28,23 +38,30 @@ export interface ClientEvent {
 export interface CoordinatorDependencies {
   servers: HttpServerRuntime;
   intervals: IntervalRuntime;
+  listModelChoices(
+    paths: IntegralPaths,
+    config: EffectiveConfig,
+  ): Promise<ModelCatalog>;
 }
 const productionDependencies: CoordinatorDependencies = {
   servers: nodeHttpServerRuntime,
   intervals: nodeIntervalRuntime,
+  listModelChoices,
 };
 export class Coordinator {
   readonly queue: DurableQueue;
   readonly conversation: ConversationStore;
+  readonly modelSelection: ModelSelectionStore;
   private readonly events = new EventEmitter();
   private server: http.Server | undefined;
   private eventSequence = 0;
   private attached = 0;
   private token = "";
   private refreshTimer: unknown;
+  private workChain: Promise<unknown> = Promise.resolve();
   private readonly dependencies: CoordinatorDependencies;
   constructor(
-    private readonly paths: RrPaths,
+    private readonly paths: IntegralPaths,
     private readonly config: EffectiveConfig,
     overrides: Partial<CoordinatorDependencies> = {},
   ) {
@@ -53,10 +70,12 @@ export class Coordinator {
       this.broadcast(`queue.${event.type}`, event),
     );
     this.conversation = new ConversationStore(paths.conversation);
+    this.modelSelection = new ModelSelectionStore(paths.modelSelection);
   }
   async start(): Promise<http.Server> {
     await this.queue.load();
     await this.conversation.load();
+    await this.modelSelection.load();
     this.token = await componentIdentity(this.paths);
     const server = http.createServer((req, res) => void this.route(req, res));
     this.server = server;
@@ -92,6 +111,7 @@ export class Coordinator {
       deploymentId: deploymentId(this.paths),
       conversation: this.conversation.snapshot(),
       queue: this.queue.snapshot(),
+      modelSelection: this.modelSelection.get() ?? null,
       eventSequence: this.eventSequence,
       attached: this.attached,
     };
@@ -104,13 +124,61 @@ export class Coordinator {
       deploymentId(this.paths),
     );
   }
+  async modelMenu(): Promise<{
+    choices: ModelChoice[];
+    current: ModelChoice | null;
+    piVersion?: string;
+    warning?: string;
+  }> {
+    const catalog = await this.dependencies.listModelChoices(
+      this.paths,
+      this.config,
+    );
+    return {
+      choices: catalog.choices,
+      current: this.modelSelection.get() ?? null,
+      ...(catalog.piVersion ? { piVersion: catalog.piVersion } : {}),
+      ...(catalog.warning ? { warning: catalog.warning } : {}),
+    };
+  }
+  async selectConversationModel(
+    connection: string,
+    model: string,
+  ): Promise<ModelChoice> {
+    return this.exclusiveWork(async () => {
+      if (this.queue.snapshot().some((item) => item.status === "in-flight"))
+        throw new IntegralError(
+          "cannot change model selection while a Pi turn is in flight",
+          409,
+        );
+      const catalog = await this.dependencies.listModelChoices(
+          this.paths,
+          this.config,
+        ),
+        choice = catalog.choices.find(
+          (candidate) =>
+            candidate.connection === connection && candidate.model === model,
+        );
+      if (!choice)
+        throw new IntegralError(
+          "selected model connection or model is no longer available",
+          409,
+        );
+      const previous = this.modelSelection.get();
+      if (!sameSelection(previous, choice)) {
+        await this.modelSelection.set(choice);
+        this.broadcast("conversation.selection", choice);
+      }
+      return choice;
+    });
+  }
   private async route(
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
     try {
       const url = new URL(req.url ?? "/", "http://coordinator");
-      if (url.pathname === "/rr/health" && req.method === "GET") {
+      if (url.pathname === "/integral/health" && req.method === "GET") {
         const [gateway, runner] = await Promise.all([
           readComponentState(this.paths, "gateway"),
           readComponentState(this.paths, "runner"),
@@ -129,28 +197,40 @@ export class Coordinator {
         });
         return;
       }
-      if (url.pathname === "/rr/snapshot" && req.method === "GET") {
+      if (url.pathname === "/integral/snapshot" && req.method === "GET") {
         json(res, 200, this.snapshot());
         return;
       }
-      if (url.pathname === "/rr/events" && req.method === "GET") {
+      if (url.pathname === "/integral/events" && req.method === "GET") {
         this.stream(req, res);
         return;
       }
-      if (url.pathname === "/rr/messages" && req.method === "POST") {
+      if (url.pathname === "/integral/models" && req.method === "GET") {
+        json(res, 200, await this.modelMenu());
+        return;
+      }
+      if (url.pathname === "/integral/selection" && req.method === "PUT") {
         const body = await bodyJson(req),
-          text = stringValue(body.text);
-        const item = await this.queue.enqueue(text);
-        const event = await this.conversation.append({
-          type: "user",
-          messageId: item.id,
-          text: item.text,
-        });
-        this.broadcast("conversation.user", event);
+          connection = stringValue(body.connection),
+          model = stringValue(body.model);
+        const selection = await this.selectConversationModel(connection, model);
+        json(res, 200, selection);
+        return;
+      }
+      if (url.pathname === "/integral/messages" && req.method === "POST") {
+        if (!this.modelSelection.get())
+          throw new IntegralError(
+            "select a model before submitting a message",
+            409,
+          );
+        const body = await bodyJson(req),
+          text = stringValue(body.text),
+          terminalId = stringValue(body.terminalId);
+        const item = await this.submitMessage(text, terminalId);
         json(res, 201, item);
         return;
       }
-      const queueMatch = url.pathname.match(/^\/rr\/queue\/([^/]+)$/);
+      const queueMatch = url.pathname.match(/^\/integral\/queue\/([^/]+)$/);
       if (queueMatch && req.method === "PATCH") {
         const body = await bodyJson(req),
           item = await this.queue.edit(queueMatch[1]!, stringValue(body.text));
@@ -164,11 +244,20 @@ export class Coordinator {
         res.writeHead(204).end();
         return;
       }
-      if (url.pathname === "/rr/internal/claim" && req.method === "POST") {
+      if (
+        url.pathname === "/integral/internal/claim" &&
+        req.method === "POST"
+      ) {
         if (!this.internal(req)) return unauthorized(res);
-        const item = await this.queue.claim();
+        const result = await this.exclusiveWork(async () => ({
+          item: this.modelSelection.get()
+            ? await this.queue.claim()
+            : undefined,
+          selection: this.modelSelection.get(),
+        }));
         json(res, 200, {
-          message: item,
+          message: result.item,
+          selection: result.selection ?? null,
           context: this.conversation.context(
             this.config.conversation.contextMaxMessages,
             this.config.conversation.contextMaxChars,
@@ -176,13 +265,16 @@ export class Coordinator {
         });
         return;
       }
-      if (url.pathname === "/rr/internal/session" && req.method === "POST") {
+      if (
+        url.pathname === "/integral/internal/session" &&
+        req.method === "POST"
+      ) {
         if (!this.internal(req)) return unauthorized(res);
         const body = await bodyJson(req),
           sessionId = stringValue(body.sessionId),
           state = stringValue(body.state);
         if (!sessionId || !["started", "ended"].includes(state))
-          throw new RrError("invalid session event", 400);
+          throw new IntegralError("invalid session event", 400);
         const event = await this.conversation.append({
           type: "session",
           sessionId,
@@ -193,7 +285,7 @@ export class Coordinator {
         return;
       }
       const workMatch = url.pathname.match(
-        /^\/rr\/internal\/work\/([^/]+)\/(complete|release)$/,
+        /^\/integral\/internal\/work\/([^/]+)\/(complete|release)$/,
       );
       if (workMatch && req.method === "POST") {
         if (!this.internal(req)) return unauthorized(res);
@@ -222,7 +314,7 @@ export class Coordinator {
         res.writeHead(204).end();
         return;
       }
-      if (url.pathname === "/rr/status" && req.method === "GET") {
+      if (url.pathname === "/integral/status" && req.method === "GET") {
         const [gateway, runner] = await Promise.all([
           readComponentState(this.paths, "gateway"),
           readComponentState(this.paths, "runner"),
@@ -238,7 +330,7 @@ export class Coordinator {
           container: sessionEvent?.text === "started" ? "healthy" : "stopped",
           session:
             sessionEvent?.text === "started" ? sessionEvent.sessionId : null,
-          provider: this.config.model.connection ?? "auto",
+          selection: this.modelSelection.get() ?? null,
           queueDepth: queue.filter((m) => m.status === "queued").length,
           inFlight: queue.find((m) => m.status === "in-flight")?.id ?? null,
           attached: this.attached,
@@ -247,11 +339,26 @@ export class Coordinator {
       }
       res.writeHead(404).end("not found\n");
     } catch (error) {
-      const status = error instanceof RrError ? error.exitCode : 500;
+      const status = error instanceof IntegralError ? error.exitCode : 500;
       json(res, status >= 400 && status < 600 ? status : 500, {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+  private exclusiveWork<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.workChain.then(work, work);
+    this.workChain = result.catch(() => undefined);
+    return result;
+  }
+  private async submitMessage(text: string, terminalId: string) {
+    const item = await this.queue.enqueue(text),
+      event = await this.conversation.append({
+        type: "user",
+        messageId: item.id,
+        text: item.text,
+      });
+    this.broadcast("conversation.user", { ...event, terminalId });
+    return item;
   }
   private stream(req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, {
@@ -293,7 +400,7 @@ async function bodyJson(
       unknown
     >;
   } catch {
-    throw new RrError("invalid JSON request", 400);
+    throw new IntegralError("invalid JSON request", 400);
   }
 }
 function stringValue(value: unknown, fallback = ""): string {

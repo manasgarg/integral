@@ -13,10 +13,11 @@ combined and separate-process modes.
 ## SERVER-F886D80C — Start all components in one foreground process
 
 Given Docker is available
-	And an active model connection is configured
+	And at least one active model connection exists
 	And no server component is running for this deployment
-	When the user runs `rr server start`
-		Then rr validates the runner's model connection and Docker daemon before starting listeners
+	When the user runs `integral server start`
+		Then integral validates that an active model connection and the Docker daemon are available before starting listeners
+			And does not select a model connection or model
 			And starts the coordinator, gateway, and runner in that order in one process
 			And each component listens on its own configured port
 			And publishes each component as ready after its listener starts
@@ -26,21 +27,21 @@ Given Docker is available
 ## SERVER-DF5FD52E — Reject a duplicate component for the same deployment
 
 Given a server component is running for a deployment
-	When another process starts that same component with the same `$RR_HOME`
+	When another process starts that same component with the same `$INTEGRAL_HOME`
 		Then the second process exits non-zero
 			And reports that the component lock is already held
 			And does not disturb any running component
 	When the lock file names a process that no longer exists
-		Then rr removes the stale lock
+		Then integral removes the stale lock
 			And lets the new component acquire it
 
 ## SERVER-A74F29C1 — Run independent deployments on one machine
 
-Given two rr deployments use different `$RR_HOME` roots
+Given two integral deployments use different `$INTEGRAL_HOME` roots
 	And all component ports are distinct within and across the two deployments
 	When the user starts both servers
 		Then both servers become healthy
-			And each component holds a lock only within its own `$RR_HOME`
+			And each component holds a lock only within its own `$INTEGRAL_HOME`
 			And each server uses only its own configuration and credentials
 			And each server uses its own CA, state, session tokens, network, and containers
 			And stopping one server does not disturb the other
@@ -48,7 +49,7 @@ Given two rr deployments use different `$RR_HOME` roots
 ## SERVER-FE2BB5CF — Require Docker only for the runner
 
 Given the Docker daemon cannot be reached
-	When the user runs `rr server start`
+	When the user runs `integral server start`
 		Then startup exits non-zero
 			And identifies Docker as unavailable
 			And does not publish gateway-ready state
@@ -67,12 +68,12 @@ Given all components are running in one foreground process
 			And terminates any active chat container
 			And revokes temporary session identity material
 			And removes its lock and ready-state files
-			And exits without leaving a rr container running
+			And exits without leaving a integral container running
 
 ## SERVER-2C8F41A7 — Show component startup options
 
-Given rr is installed
-	When the user runs `rr server start --help`
+Given integral is installed
+	When the user runs `integral server start --help`
 		Then the command describes combined mode as the default
 			And lists `coordinator`, `runner`, and `gateway` as component values
 			And describes `--component <name>` as single-component mode
@@ -80,18 +81,18 @@ Given rr is installed
 ## SERVER-8A31D6C4 — Run each component in a separate process
 
 Given no server component is running for the deployment
-	When the user starts `rr server start --component coordinator`
+	When the user starts `integral server start --component coordinator`
 		Then that process starts only the coordinator listener
-	When the user starts `rr server start --component runner`
+	When the user starts `integral server start --component runner`
 		Then that process starts only the runner listener
-	When the user starts `rr server start --component gateway`
+	When the user starts `integral server start --component gateway`
 		Then that process starts only the gateway listener
 	When all three component processes are healthy
 		Then the deployment offers the same behavior as combined mode
 
 ## SERVER-0D7E29B5 — Keep component network boundaries in combined mode
 
-Given rr is running all components in one process
+Given integral is running all components in one process
 	When a component calls another component
 		Then it uses the same authenticated network interface used in separate mode
 			And does not replace the component boundary with direct in-memory calls
@@ -99,8 +100,8 @@ Given rr is running all components in one process
 
 ## SERVER-51C9A3E8 — Discover sibling components through deployment state
 
-Given one component has published its endpoint under an `$RR_HOME`
-	When another component starts with that same `$RR_HOME`
+Given one component has published its endpoint under an `$INTEGRAL_HOME`
+	When another component starts with that same `$INTEGRAL_HOME`
 		Then it discovers the published endpoint from deployment state
 			And verifies the endpoint belongs to the expected deployment and component
 			And does not require component endpoint arguments to be repeated
@@ -147,23 +148,23 @@ Given two or more component port settings resolve to the same port
 ## SERVER-3B7F90C2 — Report aggregate and component health
 
 Given one or more server components are running
-	When the user runs `rr server status`
-		Then rr probes each recorded health endpoint with a bounded timeout
+	When the user runs `integral server status`
+		Then integral probes each recorded health endpoint with a bounded timeout
 			And treats missing, unreachable, or identity-mismatched endpoints as stopped
 			And reports coordinator, runner, and gateway health separately
 			And reports whether the deployment is healthy or degraded overall
 			And produces the same status model in combined and separate modes
 			And exits successfully only when the overall deployment is healthy
-	When the user runs `rr server status --json`
-		Then rr returns the same overall and component status as structured JSON
+	When the user runs `integral server status --json`
+		Then integral returns the same overall and component status as structured JSON
 Given no recorded component answers a valid health probe
-	When the user runs `rr server status`
-		Then rr reports the deployment and all three components as stopped
+	When the user runs `integral server status`
+		Then integral reports the deployment and all three components as stopped
 			And exits non-zero
 
 ## SERVER-7C21D5E8 — Bind each component only where required
 
-Given rr starts the server components
+Given integral starts the server components
 	When it binds their listeners
 		Then the coordinator and runner listen on loopback only
 			And the gateway initially listens on loopback
@@ -172,7 +173,7 @@ Given rr starts the server components
 
 ## SERVER-C6A830F4 — Fail combined startup atomically
 
-Given rr is starting all components in one process
+Given integral is starting all components in one process
 	When any component cannot bind, validate, or become ready
 		Then the process stops every component it started
 			And removes every ready-state record and lock it created

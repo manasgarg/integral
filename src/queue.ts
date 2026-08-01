@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { appendFile, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
+import type { ModelSelection } from "./model-selection.ts";
 
 export type QueueStatus = "queued" | "in-flight";
 export interface QueuedMessage {
@@ -16,21 +17,81 @@ export interface QueuedMessage {
 interface QueueFile {
   nextOrder: number;
   items: QueuedMessage[];
+  snowflake?: SnowflakeState;
+}
+
+export const SNOWFLAKE_EPOCH = Date.UTC(2026, 0, 1);
+const MAX_SNOWFLAKE_TIME = (1n << 41n) - 1n;
+const MAX_WORKER_ID = (1 << 10) - 1;
+const MAX_SEQUENCE = (1 << 12) - 1;
+
+export interface SnowflakeState {
+  timestamp: number;
+  sequence: number;
+}
+
+export function createSnowflakeId(
+  timestamp: number,
+  workerId: number,
+  previous?: SnowflakeState,
+): { id: string; state: SnowflakeState } {
+  if (!Number.isSafeInteger(timestamp))
+    throw new RangeError("Snowflake timestamp must be an integer");
+  if (!Number.isInteger(workerId) || workerId < 0 || workerId > MAX_WORKER_ID)
+    throw new RangeError("Snowflake worker ID must fit in 10 bits");
+  let effectiveTimestamp = Math.max(
+      timestamp,
+      previous?.timestamp ?? timestamp,
+    ),
+    sequence =
+      previous && effectiveTimestamp === previous.timestamp
+        ? previous.sequence + 1
+        : 0;
+  if (sequence > MAX_SEQUENCE) {
+    effectiveTimestamp++;
+    sequence = 0;
+  }
+  const elapsed = BigInt(effectiveTimestamp - SNOWFLAKE_EPOCH);
+  if (elapsed < 0n || elapsed > MAX_SNOWFLAKE_TIME)
+    throw new RangeError("Snowflake timestamp is outside the supported epoch");
+  const value = (elapsed << 22n) | (BigInt(workerId) << 12n) | BigInt(sequence);
+  return {
+    id: value.toString(36).toUpperCase(),
+    state: { timestamp: effectiveTimestamp, sequence },
+  };
+}
+
+function snowflakeWorkerId(file: string): number {
+  return (
+    createHash("sha256").update(file).digest().readUInt16BE(0) & MAX_WORKER_ID
+  );
 }
 
 export class DurableQueue {
   private data: QueueFile = { nextOrder: 1, items: [] };
   private chain: Promise<unknown> = Promise.resolve();
+  private readonly workerId: number;
   constructor(
     private readonly file: string,
     private readonly onChange: (event: QueueEvent) => void = () => undefined,
-  ) {}
+    private readonly now: () => number = Date.now,
+  ) {
+    this.workerId = snowflakeWorkerId(file);
+  }
   async load(): Promise<void> {
     const raw = await readText(this.file);
     if (!raw) return;
     const parsed = JSON.parse(raw) as QueueFile;
-    if (!Number.isSafeInteger(parsed.nextOrder) || !Array.isArray(parsed.items))
-      throw new RrError(`invalid queue file: ${this.file}`);
+    if (
+      !Number.isSafeInteger(parsed.nextOrder) ||
+      !Array.isArray(parsed.items) ||
+      (parsed.snowflake !== undefined &&
+        (!Number.isSafeInteger(parsed.snowflake.timestamp) ||
+          !Number.isInteger(parsed.snowflake.sequence) ||
+          parsed.snowflake.sequence < 0 ||
+          parsed.snowflake.sequence > MAX_SEQUENCE))
+    )
+      throw new IntegralError(`invalid queue file: ${this.file}`);
     this.data = parsed;
     for (const item of this.data.items)
       if (item.status === "in-flight") item.status = "queued";
@@ -51,9 +112,18 @@ export class DurableQueue {
   }
   async enqueue(text: string): Promise<QueuedMessage> {
     return this.exclusive(async () => {
-      if (!text.trim()) throw new RrError("message must not be empty");
+      if (!text.trim()) throw new IntegralError("message must not be empty");
+      const priorSnowflake = this.data.snowflake
+          ? { ...this.data.snowflake }
+          : undefined,
+        generated = createSnowflakeId(
+          this.now(),
+          this.workerId,
+          priorSnowflake,
+        );
+      this.data.snowflake = generated.state;
       const item: QueuedMessage = {
-        id: randomUUID(),
+        id: generated.id,
         text,
         order: this.data.nextOrder++,
         status: "queued",
@@ -66,6 +136,8 @@ export class DurableQueue {
       } catch (error) {
         this.data.items.pop();
         this.data.nextOrder--;
+        if (priorSnowflake) this.data.snowflake = priorSnowflake;
+        else delete this.data.snowflake;
         throw error;
       }
       this.onChange({ type: "queued", message: { ...item } });
@@ -74,10 +146,10 @@ export class DurableQueue {
   }
   async edit(id: string, text: string): Promise<QueuedMessage> {
     return this.exclusive(async () => {
-      if (!text.trim()) throw new RrError("message must not be empty");
+      if (!text.trim()) throw new IntegralError("message must not be empty");
       const item = this.find(id);
       if (item.status === "in-flight")
-        throw new RrError(`message ${id} is in flight`);
+        throw new IntegralError(`message ${id} is in flight`);
       const previous = item.text;
       item.text = text;
       try {
@@ -94,7 +166,7 @@ export class DurableQueue {
     return this.exclusive(async () => {
       const item = this.find(id);
       if (item.status === "in-flight")
-        throw new RrError(`message ${id} is in flight`);
+        throw new IntegralError(`message ${id} is in flight`);
       const index = this.data.items.indexOf(item);
       this.data.items.splice(index, 1);
       try {
@@ -131,7 +203,7 @@ export class DurableQueue {
     return this.exclusive(async () => {
       const item = this.find(id);
       if (item.status !== "in-flight")
-        throw new RrError(`message ${id} is not in flight`);
+        throw new IntegralError(`message ${id} is not in flight`);
       const index = this.data.items.indexOf(item);
       this.data.items.splice(index, 1);
       try {
@@ -163,7 +235,7 @@ export class DurableQueue {
   }
   private find(id: string): QueuedMessage {
     const item = this.data.items.find((m) => m.id === id);
-    if (!item) throw new RrError(`message ${id} is not queued`);
+    if (!item) throw new IntegralError(`message ${id} is not queued`);
     return item;
   }
 }
@@ -252,5 +324,46 @@ export class ConversationStore {
       selected.unshift({ ...event });
     }
     return selected;
+  }
+}
+
+export class ModelSelectionStore {
+  private selection: ModelSelection | undefined;
+  constructor(private readonly file: string) {}
+  async load(): Promise<void> {
+    const raw = await readText(this.file);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Partial<ModelSelection>;
+    if (
+      typeof parsed.connection !== "string" ||
+      typeof parsed.provider !== "string" ||
+      typeof parsed.model !== "string" ||
+      typeof parsed.piVersion !== "string" ||
+      typeof parsed.piImage !== "string" ||
+      !parsed.connection ||
+      !parsed.provider ||
+      !parsed.model ||
+      !parsed.piVersion ||
+      !parsed.piImage
+    ) {
+      // Selections written before runtime identities were introduced are safely
+      // retired and selected again through the current runtime catalog.
+      this.selection = undefined;
+      return;
+    }
+    this.selection = {
+      connection: parsed.connection,
+      provider: parsed.provider,
+      model: parsed.model,
+      piVersion: parsed.piVersion,
+      piImage: parsed.piImage,
+    };
+  }
+  get(): ModelSelection | undefined {
+    return this.selection ? { ...this.selection } : undefined;
+  }
+  async set(selection: ModelSelection): Promise<void> {
+    await atomicWrite(this.file, `${JSON.stringify(selection)}\n`);
+    this.selection = { ...selection };
   }
 }

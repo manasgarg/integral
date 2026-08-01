@@ -20,6 +20,7 @@ import {
   type StartComponentsDependencies,
 } from "../src/server.ts";
 import type { Component } from "../src/constants.ts";
+import { requireActiveModelConnection } from "../src/runner.ts";
 
 test("[SERVER-DF5FD52E] component locks exclude duplicates only within one normalized deployment", async (t) => {
   const paths = await fixture(t),
@@ -29,7 +30,7 @@ test("[SERVER-DF5FD52E] component locks exclude duplicates only within one norma
   await assert.rejects(acquireLock(file), { code: "EEXIST" });
 });
 
-test("[SERVER-A74F29C1] independent RR_HOME roots have independent locks, state, identity, and deployment IDs", async (t) => {
+test("[SERVER-A74F29C1] independent INTEGRAL_HOME roots have independent locks, state, identity, and deployment IDs", async (t) => {
   const a = await fixture(t),
     b = await fixture(t),
     unlockA = await acquireLock(join(a.locks, "gateway.lock")),
@@ -58,7 +59,7 @@ test("[SERVER-3B7F90C2] [CONFIG-35D8A2F1] aggregate health probes each component
     await writeComponentState(paths, {
       component,
       deploymentId: deployment,
-      endpoint: `http://127.0.0.1:${component === "gateway" ? 7300 : component === "coordinator" ? 7301 : 7302}`,
+      endpoint: `http://127.0.0.1:${component === "gateway" ? 7310 : component === "coordinator" ? 7311 : 7312}`,
       pid: process.pid,
       status: "ready",
       fingerprint: component === "runner" ? "different" : "same",
@@ -125,7 +126,7 @@ test("[SERVER-7C21D5E8] coordinator and runner component state publishes loopbac
     await writeComponentState(paths, {
       component,
       deploymentId: deployment,
-      endpoint: `http://127.0.0.1:${component === "coordinator" ? 7301 : 7302}`,
+      endpoint: `http://127.0.0.1:${component === "coordinator" ? 7311 : 7312}`,
       pid: 1,
       status: "ready",
       fingerprint: "f",
@@ -247,7 +248,7 @@ test("[SERVER-C6A830F4] [LOG-E5A81D23] partial startup failure cleans the failin
   }
 });
 
-test("[SERVER-FE2BB5CF] [CONNECTION-20778353] runner selection alone performs model and Docker preflight", async (t) => {
+test("[SERVER-F886D80C] [SERVER-FE2BB5CF] [CONNECTION-20778353] runner startup preflights connection availability and Docker without selecting a model", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
     config = { ...base, logging: { ...base.logging, level: "error" as const } };
@@ -269,6 +270,27 @@ test("[SERVER-FE2BB5CF] [CONNECTION-20778353] runner selection alone performs mo
     assert.equal(created, component);
     assert.equal(preflights, component === "runner" ? 1 : 0);
   }
+});
+
+test("[SERVER-F886D80C] [CONNECTION-20778353] startup requires one active model connection but accepts several without selecting one", () => {
+  const connection = {
+    name: "anthropic",
+    kind: "model",
+    provider: "anthropic",
+    auth: "key",
+    state: "active",
+  } as const;
+  assert.throws(
+    () => requireActiveModelConnection([]),
+    /no active model connection.*integral connection add/,
+  );
+  assert.doesNotThrow(() => requireActiveModelConnection([connection]));
+  assert.doesNotThrow(() =>
+    requireActiveModelConnection([
+      connection,
+      { ...connection, name: "second" },
+    ]),
+  );
 });
 
 test("[SERVER-33E00BBA] [SERVER-E3A74B10] the production signal waiter stops once and removes both signal listeners", async () => {

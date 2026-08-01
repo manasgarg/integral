@@ -6,7 +6,7 @@ import type { Duplex } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import type { Connection } from "./connections.ts";
 import { credentialFor, loadConnections } from "./connections.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 import type { EffectiveConfig } from "./config.ts";
 import {
   decideRequest,
@@ -21,7 +21,7 @@ import {
   updateComponentState,
   verifyInternal,
 } from "./state.ts";
-import { RrError } from "./errors.ts";
+import { IntegralError } from "./errors.ts";
 import type { Logger } from "./logging.ts";
 import { oauthAccess, refreshOAuth } from "./oauth.ts";
 import { atomicWrite } from "./fs.ts";
@@ -75,7 +75,7 @@ export class Gateway {
   private sawInvalidConnections = false;
   private readonly dependencies: GatewayDependencies;
   constructor(
-    private readonly paths: RrPaths,
+    private readonly paths: IntegralPaths,
     private readonly config: EffectiveConfig,
     private readonly logger: Logger,
     overrides: Partial<GatewayDependencies> = {},
@@ -110,7 +110,7 @@ export class Gateway {
   async reload(strict = false): Promise<void> {
     const loaded = await loadConnections(this.paths);
     if (strict && loaded.errors.length)
-      throw new RrError(loaded.errors.join("\n"));
+      throw new IntegralError(loaded.errors.join("\n"));
     const credentialErrors: string[] = [];
     this.candidates = await Promise.all(
       loaded.connections.map(async (connection) => {
@@ -120,6 +120,7 @@ export class Gateway {
         if (raw && oauthAccess(raw))
           try {
             const refreshed = await this.dependencies.refreshOAuth(
+              this.paths,
               connection,
               raw,
             );
@@ -194,12 +195,12 @@ export class Gateway {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    if (req.url === "/rr/health") {
+    if (req.url === "/integral/health") {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify(await gatewayHealth(this.paths)));
       return;
     }
-    if (req.url === "/rr/internal/session" && req.method === "POST") {
+    if (req.url === "/integral/internal/session" && req.method === "POST") {
       if (
         !verifyInternal(
           req.headers,
@@ -222,7 +223,10 @@ export class Gateway {
       res.writeHead(204).end();
       return;
     }
-    if (req.url === "/rr/internal/docker-listener" && req.method === "POST") {
+    if (
+      req.url === "/integral/internal/docker-listener" &&
+      req.method === "POST"
+    ) {
       if (
         !verifyInternal(
           req.headers,
@@ -257,7 +261,7 @@ export class Gateway {
       res.writeHead(204).end();
       return;
     }
-    if (req.url === "/rr/internal/session" && req.method === "DELETE") {
+    if (req.url === "/integral/internal/session" && req.method === "DELETE") {
       if (
         !verifyInternal(
           req.headers,
@@ -277,7 +281,7 @@ export class Gateway {
     const sessionId = this.authenticate(req);
     if (!sessionId) {
       res
-        .writeHead(407, { "proxy-authenticate": "Basic realm=rr" })
+        .writeHead(407, { "proxy-authenticate": "Basic realm=integral" })
         .end("proxy authentication required\n");
       return;
     }
@@ -288,7 +292,7 @@ export class Gateway {
     } catch (error) {
       this.logger.event("info", "gateway.decision", "gateway denied request", {
         verdict:
-          error instanceof RrError && error.exitCode === 403
+          error instanceof IntegralError && error.exitCode === 403
             ? "policy-deny"
             : "request-failed",
         method: req.method,
@@ -354,7 +358,7 @@ export class Gateway {
     const sessionId = this.authenticate(req);
     if (!sessionId) {
       socket.end(
-        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=rr\r\n\r\n",
+        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=integral\r\n\r\n",
       );
       return;
     }
@@ -368,7 +372,7 @@ export class Gateway {
       // Deny before TLS interception when no HTTPS connection can possibly match this host and port.
       const possible = allowsConnect(this.candidates, host, port);
       if (!possible)
-        throw new RrError("policy denied the requested destination", 403);
+        throw new IntegralError("policy denied the requested destination", 403);
       const cert = await this.dependencies.certificateFor(
         this.paths,
         host,
@@ -403,7 +407,7 @@ export class Gateway {
         session_id: sessionId,
       });
       socket.end(
-        `HTTP/1.1 ${error instanceof RrError ? error.exitCode : 502} Forbidden\r\n\r\nrequest denied\n`,
+        `HTTP/1.1 ${error instanceof IntegralError ? error.exitCode : 502} Forbidden\r\n\r\nrequest denied\n`,
       );
     }
   }
@@ -445,7 +449,7 @@ const productionDependencies: GatewayDependencies = {
   },
 };
 
-export async function gatewayHealth(paths: RrPaths): Promise<{
+export async function gatewayHealth(paths: IntegralPaths): Promise<{
   component: "gateway";
   deploymentId: string;
   status: "ready" | "degraded";
@@ -478,7 +482,7 @@ function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 function respondError(res: ServerResponse, error: unknown): void {
-  const status = error instanceof RrError ? error.exitCode : 500;
+  const status = error instanceof IntegralError ? error.exitCode : 500;
   res.writeHead(status >= 400 && status <= 599 ? status : 500, {
     "content-type": "text/plain",
   });

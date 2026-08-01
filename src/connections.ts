@@ -2,8 +2,8 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parse } from "smol-toml";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
-import { RrError } from "./errors.ts";
-import type { RrPaths } from "./paths.ts";
+import { IntegralError } from "./errors.ts";
+import type { IntegralPaths } from "./paths.ts";
 
 export type ConnectionKind = "model" | "http" | "mcp";
 export type AuthMethod = "oauth" | "device-code" | "key" | "none";
@@ -66,18 +66,18 @@ const knownKeys = new Set([
 
 function table(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    throw new RrError("connection declaration must be a TOML table");
+    throw new IntegralError("connection declaration must be a TOML table");
   return raw as Record<string, unknown>;
 }
 function requiredString(raw: unknown, key: string): string {
   if (typeof raw !== "string" || !raw.trim())
-    throw new RrError(`${key} is required`);
+    throw new IntegralError(`${key} is required`);
   return raw;
 }
 function optionalStrings(raw: unknown, key: string): string[] | undefined {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw) || raw.some((v) => typeof v !== "string" || !v))
-    throw new RrError(`${key} must be a list of strings`);
+    throw new IntegralError(`${key} must be a list of strings`);
   return raw as string[];
 }
 function secureUrl(raw: unknown, key: string): string {
@@ -86,10 +86,10 @@ function secureUrl(raw: unknown, key: string): string {
   try {
     parsed = new URL(value);
   } catch {
-    throw new RrError(`${key} must be a valid HTTP or HTTPS URL`);
+    throw new IntegralError(`${key} must be a valid HTTP or HTTPS URL`);
   }
   if (!["http:", "https:"].includes(parsed.protocol))
-    throw new RrError(`${key} must use HTTP or HTTPS`);
+    throw new IntegralError(`${key} must use HTTP or HTTPS`);
   return parsed.toString();
 }
 function oauthUrl(raw: unknown, key: string): string {
@@ -99,7 +99,7 @@ function oauthUrl(raw: unknown, key: string): string {
     url.protocol !== "https:" &&
     !["localhost", "127.0.0.1", "::1"].includes(url.hostname)
   )
-    throw new RrError(`${key} must use HTTPS unless it targets loopback`);
+    throw new IntegralError(`${key} must use HTTPS unless it targets loopback`);
   return value;
 }
 
@@ -111,24 +111,24 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
         key,
       )
     )
-      throw new RrError(
-        `${key}: credentials must be stored through rr connection add`,
+      throw new IntegralError(
+        `${key}: credentials must be stored through integral connection add`,
       );
     if (!knownKeys.has(key))
-      throw new RrError(`unknown connection option: ${key}`);
+      throw new IntegralError(`unknown connection option: ${key}`);
   }
   const name = requiredString(value.name, "name");
   if (!namePattern.test(name))
-    throw new RrError(
+    throw new IntegralError(
       "name must be filesystem-safe (letters, numbers, dot, underscore, or hyphen)",
     );
   if (stem && stem !== name)
-    throw new RrError(
+    throw new IntegralError(
       `connection file stem ${stem} does not match declared name ${name}`,
     );
   const kind = requiredString(value.kind, "kind") as ConnectionKind;
   if (!["model", "http", "mcp"].includes(kind))
-    throw new RrError("kind must be model, http, or mcp");
+    throw new IntegralError("kind must be model, http, or mcp");
   const provider =
     value.provider === undefined
       ? undefined
@@ -137,33 +137,37 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     kind === "model" &&
     !CATALOG.some((e) => e.kind === "model" && e.name === provider)
   )
-    throw new RrError("provider must name a catalog model provider");
+    throw new IntegralError("provider must name a catalog model provider");
   const catalog = CATALOG.find((e) => e.name === provider);
   const auth = (value.auth ??
     (catalog && "defaultAuth" in catalog ? catalog.defaultAuth : undefined)) as
     AuthMethod | undefined;
   if (!auth || !["oauth", "device-code", "key", "none"].includes(auth))
-    throw new RrError("auth must be oauth, device-code, key, or none");
+    throw new IntegralError("auth must be oauth, device-code, key, or none");
   if (kind === "model" && auth === "none")
-    throw new RrError("model connections do not support no authentication");
+    throw new IntegralError(
+      "model connections do not support no authentication",
+    );
   const url = kind === "model" ? undefined : secureUrl(value.url, "url");
   const methods =
     optionalStrings(value.methods, "methods")?.map((m) => m.toUpperCase()) ??
     (kind === "http" ? ["*"] : undefined);
   if (methods && methods.length === 0)
-    throw new RrError("methods must not be empty");
+    throw new IntegralError("methods must not be empty");
   if (methods?.some((m) => m !== "*" && !/^[A-Z]+$/.test(m)))
-    throw new RrError("methods must contain HTTP methods or *");
+    throw new IntegralError("methods must contain HTTP methods or *");
   const pathPrefix =
     value.path_prefix === undefined
       ? undefined
       : requiredString(value.path_prefix, "path_prefix");
   if (url && pathPrefix) {
     if (!pathPrefix.startsWith("/"))
-      throw new RrError("path_prefix must start with /");
+      throw new IntegralError("path_prefix must start with /");
     const basePath = new URL(url).pathname;
     if (!pathPrefix.startsWith(basePath))
-      throw new RrError("path_prefix may only narrow the connection URL path");
+      throw new IntegralError(
+        "path_prefix may only narrow the connection URL path",
+      );
   }
   const result: Connection = { name, kind, auth };
   if (provider) result.provider = provider;
@@ -180,7 +184,7 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
         ? "Bearer"
         : requiredString(value.scheme, "scheme");
     if (/\r|\n/.test(result.header + result.scheme))
-      throw new RrError(
+      throw new IntegralError(
         "header and scheme must not contain control characters",
       );
   }
@@ -204,7 +208,7 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
   if (kind === "mcp") {
     const transport = value.transport ?? "streamable-http";
     if (transport !== "streamable-http" && transport !== "sse")
-      throw new RrError("transport must be streamable-http or sse");
+      throw new IntegralError("transport must be streamable-http or sse");
     result.transport = transport;
   }
   return result;
@@ -237,7 +241,7 @@ export function connectionToml(c: Connection): string {
 }
 
 export async function loadConnections(
-  paths: RrPaths,
+  paths: IntegralPaths,
 ): Promise<{ connections: Connection[]; errors: string[] }> {
   let files: string[];
   try {
@@ -259,7 +263,7 @@ export async function loadConnections(
         basename(file, ".toml"),
       );
       if (names.has(c.name))
-        throw new RrError(`duplicate connection name: ${c.name}`);
+        throw new IntegralError(`duplicate connection name: ${c.name}`);
       names.add(c.name);
       connections.push(c);
     } catch (error) {
@@ -272,13 +276,13 @@ export async function loadConnections(
 }
 
 export async function credentialFor(
-  paths: RrPaths,
+  paths: IntegralPaths,
   name: string,
 ): Promise<string | undefined> {
   return readText(join(paths.credentials, name));
 }
 export async function credentialSecretValues(
-  paths: RrPaths,
+  paths: IntegralPaths,
 ): Promise<string[]> {
   const loaded = await loadConnections(paths),
     values = new Set<string>();
@@ -307,10 +311,10 @@ function collectStrings(value: unknown, values: Set<string>): void {
     for (const item of Object.values(value)) collectStrings(item, values);
 }
 export async function listConnections(
-  paths: RrPaths,
+  paths: IntegralPaths,
 ): Promise<ListedConnection[]> {
   const loaded = await loadConnections(paths);
-  if (loaded.errors.length) throw new RrError(loaded.errors.join("\n"));
+  if (loaded.errors.length) throw new IntegralError(loaded.errors.join("\n"));
   return Promise.all(
     loaded.connections.map(async (c) => ({
       ...c,
@@ -345,7 +349,7 @@ function usableCredential(
   }
 }
 
-async function bumpGeneration(paths: RrPaths): Promise<number> {
+async function bumpGeneration(paths: IntegralPaths): Promise<number> {
   const file = join(paths.state, "connection-generation");
   const current = Number((await readText(file))?.trim() || "0");
   const next = Number.isSafeInteger(current) ? current + 1 : 1;
@@ -354,7 +358,7 @@ async function bumpGeneration(paths: RrPaths): Promise<number> {
 }
 
 export async function saveConnection(
-  paths: RrPaths,
+  paths: IntegralPaths,
   connection: Connection,
   credential?: string,
 ): Promise<{ rotated: boolean; generation: number }> {
@@ -362,13 +366,13 @@ export async function saveConnection(
   const existed = await readText(declaration);
   const validated = validateConnection(connection);
   if (connection.auth !== "none" && !credential)
-    throw new RrError(
+    throw new IntegralError(
       `authentication credential is required for ${connection.auth}`,
     );
   if (existed === undefined) {
     const all = await loadConnections(paths);
     if (all.connections.some((c) => c.name === connection.name))
-      throw new RrError(`connection ${connection.name} already exists`);
+      throw new IntegralError(`connection ${connection.name} already exists`);
     if (credential)
       await atomicWrite(join(paths.credentials, connection.name), credential);
     try {
@@ -386,7 +390,9 @@ export async function saveConnection(
       current.provider !== connection.provider ||
       current.auth !== connection.auth
     )
-      throw new RrError(`connection name already used: ${connection.name}`);
+      throw new IntegralError(
+        `connection name already used: ${connection.name}`,
+      );
     // Rotation intentionally changes only the protected credential file.
     await atomicWrite(join(paths.credentials, connection.name), credential!);
   }
@@ -397,28 +403,28 @@ export async function saveConnection(
 }
 
 export async function removeCredential(
-  paths: RrPaths,
+  paths: IntegralPaths,
   name: string,
 ): Promise<void> {
   await rm(join(paths.credentials, name), { force: true });
   await bumpGeneration(paths);
 }
 export async function removeConnection(
-  paths: RrPaths,
+  paths: IntegralPaths,
   name: string,
 ): Promise<void> {
   const file = join(paths.connections, `${name}.toml`);
   try {
     await stat(file);
   } catch {
-    throw new RrError(`connection not found: ${name}`);
+    throw new IntegralError(`connection not found: ${name}`);
   }
   await rm(file);
   await rm(join(paths.credentials, name), { force: true });
   await bumpGeneration(paths);
 }
 
-export async function prepareStorage(paths: RrPaths): Promise<void> {
+export async function prepareStorage(paths: IntegralPaths): Promise<void> {
   await ensureDir(paths.connections);
   await ensureDir(paths.credentials);
 }

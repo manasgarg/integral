@@ -28,3 +28,4 @@ and must not be assigned again. Retired opaque IDs:
 - `CHAT-7C6DE818` — made each terminal invocation start a blank conversation
 - `CONFIG-9D37B5A0` — moved logging configuration into the logging behavior group
 - `CONNECTION-B4E83C2D` — defaulted Anthropic to OAuth instead of asking the user
+- `CONFIG-A5D19E72` — selected the model connection and model from the main configuration

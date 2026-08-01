@@ -64,7 +64,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
     await writeComponentState(paths, {
       component,
       deploymentId: deployment,
-      endpoint: `http://127.0.0.1:${component === "gateway" ? 7300 : component === "coordinator" ? 7301 : 7302}`,
+      endpoint: `http://127.0.0.1:${component === "gateway" ? 7310 : component === "coordinator" ? 7311 : 7312}`,
       pid: process.pid,
       status: "ready",
       fingerprint: config.fingerprint,
@@ -92,6 +92,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
     containers: ContainerBackend = {
       ensureImage() {
         calls.push("image");
+        return "sha256:test-pi";
       },
       async ensureNetwork() {
         calls.push("network");
@@ -122,7 +123,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
       fetch: async () => new Response("ok"),
       async internalFetch(_paths, _caller, _target, path, init) {
         calls.push(`${init?.method ?? "GET"}:${path}`);
-        if (path === "/rr/internal/claim") {
+        if (path === "/integral/internal/claim") {
           claims++;
           return Response.json({
             message:
@@ -136,6 +137,13 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
                     createdAt: "now",
                   }
                 : undefined,
+            selection: {
+              connection: "model",
+              provider: "anthropic",
+              model: "claude-sonnet-4-6",
+              piVersion: "1.2.3",
+              piImage: "sha256:test-pi",
+            },
             context: [],
           });
         }
@@ -152,6 +160,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
         sessionToken: "token-1",
       }),
       writeMcpExtension: async () => undefined,
+      writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
     },
@@ -162,13 +171,15 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
 
   assert.equal(calls.filter((call) => call === "pi:create").length, 1);
   assert.ok(calls.includes("pi:prompt:hello"));
+  assert.equal(spec?.image, "sha256:test-pi");
+  assert.deepEqual(spec?.args.slice(-2), ["--model", "claude-sonnet-4-6"]);
   await clock.fire(config.runner.idleTimeoutSeconds * 1000);
   assert.ok(calls.includes("pi:stop"));
-  assert.ok(calls.includes("DELETE:/rr/internal/session"));
+  assert.ok(calls.includes("DELETE:/integral/internal/session"));
   await runner.stop();
 });
 
-test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed work and destroys a failed Pi runtime", async (t) => {
+test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-A4C19E72] runner releases claimed work and destroys a failed Pi runtime", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
     config = {
@@ -190,7 +201,7 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed w
       spec,
       async start() {},
       async prompt() {
-        throw new Error("gateway connection lost");
+        throw new Error("Pi rejected prompt: gateway authentication failed");
       },
       async stop() {
         calls.push("pi:stop");
@@ -230,7 +241,9 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed w
     }),
     {
       containers: {
-        ensureImage() {},
+        ensureImage() {
+          return "sha256:test-pi";
+        },
         async ensureNetwork() {},
         networkGateway: () => "127.0.0.1",
         createPi: () => pi,
@@ -239,7 +252,7 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed w
       fetch: async () => new Response("ok"),
       async internalFetch(_paths, _caller, _target, path) {
         calls.push(path);
-        if (path === "/rr/internal/claim")
+        if (path === "/integral/internal/claim")
           return Response.json({
             message: {
               id: "message-2",
@@ -248,6 +261,13 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed w
               status: "in-flight",
               attempts: 1,
               createdAt: "now",
+            },
+            selection: {
+              connection: "model",
+              provider: "anthropic",
+              model: "claude-sonnet-4-6",
+              piVersion: "1.2.3",
+              piImage: "sha256:test-pi",
             },
             context: [],
           });
@@ -260,6 +280,7 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed w
         sessionToken: "token-2",
       }),
       writeMcpExtension: async () => undefined,
+      writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
     },
@@ -267,7 +288,93 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed w
 
   await runner.runOnce();
 
-  assert.ok(calls.includes("/rr/internal/work/message-2/release"));
+  assert.ok(calls.includes("/integral/internal/work/message-2/release"));
   assert.ok(calls.includes("pi:stop"));
-  assert.ok(calls.includes("/rr/internal/session"));
+  assert.ok(calls.includes("/integral/internal/session"));
+});
+
+test("[CHAT-C53A90D2] runner recycles an idle Pi container after the conversation selection changes", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = {
+      ...base,
+      logging: { ...base.logging, level: "error" as const },
+    },
+    deployment = deploymentId(paths),
+    calls: string[] = [],
+    pi: PiRuntime = {
+      spec: {
+        image: "test",
+        args: [],
+        environment: {},
+        mounts: [],
+        sessionId: "old-session",
+        sessionToken: "old-token",
+        home: "/test/session",
+        gatewayAddress: "127.0.0.1",
+      },
+      async start() {},
+      async prompt() {
+        return "unused";
+      },
+      async stop() {
+        calls.push("pi:stop");
+      },
+    };
+  for (const component of ["coordinator", "gateway", "runner"] as const)
+    await writeComponentState(paths, {
+      component,
+      deploymentId: deployment,
+      endpoint: "http://127.0.0.1:1",
+      pid: process.pid,
+      status: "ready",
+      fingerprint: config.fingerprint,
+      connectionGeneration: 0,
+      startedAt: "now",
+    });
+  const runner = new Runner(
+    paths,
+    config,
+    new Logger({
+      component: "runner",
+      deploymentId: deployment,
+      level: "error",
+      format: "json",
+      sink: () => undefined,
+    }),
+    {
+      clock: new ManualClock(),
+      fetch: async () => new Response("ok"),
+      async internalFetch(_paths, _caller, _target, path, init) {
+        calls.push(`${init?.method ?? "GET"}:${path}`);
+        if (path === "/integral/internal/claim")
+          return Response.json({
+            message: null,
+            selection: {
+              connection: "work",
+              provider: "openai-codex",
+              model: "gpt-5.5",
+              piVersion: "1.2.4",
+              piImage: "sha256:new-pi",
+            },
+            context: [],
+          });
+        return new Response(null, { status: 204 });
+      },
+    },
+  );
+  (runner as any).pi = pi;
+  (runner as any).piSelection = {
+    connection: "personal",
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    piVersion: "1.2.3",
+    piImage: "sha256:old-pi",
+  };
+
+  await runner.runOnce();
+
+  assert.ok(calls.includes("pi:stop"));
+  assert.ok(calls.includes("DELETE:/integral/internal/session"));
+  assert.equal((runner as any).pi, undefined);
 });

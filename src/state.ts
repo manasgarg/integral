@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
 import { open } from "node:fs/promises";
 import type { Component } from "./constants.ts";
-import type { RrPaths } from "./paths.ts";
+import type { IntegralPaths } from "./paths.ts";
 
 export interface ComponentState {
   component: Component;
@@ -17,17 +17,17 @@ export interface ComponentState {
   error?: string;
 }
 
-export function deploymentId(paths: RrPaths): string {
+export function deploymentId(paths: IntegralPaths): string {
   return createHash("sha256").update(paths.root).digest("hex").slice(0, 20);
 }
 export function componentStatePath(
-  paths: RrPaths,
+  paths: IntegralPaths,
   component: Component,
 ): string {
   return join(paths.componentState, `${component}.json`);
 }
 export async function writeComponentState(
-  paths: RrPaths,
+  paths: IntegralPaths,
   state: ComponentState,
 ): Promise<void> {
   await atomicWrite(
@@ -36,7 +36,7 @@ export async function writeComponentState(
   );
 }
 export async function readComponentState(
-  paths: RrPaths,
+  paths: IntegralPaths,
   component: Component,
 ): Promise<ComponentState | undefined> {
   const raw = await readText(componentStatePath(paths, component));
@@ -52,7 +52,7 @@ export async function readComponentState(
   }
 }
 export async function updateComponentState(
-  paths: RrPaths,
+  paths: IntegralPaths,
   component: Component,
   patch: Partial<
     Pick<ComponentState, "status" | "connectionGeneration" | "error">
@@ -65,7 +65,7 @@ export async function updateComponentState(
   await writeComponentState(paths, next);
 }
 
-export async function componentIdentity(paths: RrPaths): Promise<string> {
+export async function componentIdentity(paths: IntegralPaths): Promise<string> {
   const file = join(paths.state, "component-identity");
   const existing = (await readText(file))?.trim();
   if (existing) return existing;
@@ -92,8 +92,8 @@ export function internalHeaders(
   deployment: string,
 ): Record<string, string> {
   return {
-    "x-rr-component": component,
-    "x-rr-deployment": deployment,
+    "x-integral-component": component,
+    "x-integral-deployment": deployment,
     authorization: `Bearer ${token}`,
   };
 }
@@ -107,8 +107,8 @@ export function verifyInternal(
     ? expectedCaller
     : [expectedCaller];
   return (
-    callers.includes(headers["x-rr-component"] as Component) &&
-    headers["x-rr-deployment"] === deployment &&
+    callers.includes(headers["x-integral-component"] as Component) &&
+    headers["x-integral-deployment"] === deployment &&
     headers.authorization === `Bearer ${token}`
   );
 }

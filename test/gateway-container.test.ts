@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   decideRequest,
+  OAUTH_SENTINEL,
   parseProxyAuthorization,
   SENTINEL,
 } from "../src/gateway-policy.ts";
@@ -9,8 +10,11 @@ import {
   buildContainerSpec,
   dockerRunArgs,
   isManagedContainerVariable,
+  interpretPiProtocol,
   newSessionIdentity,
+  parsePiModelList,
   writeMcpExtension,
+  writePiCredential,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
 import { validateConnection } from "../src/connections.ts";
@@ -30,7 +34,7 @@ test("[GATEWAY-3F299566] gateway health identifies deployment and publishes the 
   await writeComponentState(paths, {
     component: "gateway",
     deploymentId: deployment,
-    endpoint: "http://127.0.0.1:7300",
+    endpoint: "http://127.0.0.1:7310",
     pid: process.pid,
     status: "degraded",
     fingerprint: "fingerprint",
@@ -102,7 +106,7 @@ test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only a
   assert.equal(parseProxyAuthorization("Bearer token"), undefined);
   assert.equal(
     parseProxyAuthorization(
-      `Basic ${Buffer.from("rr:session-token").toString("base64")}`,
+      `Basic ${Buffer.from("integral:session-token").toString("base64")}`,
     ),
     "session-token",
   );
@@ -140,6 +144,15 @@ test("[GATEWAY-A2BBBBE8] a matching connection injects its host credential only 
   );
   assert.equal(decision.connection.name, "api");
   assert.equal(decision.headers.authorization, "Bearer real-secret");
+  assert.equal(
+    decideRequest(
+      "POST",
+      new URL("https://api.test/v1/messages/1"),
+      { authorization: `Bearer ${OAUTH_SENTINEL}` },
+      [{ connection, credential: "real-secret" }],
+    ).headers.authorization,
+    "Bearer real-secret",
+  );
 });
 
 test("[GATEWAY-EB8D96FE] destinations, methods, paths, schemes, and ports outside active boundaries are denied", () => {
@@ -206,7 +219,8 @@ test("[ENV-D20B7A48] [ENV-3E85C1F9] [ENV-F19A64B2] [ENV-6C3F91E5] container envi
     identity = newSessionIdentity();
   const spec = buildContainerSpec({
     config,
-    gatewayUrl: "http://host.rr.internal:7300",
+    selectedModel: "claude-sonnet-4-6",
+    gatewayUrl: "http://host.integral.internal:7310",
     caCert: "/host/ca",
     caBundle: "/host/bundle",
     sessionHome: "/tmp/session",
@@ -215,23 +229,31 @@ test("[ENV-D20B7A48] [ENV-3E85C1F9] [ENV-F19A64B2] [ENV-6C3F91E5] container envi
     mcp: [],
   });
   assert.equal(spec.environment.ANTHROPIC_API_KEY, SENTINEL);
-  assert.match(spec.environment.HTTP_PROXY!, /rr:.*@host\.rr\.internal/);
+  assert.match(
+    spec.environment.HTTP_PROXY!,
+    /integral:.*@host\.integral\.internal/,
+  );
   assert.equal(spec.environment.HTTP_PROXY, spec.environment.HTTPS_PROXY);
   assert.equal(spec.environment.NO_PROXY, "");
-  assert.equal(spec.environment.NODE_EXTRA_CA_CERTS, "/rr-ca/rr-ca.pem");
-  assert.equal(spec.environment.SSL_CERT_FILE, "/rr-ca/ca-bundle.pem");
-  assert.equal("RR_HOME" in spec.environment, false);
+  assert.equal(
+    spec.environment.NODE_EXTRA_CA_CERTS,
+    "/integral-ca/integral-ca.pem",
+  );
+  assert.equal(spec.environment.SSL_CERT_FILE, "/integral-ca/ca-bundle.pem");
+  assert.equal(spec.environment.PI_CODING_AGENT_DIR, "/home/pi/.pi/agent");
+  assert.equal("INTEGRAL_HOME" in spec.environment, false);
   assert.equal("AWS_SECRET_ACCESS_KEY" in spec.environment, false);
 });
 
-test("[ENV-7B2D40AC] rr-managed environment names cannot be delegated to connection configuration", () => {
+test("[ENV-7B2D40AC] integral-managed environment names cannot be delegated to connection configuration", () => {
   for (const name of [
     "HOME",
     "PATH",
     "HTTPS_PROXY",
     "NODE_EXTRA_CA_CERTS",
-    "RR_HOME",
-    "RR_CUSTOM",
+    "PI_CODING_AGENT_DIR",
+    "INTEGRAL_HOME",
+    "INTEGRAL_CUSTOM",
   ])
     assert.equal(isManagedContainerVariable(name), true);
   assert.equal(isManagedContainerVariable("LANG"), false);
@@ -248,7 +270,8 @@ test("[CONNECTION-0FB2F92A] [CONNECTION-D20F6A85] real credentials are absent fr
     });
   const spec = buildContainerSpec({
     config,
-    gatewayUrl: "http://host.rr.internal:7300",
+    selectedModel: "claude-sonnet-4-6",
+    gatewayUrl: "http://host.integral.internal:7310",
     caCert: "/ca",
     caBundle: "/bundle",
     sessionHome: "/session",
@@ -272,7 +295,8 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-o
     }),
     spec = buildContainerSpec({
       config,
-      gatewayUrl: "http://host.rr.internal:7300",
+      selectedModel: "claude-sonnet-4-6",
+      gatewayUrl: "http://host.integral.internal:7310",
       caCert: "/ca",
       caBundle: "/bundle",
       sessionHome: "/fresh",
@@ -280,10 +304,11 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-o
       model,
       mcp: [],
     });
-  const args = dockerRunArgs(spec, config, "rr-locked");
+  const args = dockerRunArgs(spec, config, "integral-locked");
   for (const expected of [
+    "--interactive",
     "--network",
-    "rr-locked",
+    "integral-locked",
     "--user",
     "1000:1000",
     "no-new-privileges",
@@ -299,7 +324,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-o
   assert.equal(args.includes(process.cwd()), false);
 });
 
-test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the pinned image and prompt-capable Pi mode", async (t) => {
+test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the selected image and prompt-capable Pi mode", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     model = validateConnection({
@@ -311,7 +336,8 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
     identity = newSessionIdentity(),
     spec = buildContainerSpec({
       config,
-      gatewayUrl: "http://host.rr.internal:7300",
+      selectedModel: "claude-sonnet-4-6",
+      gatewayUrl: "http://host.integral.internal:7310",
       caCert: "/ca",
       caBundle: "/bundle",
       sessionHome: "/fresh",
@@ -319,18 +345,19 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
       model,
       mcp: [],
     });
-  assert.equal(spec.image, "rr-pi:0.1.0");
-  assert.deepEqual(spec.args.slice(0, 4), [
+  assert.equal(spec.image, "integral-pi:0.1.0");
+  assert.deepEqual(spec.args.slice(0, 5), [
     "--mode",
     "rpc",
     "--no-session",
     "--no-approve",
+    "--offline",
   ]);
-  assert.deepEqual(spec.args.slice(4, 8), [
+  assert.deepEqual(spec.args.slice(5, 9), [
     "--provider",
     "anthropic",
     "--api-key",
-    "rr-managed-credential",
+    "integral-managed-credential",
   ]);
   assert.equal(spec.sessionId, identity.sessionId);
 });
@@ -345,12 +372,66 @@ test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools con
     });
   await writeMcpExtension(paths.root, [mcp]);
   const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile(`${paths.root}/.pi/agent/extensions/rr-mcp.ts`, "utf8"),
+    fs.readFile(`${paths.root}/.pi/agent/extensions/integral-mcp.ts`, "utf8"),
   );
   assert.match(source, /"mcp_" \+ server\.name/);
   assert.match(source, /"name":"work_docs"/);
-  assert.match(source, /rr-managed-credential/);
+  assert.match(source, /integral-managed-credential/);
   assert.doesNotMatch(source, /actual-secret/);
+});
+
+test("[BOX-AB639757] OAuth model connections receive only a temporary sentinel OAuth credential", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    model = validateConnection({
+      name: "codex",
+      kind: "model",
+      provider: "openai-codex",
+      auth: "oauth",
+    }),
+    spec = buildContainerSpec({
+      config,
+      selectedModel: "gpt-5.6-luna",
+      gatewayUrl: "http://host.integral.internal:7310",
+      caCert: "/ca",
+      caBundle: "/bundle",
+      sessionHome: paths.root,
+      ...newSessionIdentity(),
+      model,
+      mcp: [],
+    });
+  await writePiCredential(paths.root, model);
+  const credential = await import("node:fs/promises").then((fs) =>
+    fs.readFile(`${paths.root}/.pi/agent/auth.json`, "utf8"),
+  );
+  assert.deepEqual(JSON.parse(credential), {
+    "openai-codex": {
+      type: "oauth",
+      access: OAUTH_SENTINEL,
+      refresh: SENTINEL,
+      expires: Number.MAX_SAFE_INTEGER,
+    },
+  });
+  assert.doesNotMatch(credential, /actual-secret/);
+  assert.equal(spec.args.includes("--api-key"), false);
+  assert.equal(spec.environment.PI_CODING_AGENT_DIR, "/home/pi/.pi/agent");
+});
+
+test("[FAILURE-A4C19E72] an immediate Pi prompt rejection becomes a turn error", () => {
+  assert.deepEqual(
+    interpretPiProtocol(
+      JSON.stringify({
+        type: "response",
+        command: "prompt",
+        success: false,
+        error: "provider authentication failed",
+      }),
+    ),
+    {
+      type: "rejected",
+      error: "Pi rejected prompt: provider authentication failed",
+    },
+  );
 });
 
 test("[BOX-BE26C696] runner configuration resolves finite turn and idle deadlines", async (t) => {
@@ -358,4 +439,14 @@ test("[BOX-BE26C696] runner configuration resolves finite turn and idle deadline
     config = await loadConfig(paths, {});
   assert.equal(config.runner.turnTimeoutSeconds, 1800);
   assert.equal(config.runner.idleTimeoutSeconds, 300);
+});
+
+test("[BOX-E1F472A1] Pi model discovery parses only active provider rows", () => {
+  const output = JSON.stringify([
+    { provider: "openai-codex", model: "gpt-5.6" },
+    { provider: "anthropic", model: "claude-new" },
+  ]);
+  assert.deepEqual(parsePiModelList(output, ["openai-codex"]), [
+    { provider: "openai-codex", model: "gpt-5.6" },
+  ]);
 });

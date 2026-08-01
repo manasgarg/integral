@@ -23,19 +23,21 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
   );
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
-    network = `rr-acceptance-${deploymentId(paths)}`,
+    network = `integral-acceptance-${deploymentId(paths)}`,
     sessionHome = join(paths.root, "session"),
     caCert = join(paths.root, "ca.pem"),
     caBundle = join(paths.root, "bundle.pem");
   await mkdir(sessionHome, { recursive: true });
   await writeFile(caCert, "acceptance CA fixture\n");
   await writeFile(caBundle, "acceptance CA fixture\n");
-  ensureContainerImage(config);
+  const image = ensureContainerImage(config, "0.80.3");
   await createLockedNetwork(network);
   const identity = newSessionIdentity(),
     spec = buildContainerSpec({
       config,
-      gatewayUrl: "http://host.rr.internal:7300",
+      selectedModel: "claude-sonnet-4-6",
+      image,
+      gatewayUrl: "http://host.integral.internal:7310",
       gatewayAddress: dockerNetworkGateway(network),
       caCert,
       caBundle,
@@ -49,7 +51,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
       }),
       mcp: [],
     }),
-    name = `rr-${identity.sessionId}`,
+    name = `integral-${identity.sessionId}`,
     runArgs = dockerRunArgs(spec, config, network),
     imageIndex = runArgs.indexOf(spec.image),
     createArgs = runArgs
@@ -78,7 +80,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
       encoding: "utf8",
     }),
   )[0] as {
-    Config: { User: string; Env: string[] };
+    Config: { User: string; Env: string[]; OpenStdin: boolean };
     HostConfig: {
       ReadonlyRootfs: boolean;
       CapDrop: string[];
@@ -90,6 +92,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
     Mounts: { Source: string; Destination: string; RW: boolean }[];
   };
   assert.equal(inspection.Config.User, "1000:1000");
+  assert.equal(inspection.Config.OpenStdin, true);
   assert.equal(inspection.HostConfig.ReadonlyRootfs, true);
   assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]);
   assert.equal(
@@ -122,5 +125,40 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
         { stdio: "ignore", timeout: 5_000 },
       ),
     "an internal-network container must not have a direct route to the internet",
+  );
+});
+
+test("[BOX-E1F472A1] managed Pi image exposes its model catalog through integral's JSON bridge", async (t) => {
+  assert.doesNotThrow(
+    () => execFileSync("docker", ["info"], { stdio: "ignore" }),
+    "Docker acceptance requires a reachable Docker daemon",
+  );
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    image = ensureContainerImage(config, "0.80.3"),
+    output = execFileSync(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        image,
+        "integral-pi-models",
+      ],
+      { encoding: "utf8" },
+    ),
+    catalog = JSON.parse(output) as Array<{
+      provider?: unknown;
+      model?: unknown;
+    }>;
+  assert.ok(
+    catalog.some(
+      (entry) =>
+        entry.provider === "openai-codex" &&
+        typeof entry.model === "string" &&
+        entry.model.startsWith("gpt-"),
+    ),
   );
 });
