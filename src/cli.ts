@@ -80,6 +80,7 @@ async function configCommand(args: string[]): Promise<number> {
     const errors: string[] = []; let config;
     try { config = await loadConfig(paths); } catch (error) { errors.push(messageOf(error)); }
     const loaded = await loadConnections(paths); errors.push(...loaded.errors);
+    if (config && loaded.errors.length === 0) { const active = await listConnections(paths); const models = active.filter((connection) => connection.kind === "model" && connection.state === "active"); if (!config.model.connection && models.length > 1) errors.push("multiple model connections are active; select one with [model].connection"); if (config.model.connection && !models.some((connection) => connection.name === config!.model.connection)) errors.push(`selected model connection ${config.model.connection} is absent, disabled, or not a model connection`); }
     const result = { valid: errors.length === 0, errors, fingerprint: config?.fingerprint };
     if (has(args, "--json")) writeJson(result); else process.stdout.write(errors.length ? `Configuration is invalid:\n${errors.map((e) => `- ${e}`).join("\n")}\n` : "Configuration is valid.\n"); return errors.length ? 1 : 0;
   }

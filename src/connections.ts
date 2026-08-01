@@ -152,17 +152,18 @@ async function bumpGeneration(paths: RrPaths): Promise<number> {
 export async function saveConnection(paths: RrPaths, connection: Connection, credential?: string): Promise<{ rotated: boolean; generation: number }> {
   const declaration = join(paths.connections, `${connection.name}.toml`);
   const existed = await readText(declaration);
+  const validated = validateConnection(connection);
+  if (connection.auth !== "none" && !credential) throw new RrError(`authentication credential is required for ${connection.auth}`);
   if (existed === undefined) {
     const all = await loadConnections(paths);
     if (all.connections.some((c) => c.name === connection.name)) throw new RrError(`connection ${connection.name} already exists`);
-    await atomicWrite(declaration, connectionToml(validateConnection(connection)));
+    if (credential) await atomicWrite(join(paths.credentials, connection.name), credential);
+    try { await atomicWrite(declaration, connectionToml(validated)); } catch (error) { if (credential) await rm(join(paths.credentials, connection.name), { force: true }); throw error; }
   } else {
     const current = validateConnection(parse(existed), connection.name);
     if (current.auth === "none" || current.kind !== connection.kind || current.provider !== connection.provider || current.auth !== connection.auth) throw new RrError(`connection name already used: ${connection.name}`);
-  }
-  if (connection.auth !== "none") {
-    if (!credential) throw new RrError(`authentication credential is required for ${connection.auth}`);
-    await atomicWrite(join(paths.credentials, connection.name), credential);
+    // Rotation intentionally changes only the protected credential file.
+    await atomicWrite(join(paths.credentials, connection.name), credential!);
   }
   return { rotated: existed !== undefined, generation: await bumpGeneration(paths) };
 }

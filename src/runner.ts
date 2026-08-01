@@ -18,7 +18,7 @@ export class Runner {
   private server: http.Server | undefined; private pi: PiContainer | undefined; private stopped = false; private polling: NodeJS.Timeout | undefined; private busy = false; private idle: NodeJS.Timeout | undefined; private dockerGateway = ""; private currentMessageId: string | undefined;
   constructor(private readonly paths: RrPaths, private readonly config: EffectiveConfig, private readonly logger: Logger) {}
   async start(): Promise<http.Server> {
-    const connections = await listConnections(this.paths); selectModel(connections, this.config); if (!dockerAvailable()) throw new RrError("Docker daemon is unavailable"); ensureContainerImage(this.config);
+    ensureContainerImage(this.config);
     const network = `rr-${deploymentId(this.paths)}`; await createLockedNetwork(network);
     this.dockerGateway = dockerNetworkGateway(network); await this.ensureGatewayListener().catch(() => undefined);
     const server = http.createServer((req, res) => { if (req.url === "/rr/health") { void readComponentState(this.paths, "runner").then((state) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ component: "runner", deploymentId: deploymentId(this.paths), status: state?.status ?? "ready", error: state?.error, session: this.pi?.spec.sessionId ?? null })); }); } else res.writeHead(404).end(); }); this.server = server;
@@ -60,6 +60,8 @@ export class Runner {
   private async destroyPi(): Promise<void> { clearTimeout(this.idle); this.idle = undefined; const pi = this.pi; this.pi = undefined; if (pi) { await this.revoke(pi.spec.sessionToken); await pi.stop(); await internalFetch(this.paths, "runner", "coordinator", "/rr/internal/session", { method: "POST", body: JSON.stringify({ sessionId: pi.spec.sessionId, state: "ended" }) }).catch(() => undefined); } }
   async stop(): Promise<void> { this.stopped = true; clearTimeout(this.polling); const messageId = this.currentMessageId; this.currentMessageId = undefined; if (messageId) await internalFetch(this.paths, "runner", "coordinator", `/rr/internal/work/${messageId}/release`, { method: "POST", body: JSON.stringify({ reason: "runner stopped" }) }).catch(() => undefined); await this.destroyPi(); const server = this.server; if (server) await new Promise<void>((resolve) => server.close(() => resolve())); }
 }
+
+export async function validateRunnerHost(paths: RrPaths, config: EffectiveConfig): Promise<void> { const connections = await listConnections(paths); selectModel(connections, config); if (!dockerAvailable()) throw new RrError("Docker daemon is unavailable"); }
 
 export function selectModel(connections: Connection[], config: EffectiveConfig): Connection {
   const active = connections.filter((c) => c.kind === "model" && "state" in c && c.state === "active");

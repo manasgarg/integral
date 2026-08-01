@@ -8,7 +8,7 @@ import type { RrPaths } from "./paths.ts";
 import { componentStatePath, deploymentId, readComponentState, writeComponentState } from "./state.ts";
 import { Coordinator } from "./coordinator.ts";
 import { Gateway } from "./gateway.ts";
-import { Runner } from "./runner.ts";
+import { Runner, validateRunnerHost } from "./runner.ts";
 import { Logger } from "./logging.ts";
 import { RrError } from "./errors.ts";
 import { credentialSecretValues } from "./connections.ts";
@@ -19,6 +19,7 @@ function portFor(config: EffectiveConfig, component: Component): number { return
 
 export async function startComponents(paths: RrPaths, config: EffectiveConfig, selected?: Component): Promise<void> {
   const components = selected ? [selected] : (["coordinator", "gateway", "runner"] satisfies Component[]); const started: Started[] = [], secrets = await credentialSecretValues(paths);
+  if (components.includes("runner")) await validateRunnerHost(paths, config);
   const stopAll = async () => { for (const item of started.toReversed()) { try { await item.stop(); item.logger.event("info", "component.lifecycle", "component stopped", { old_state: "ready", new_state: "stopped" }); } catch (error) { item.logger.event("error", "component.cleanup_failed", error instanceof Error ? error.message : String(error)); } await rm(componentStatePath(paths, item.component), { force: true }); try { await item.unlock(); } catch (error) { item.logger.event("error", "component.cleanup_failed", error instanceof Error ? error.message : String(error), { resource: "lock" }); } } };
   try {
     for (const component of components) {
