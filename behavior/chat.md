@@ -41,7 +41,9 @@ Given the terminal is interactive
 Given the user is in `rr talk`
 	When a Pi process is active inside its container
 		And that Pi process is working on an in-flight message
-		Then the terminal animates a `∮` working indicator without disturbing input
+		Then the terminal animates a `∮` working indicator on its own line
+			And keeps the human input prompt on the following line
+			And does not disturb input already being typed
 	When no Pi container is active or the active Pi process is idle
 		Then the terminal does not animate the working indicator
 

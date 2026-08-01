@@ -747,7 +747,11 @@ interface TalkOutput {
 interface TalkTerminalControls {
   clearLine(destination: TalkOutput): void;
   cursorTo(destination: TalkOutput): void;
-  moveCursor(destination: TalkOutput, offset: number): void;
+  moveCursor(
+    destination: TalkOutput,
+    horizontal: number,
+    vertical?: number,
+  ): void;
 }
 
 interface TalkTerminalClock {
@@ -774,8 +778,8 @@ export function createTalkTerminal(overrides?: {
         clearLine(stream as NodeJS.WriteStream, 0),
       cursorTo: (stream: TalkOutput) =>
         cursorTo(stream as NodeJS.WriteStream, 0),
-      moveCursor: (stream: TalkOutput, offset: number) =>
-        moveCursor(stream as NodeJS.WriteStream, offset, 0),
+      moveCursor: (stream: TalkOutput, horizontal: number, vertical = 0) =>
+        moveCursor(stream as NodeJS.WriteStream, horizontal, vertical),
     },
     clock = overrides?.clock ?? {
       setInterval: globalThis.setInterval,
@@ -786,15 +790,23 @@ export function createTalkTerminal(overrides?: {
     frame = 0,
     animation: unknown;
   const displayedPrompt = () =>
-      `${working ? `${TALK_WORK_FRAMES[frame]} ` : ""}${activePrompt ?? ""}`,
-    redrawPrompt = () => {
+      `${working ? `${TALK_WORK_FRAMES[frame]}\n` : ""}${activePrompt ?? ""}`,
+    clearDisplayedPrompt = (hasWorkingLine: boolean) => {
+      controls.clearLine(destination);
+      controls.cursorTo(destination);
+      if (hasWorkingLine) {
+        controls.moveCursor(destination, 0, -1);
+        controls.clearLine(destination);
+        controls.cursorTo(destination);
+      }
+    },
+    redrawPrompt = (hadWorkingLine: boolean) => {
       if (!activePrompt || !destination.isTTY) return;
       const pendingInput = terminal.line,
         pendingCursor = terminal.cursor;
       if (activePrompt === humanLabel(true))
         destination.write(TALK_STYLE_RESET);
-      controls.clearLine(destination);
-      controls.cursorTo(destination);
+      clearDisplayedPrompt(hadWorkingLine);
       destination.write(`${displayedPrompt()}${pendingInput}`);
       if (pendingCursor < pendingInput.length)
         controls.moveCursor(destination, pendingCursor - pendingInput.length);
@@ -819,8 +831,7 @@ export function createTalkTerminal(overrides?: {
         pendingCursor = terminal.cursor;
       if (activePrompt === humanLabel(true))
         destination.write(TALK_STYLE_RESET);
-      controls.clearLine(destination);
-      controls.cursorTo(destination);
+      clearDisplayedPrompt(working);
       destination.write(text);
       destination.write(`${displayedPrompt()}${pendingInput}`);
       if (pendingCursor < pendingInput.length)
@@ -828,15 +839,16 @@ export function createTalkTerminal(overrides?: {
     },
     setWorking(next) {
       if (working === next || !destination.isTTY) return;
+      const hadWorkingLine = working;
       working = next;
       frame = 0;
       if (animation !== undefined) clock.clearInterval(animation);
       animation = undefined;
-      redrawPrompt();
+      redrawPrompt(hadWorkingLine);
       if (working)
         animation = clock.setInterval(() => {
           frame = (frame + 1) % TALK_WORK_FRAMES.length;
-          redrawPrompt();
+          redrawPrompt(true);
         }, 160);
     },
     close() {
@@ -1215,7 +1227,7 @@ async function consumeEvents(
 }
 
 function humanLabel(colors: boolean): string {
-  return colors ? `${TALK_USER_STYLE} 👤 ` : "👤 ";
+  return colors ? `${TALK_USER_STYLE} ☺ ` : "☺ ";
 }
 
 function humanMessage(text: string, colors: boolean): string {

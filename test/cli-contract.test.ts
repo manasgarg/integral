@@ -416,8 +416,8 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
         cursorTo() {
           actions.push("start");
         },
-        moveCursor(_output, offset) {
-          actions.push(`move:${offset}`);
+        moveCursor(_output, horizontal, vertical = 0) {
+          actions.push(`move:${horizontal}:${vertical}`);
         },
       },
       clock: {
@@ -431,15 +431,15 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
         },
       },
     }),
-    pending = terminal.question("👤 ");
+    pending = terminal.question("☺ ");
 
   terminal.writeEvent!("∮ hello\n");
   assert.deepEqual(actions, [
     "clear",
     "start",
     "write:∮ hello\n",
-    "write:👤 draft",
-    "move:-3",
+    "write:☺ draft",
+    "move:-3:0",
   ]);
 
   actions.length = 0;
@@ -447,8 +447,8 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
   assert.deepEqual(actions, [
     "clear",
     "start",
-    "write:∮    👤 draft",
-    "move:-3",
+    "write:∮   \n☺ draft",
+    "move:-3:0",
     "interval:160",
   ]);
   actions.length = 0;
@@ -456,8 +456,23 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
   assert.deepEqual(actions, [
     "clear",
     "start",
-    "write:∮·   👤 draft",
-    "move:-3",
+    "move:0:-1",
+    "clear",
+    "start",
+    "write:∮·  \n☺ draft",
+    "move:-3:0",
+  ]);
+  actions.length = 0;
+  terminal.writeEvent!("∮ partial update\n");
+  assert.deepEqual(actions, [
+    "clear",
+    "start",
+    "move:0:-1",
+    "clear",
+    "start",
+    "write:∮ partial update\n",
+    "write:∮·  \n☺ draft",
+    "move:-3:0",
   ]);
   actions.length = 0;
   terminal.setWorking!(false);
@@ -465,8 +480,11 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
     "clearInterval:animation",
     "clear",
     "start",
-    "write:👤 draft",
-    "move:-3",
+    "move:0:-1",
+    "clear",
+    "start",
+    "write:☺ draft",
+    "move:-3:0",
   ]);
 
   finishQuestion("done");
@@ -477,7 +495,7 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
 
 test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
-    userLabel = "\u001b[48;5;238m\u001b[97m 👤 ",
+    userLabel = "\u001b[48;5;238m\u001b[97m ☺ ",
     lines = [
       "   ",
       "   ",
