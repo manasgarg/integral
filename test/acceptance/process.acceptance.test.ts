@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import test from "node:test";
 import { saveConnection, validateConnection } from "../../src/connections.ts";
 import { componentStatePath, readComponentState } from "../../src/state.ts";
 import { fixture } from "../helpers.ts";
+import { DurableQueue } from "../../src/queue.ts";
 
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -34,7 +35,7 @@ async function waitUntil(
   assert.fail(`timed out waiting for server readiness\n${diagnostics()}`);
 }
 
-test("[SERVER-F886D80C] [SERVER-33E00BBA] real CLI process becomes ready and cleans owned deployment state after SIGTERM", async (t) => {
+test("[SERVER-F886D80C] [SERVER-33E00BBA] [QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUEUE-2F6B9D04] real CLI processes manage the queue and server lifecycle", async (t) => {
   if (process.platform === "win32") t.skip("POSIX signal acceptance test");
   const paths = await fixture(t),
     fakeBin = join(paths.root, "test-bin"),
@@ -73,14 +74,19 @@ level = "error"
     }),
     "acceptance-secret",
   );
+  const durableQueue = new DurableQueue(paths.queue);
+  await durableQueue.load();
+  const queued = await durableQueue.enqueue("acceptance queued");
+
+  const childEnv = {
+    ...process.env,
+    RR_HOME: paths.root,
+    PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+  };
 
   const child = spawn(process.execPath, ["bin/rr.js", "server", "start"], {
     cwd: process.cwd(),
-    env: {
-      ...process.env,
-      RR_HOME: paths.root,
-      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-    },
+    env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "",
@@ -102,6 +108,25 @@ level = "error"
       ).every((state) => state?.status === "ready"),
     () => `${stdout}\n${stderr}`,
   );
+  const runQueue = (args: string[]) =>
+    execFileSync(process.execPath, ["bin/rr.js", "queue", ...args], {
+      cwd: process.cwd(),
+      env: childEnv,
+      encoding: "utf8",
+    });
+  assert.match(
+    runQueue(["ls"]),
+    new RegExp(`queued\\t${queued.id}\\tacceptance queued`),
+  );
+  assert.equal(
+    runQueue(["edit", queued.id, "revised", "text"]),
+    `Edited ${queued.id}.\n`,
+  );
+  assert.deepEqual(JSON.parse(runQueue(["ls", "--json"])), [
+    { ...queued, text: "revised text" },
+  ]);
+  assert.equal(runQueue(["delete", queued.id]), `Deleted ${queued.id}.\n`);
+  assert.deepEqual(JSON.parse(runQueue(["ls", "--json"])), []);
   child.kill("SIGTERM");
   const exit = await new Promise<{
     code: number | null;

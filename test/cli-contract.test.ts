@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { main, selectAuthentication, talkCommand } from "../src/cli.ts";
+import {
+  main,
+  queueCommand,
+  selectAuthentication,
+  talkCommand,
+} from "../src/cli.ts";
 import { fixture } from "./helpers.ts";
 
 async function capture(
@@ -54,6 +59,8 @@ test("[CLI-A7D3E91B] -h prints applicable help at every command depth without pe
     ["connection", "add", "-h"],
     ["server", "-h"],
     ["server", "start", "-h"],
+    ["queue", "-h"],
+    ["queue", "ls", "-h"],
     ["talk", "-h"],
   ]) {
     const result = await capture(args, {
@@ -264,6 +271,99 @@ test("[SERVER-2C8F41A7] component startup help documents combined and three sepa
     "gateway",
   ])
     assert.match(result.stdout, new RegExp(word));
+});
+
+test("[QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUEUE-2F6B9D04] top-level queue commands use the coordinator without attaching a talk session", async (t) => {
+  const paths = await fixture(t),
+    requests: { path: string; method: string; body?: string }[] = [];
+  let stdout = "";
+  const dependencies = {
+    resolvePaths: () => paths,
+    componentEndpoint: async () => "http://coordinator.test",
+    verifiedFetch: async () => new Response("ok"),
+    writeOutput(text: string) {
+      stdout += text;
+    },
+    async fetch(input: string | URL | Request, init?: RequestInit) {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input
+            : input.url,
+      );
+      requests.push({
+        path: url.pathname,
+        method: init?.method ?? "GET",
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      if (url.pathname === "/rr/snapshot")
+        return Response.json({
+          queue: [
+            { id: "message-1", text: "first", status: "in-flight" },
+            { id: "message-2", text: "second", status: "queued" },
+          ],
+        });
+      return new Response(null, { status: 204 });
+    },
+  };
+
+  assert.equal(await queueCommand(["ls"], dependencies), 0);
+  assert.match(stdout, /in-flight\tmessage-1\tfirst/);
+  assert.match(stdout, /queued\tmessage-2\tsecond/);
+  stdout = "";
+  assert.equal(await queueCommand(["ls", "--json"], dependencies), 0);
+  assert.deepEqual(JSON.parse(stdout), [
+    { id: "message-1", text: "first", status: "in-flight" },
+    { id: "message-2", text: "second", status: "queued" },
+  ]);
+  stdout = "";
+  assert.equal(
+    await queueCommand(
+      ["edit", "message-2", "revised", "message"],
+      dependencies,
+    ),
+    0,
+  );
+  assert.equal(stdout, "Edited message-2.\n");
+  stdout = "";
+  assert.equal(await queueCommand(["delete", "message-2"], dependencies), 0);
+  assert.equal(stdout, "Deleted message-2.\n");
+  assert.deepEqual(
+    requests.map((request) => [request.method, request.path, request.body]),
+    [
+      ["GET", "/rr/snapshot", undefined],
+      ["GET", "/rr/snapshot", undefined],
+      [
+        "PATCH",
+        "/rr/queue/message-2",
+        JSON.stringify({ text: "revised message" }),
+      ],
+      ["DELETE", "/rr/queue/message-2", undefined],
+    ],
+  );
+  assert.equal(
+    requests.some((request) => request.path === "/rr/events"),
+    false,
+  );
+});
+
+test("[QUEUE-947D3AC0] top-level queue commands report coordinator rejections", async (t) => {
+  const paths = await fixture(t);
+  await assert.rejects(
+    queueCommand(["delete", "missing"], {
+      resolvePaths: () => paths,
+      componentEndpoint: async () => "http://coordinator.test",
+      verifiedFetch: async () => new Response("ok"),
+      writeOutput() {},
+      fetch: async () =>
+        Response.json(
+          { error: "message missing is not queued" },
+          { status: 404 },
+        ),
+    }),
+    /message missing is not queued/,
+  );
 });
 
 test("[CHAT-84D839CE] talk help documents every local command and never contacts Pi", async () => {

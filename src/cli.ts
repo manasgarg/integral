@@ -36,6 +36,7 @@ Usage: rr <command>
 Commands:
   server       run or inspect server components
   talk         attach this terminal to the durable conversation
+  queue        inspect or change queued messages
   connection   configure external connections
   config       inspect and validate configuration
   version      print implementation versions
@@ -65,6 +66,13 @@ const SERVER_HELP = `Usage: rr server start [--component <name>]
 
 Combined mode is the default. --component <name> starts one component only.
 Component values: coordinator, runner, gateway
+`;
+const QUEUE_HELP = `Usage: rr queue <command>
+
+Commands:
+  ls [--json]             list queued and in-flight messages
+  edit <id> <text>        edit a queued message
+  delete <id>             delete a queued message
 `;
 const TALK_HELP = `/help                         show this help
 /status                       show shared chat status
@@ -191,6 +199,7 @@ export async function main(args: string[]): Promise<number> {
     if (command === "config") return await configCommand(rest);
     if (command === "connection") return await connectionCommand(rest);
     if (command === "server") return await serverCommand(rest);
+    if (command === "queue") return await queueCommand(rest);
     if (command === "talk") return await talkCommand(rest);
     throw new RrError(`unknown command: ${command}`);
   } catch (error) {
@@ -602,6 +611,90 @@ async function serverCommand(args: string[]): Promise<number> {
     return 0;
   }
   throw new RrError(`unknown server command: ${command}`);
+}
+
+interface QueueItem {
+  id: string;
+  text: string;
+  status: string;
+}
+
+export interface QueueDependencies {
+  resolvePaths(): RrPaths;
+  componentEndpoint: typeof componentEndpoint;
+  verifiedFetch: typeof verifiedFetch;
+  fetch: typeof globalThis.fetch;
+  writeOutput(text: string): void;
+}
+
+const productionQueueDependencies: QueueDependencies = {
+  resolvePaths,
+  componentEndpoint,
+  verifiedFetch,
+  fetch: globalThis.fetch,
+  writeOutput: (text) => process.stdout.write(text),
+};
+
+export async function queueCommand(
+  args: string[],
+  overrides: Partial<QueueDependencies> = {},
+): Promise<number> {
+  const dependencies = { ...productionQueueDependencies, ...overrides };
+  if (!args[0] || helpRequested(args) || args[0] === "help") {
+    dependencies.writeOutput(QUEUE_HELP);
+    return 0;
+  }
+  const paths = dependencies.resolvePaths();
+  let endpoint: string;
+  try {
+    endpoint = await dependencies.componentEndpoint(paths, "coordinator");
+    await dependencies.verifiedFetch(paths, "coordinator", "/rr/health");
+  } catch {
+    throw new RrError(
+      "coordinator is not reachable; start it with rr server start",
+    );
+  }
+  const command = args[0];
+  if (command === "ls") {
+    const snapshot = (await fetchJson(
+      new URL("/rr/snapshot", endpoint),
+      dependencies.fetch,
+    )) as { queue: QueueItem[] };
+    if (has(args, "--json"))
+      dependencies.writeOutput(`${JSON.stringify(snapshot.queue, null, 2)}\n`);
+    else
+      for (const item of snapshot.queue)
+        dependencies.writeOutput(`${item.status}\t${item.id}\t${item.text}\n`);
+    return 0;
+  }
+  if (command === "edit") {
+    const id = args[1],
+      text = args.slice(2).join(" ").trim();
+    if (!id || !text) throw new RrError("usage: rr queue edit <id> <text>");
+    await requestOk(
+      new URL(`/rr/queue/${id}`, endpoint),
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      },
+      dependencies.fetch,
+    );
+    dependencies.writeOutput(`Edited ${id}.\n`);
+    return 0;
+  }
+  if (command === "delete") {
+    const id = args[1];
+    if (!id) throw new RrError("usage: rr queue delete <id>");
+    await requestOk(
+      new URL(`/rr/queue/${id}`, endpoint),
+      { method: "DELETE" },
+      dependencies.fetch,
+    );
+    dependencies.writeOutput(`Deleted ${id}.\n`);
+    return 0;
+  }
+  throw new RrError(`unknown queue command: ${command}`);
 }
 
 export interface TalkTerminal {

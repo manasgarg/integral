@@ -35,6 +35,11 @@ Given the durable queue contains zero or more messages
 			And identifies the in-flight message separately
 			And shows the same result in every attached terminal
 			And does not send the command to Pi
+	When the user runs `rr queue ls`
+		Then rr requests the same queue snapshot from the coordinator without attaching a talk session
+			And lists each message's state, stable ID, and text in delivery order
+	When the user runs `rr queue ls --json`
+		Then rr prints the same ordered queue snapshot as JSON
 
 ## QUEUE-C84E1A70 — Edit a queued message
 
@@ -46,6 +51,9 @@ Given a message is durably queued and not in flight
 			And updates the corresponding durable user-conversation event
 			And broadcasts the edited message to every attached terminal
 			And sends only the edited text when the message is later claimed
+	When the user runs `rr queue edit <id> <text>`
+		Then rr requests the same atomic edit from the coordinator without attaching a talk session
+			And confirms the edited message ID after the coordinator accepts it
 	When the replacement text is empty or whitespace-only
 		Then rr rejects the edit without changing the queue or conversation
 
@@ -58,6 +66,9 @@ Given a message is durably queued and not in flight
 			And removes the corresponding durable user-conversation event
 			And broadcasts the deletion to every attached terminal
 			And never sends the deleted message to Pi
+	When the user runs `rr queue delete <id>`
+		Then rr requests the same atomic deletion from the coordinator without attaching a talk session
+			And confirms the deleted message ID after the coordinator accepts it
 
 ## QUEUE-D31A7C68 — Reject changes after a message is claimed
 

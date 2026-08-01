@@ -28,7 +28,14 @@ async function capture(
 test("[CLI-6001FE46] top-level help lists the public command surface", async () => {
   const result = await capture(["--help"]);
   assert.equal(result.code, 0);
-  for (const command of ["server", "talk", "connection", "config", "version"]) {
+  for (const command of [
+    "server",
+    "talk",
+    "queue",
+    "connection",
+    "config",
+    "version",
+  ]) {
     assert.match(result.stdout, new RegExp(`\\b${command}\\b`));
   }
   assert.doesNotMatch(result.stdout, /\bauth\b|\bcredential\b/);
