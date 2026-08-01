@@ -70,6 +70,8 @@ Given built-in defaults, main configuration, and environment overrides may apply
 		Then rr prints the effective configuration
 			And identifies each value as built-in, file, or environment sourced
 			And includes component ports and connection names
+			And formats human output as readable sections with one option per line
+			And does not render sections as inline JSON objects
 			And redacts credentials and internal component identities
 	When the user runs `rr config show --json`
 		Then rr returns the same effective values and sources as structured JSON

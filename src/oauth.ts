@@ -6,7 +6,7 @@ import { RrError } from "./errors.ts";
 
 export interface OAuthUi {
   show(message: string): void;
-  prompt(message: string): Promise<string>;
+  prompt(message: string, signal?: AbortSignal): Promise<string>;
   select?(
     message: string,
     options: { id: string; label: string }[],
@@ -25,6 +25,12 @@ export interface StoredOAuth {
   refresh?: string;
   expires: number;
 }
+export interface OAuthCallback {
+  redirect: string;
+  code: Promise<string>;
+  close(): Promise<void>;
+}
+export type OAuthCallbackFactory = (state: string) => Promise<OAuthCallback>;
 
 export async function runModelOAuth(
   provider: string,
@@ -32,24 +38,34 @@ export async function runModelOAuth(
   ui: OAuthUi,
 ): Promise<string> {
   const storage = AuthStorage.inMemory();
-  await storage.login(provider, {
-    onAuth: (info) =>
-      ui.show(
-        `${info.instructions ? `${info.instructions}\n` : ""}${info.url}`,
-      ),
-    onDeviceCode: (info) =>
-      ui.show(`Open ${info.verificationUri} and enter code ${info.userCode}`),
-    onPrompt: async (prompt) =>
-      ui.prompt(
-        `${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `,
-      ),
-    onProgress: (message) => ui.show(message),
-    onSelect: async (prompt) =>
-      method === "device-code"
-        ? prompt.options.find((o) => o.id.includes("device"))?.id
-        : (prompt.options.find((o) => o.id.includes("browser"))?.id ??
-          prompt.options[0]?.id),
-  });
+  const manualAbort = new AbortController();
+  try {
+    await storage.login(provider, {
+      onAuth: (info) =>
+        ui.show(
+          `${info.instructions ? `${info.instructions}\n` : ""}${info.url}`,
+        ),
+      onDeviceCode: (info) =>
+        ui.show(`Open ${info.verificationUri} and enter code ${info.userCode}`),
+      onPrompt: async (prompt) =>
+        ui.prompt(
+          `${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `,
+        ),
+      onManualCodeInput: () =>
+        ui.prompt(
+          "Paste the authorization code or full redirect URL: ",
+          manualAbort.signal,
+        ),
+      onProgress: (message) => ui.show(message),
+      onSelect: async (prompt) =>
+        method === "device-code"
+          ? prompt.options.find((o) => o.id.includes("device"))?.id
+          : (prompt.options.find((o) => o.id.includes("browser"))?.id ??
+            prompt.options[0]?.id),
+    });
+  } finally {
+    manualAbort.abort();
+  }
   const credential = storage.get(provider);
   if (!credential || credential.type !== "oauth")
     throw new RrError(`${provider} OAuth did not return a usable credential`);
@@ -60,6 +76,7 @@ export async function runGenericOAuth(
   connection: Connection,
   ui: OAuthUi,
   request: typeof fetch = fetch,
+  callbackFactory: OAuthCallbackFactory = startLocalOAuthCallback,
 ): Promise<string> {
   if (connection.auth === "device-code")
     return JSON.stringify(await deviceCode(connection, ui, request));
@@ -67,7 +84,9 @@ export async function runGenericOAuth(
     throw new RrError(
       "generic OAuth requires oauth or device-code authentication",
     );
-  return JSON.stringify(await authorizationCode(connection, ui, request));
+  return JSON.stringify(
+    await authorizationCode(connection, ui, request, callbackFactory),
+  );
 }
 
 async function deviceCode(
@@ -135,10 +154,75 @@ async function authorizationCode(
   connection: Connection,
   ui: OAuthUi,
   request: typeof fetch,
+  callbackFactory: OAuthCallbackFactory,
 ): Promise<StoredOAuth> {
   const verifier = randomBytes(48).toString("base64url"),
     challenge = createHash("sha256").update(verifier).digest("base64url"),
     state = randomBytes(24).toString("base64url");
+  const callback = await callbackFactory(state);
+  const redirect = callback.redirect;
+  const authorization = new URL(connection.authorizationUrl!);
+  authorization.searchParams.set("response_type", "code");
+  authorization.searchParams.set("client_id", connection.clientId!);
+  authorization.searchParams.set("redirect_uri", redirect);
+  authorization.searchParams.set("state", state);
+  authorization.searchParams.set("code_challenge", challenge);
+  authorization.searchParams.set("code_challenge_method", "S256");
+  if (connection.scopes?.length)
+    authorization.searchParams.set("scope", connection.scopes.join(" "));
+  ui.show(`Open this URL to authorize ${connection.name}:\n${authorization}`);
+  const manualAbort = new AbortController();
+  const never = () => new Promise<never>(() => undefined);
+  const manualCode = ui
+    .prompt(
+      "Paste the authorization code or full redirect URL (or wait for the local callback): ",
+      manualAbort.signal,
+    )
+    .then((value) =>
+      value.trim() ? authorizationCodeFromInput(value, state) : never(),
+    )
+    .catch((error: unknown) => {
+      if (manualAbort.signal.aborted) return never();
+      throw error;
+    });
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const authCode = await Promise.race([
+      callback.code,
+      manualCode,
+      new Promise<never>(
+        (_, reject) =>
+          (timeout = setTimeout(
+            () => reject(new RrError("OAuth authorization timed out")),
+            600_000,
+          )),
+      ),
+    ]);
+    const response = await postForm(
+      connection.tokenUrl!,
+      {
+        grant_type: "authorization_code",
+        code: authCode,
+        redirect_uri: redirect,
+        client_id: connection.clientId!,
+        code_verifier: verifier,
+      },
+      request,
+    );
+    const token = (await response.json()) as TokenResponse;
+    if (!response.ok || !token.access_token)
+      throw new RrError(
+        `OAuth token exchange failed: ${token.error_description ?? token.error ?? response.status}`,
+      );
+    return stored(token);
+  } finally {
+    manualAbort.abort();
+    if (timeout) clearTimeout(timeout);
+    await callback.close();
+  }
+}
+
+async function startLocalOAuthCallback(state: string): Promise<OAuthCallback> {
   let resolveCode!: (code: string) => void, rejectCode!: (error: Error) => void;
   const code = new Promise<string>((resolve, reject) => {
     resolveCode = resolve;
@@ -166,48 +250,35 @@ async function authorizationCode(
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
-  const port = (server.address() as { port: number }).port,
-    redirect = `http://127.0.0.1:${port}/callback`;
-  const authorization = new URL(connection.authorizationUrl!);
-  authorization.searchParams.set("response_type", "code");
-  authorization.searchParams.set("client_id", connection.clientId!);
-  authorization.searchParams.set("redirect_uri", redirect);
-  authorization.searchParams.set("state", state);
-  authorization.searchParams.set("code_challenge", challenge);
-  authorization.searchParams.set("code_challenge_method", "S256");
-  if (connection.scopes?.length)
-    authorization.searchParams.set("scope", connection.scopes.join(" "));
-  ui.show(`Open this URL to authorize ${connection.name}:\n${authorization}`);
-  try {
-    const authCode = await Promise.race([
-      code,
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new RrError("OAuth authorization timed out")),
-          600_000,
-        ),
-      ),
-    ]);
-    const response = await postForm(
-      connection.tokenUrl!,
-      {
-        grant_type: "authorization_code",
-        code: authCode,
-        redirect_uri: redirect,
-        client_id: connection.clientId!,
-        code_verifier: verifier,
-      },
-      request,
-    );
-    const token = (await response.json()) as TokenResponse;
-    if (!response.ok || !token.access_token)
-      throw new RrError(
-        `OAuth token exchange failed: ${token.error_description ?? token.error ?? response.status}`,
-      );
-    return stored(token);
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+  const port = (server.address() as { port: number }).port;
+  return {
+    redirect: `http://127.0.0.1:${port}/callback`,
+    code,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+export function authorizationCodeFromInput(
+  input: string,
+  expectedState: string,
+): string {
+  const value = input.trim();
+  if (!value) throw new RrError("missing OAuth authorization code");
+  if (/^https?:\/\//i.test(value)) {
+    let redirect: URL;
+    try {
+      redirect = new URL(value);
+    } catch {
+      throw new RrError("invalid OAuth redirect URL");
+    }
+    const state = redirect.searchParams.get("state");
+    if (state && state !== expectedState)
+      throw new RrError("OAuth state mismatch");
+    const code = redirect.searchParams.get("code");
+    if (!code) throw new RrError("OAuth redirect URL is missing code");
+    return code;
   }
+  return value;
 }
 
 function stored(token: TokenResponse): StoredOAuth {

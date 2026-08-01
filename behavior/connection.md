@@ -66,6 +66,16 @@ Given the selected connection type supports the requested authentication method
 	When the user requests an authentication method unsupported by the entry
 		Then rr rejects setup without creating a connection
 
+## CONNECTION-6D2A9F84 — Complete OAuth without opening a local browser
+
+Given the selected connection uses OAuth
+	And a browser cannot be opened locally
+	When the user runs `rr connection add`
+		Then rr prints the authorization URL in the terminal
+			And accepts a pasted authorization code or full redirect URL
+			And validates the redirect state when one is present
+			And completes the same credential storage as a local callback
+
 ## CONNECTION-1D691391 — Verify a connection during setup
 
 Given the selected catalog entry supports credential verification

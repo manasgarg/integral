@@ -44,6 +44,28 @@ test("[ENV-0E6A92C4] help, version, and catalog do not resolve invalid deploymen
   }
 });
 
+test("[CLI-A7D3E91B] -h prints applicable help at every command depth without performing the operation", async () => {
+  for (const args of [
+    ["-h"],
+    ["version", "-h"],
+    ["config", "-h"],
+    ["config", "show", "-h"],
+    ["connection", "-h"],
+    ["connection", "add", "-h"],
+    ["server", "-h"],
+    ["server", "start", "-h"],
+    ["talk", "-h"],
+  ]) {
+    const result = await capture(args, {
+      RR_HOME: "relative",
+      HOME: undefined,
+    });
+    assert.equal(result.code, 0, `${args.join(" ")}: ${result.stderr}`);
+    assert.match(result.stdout, /Usage:/, args.join(" "));
+    assert.equal(result.stderr, "", args.join(" "));
+  }
+});
+
 test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and removal but no grants", async () => {
   const result = await capture(["connection", "--help"]);
   assert.equal(result.code, 0);
@@ -177,6 +199,21 @@ test("[CONFIG-B93A4E70] [CONFIG-D4A70C31] validate and show offer equivalent mac
   const value = JSON.parse(shown.stdout);
   assert.equal(value.server.gatewayPort, 7300);
   assert.equal(value.sources["server.gateway_port"], "built-in");
+});
+
+test("[CONFIG-D4A70C31] human config output uses readable sourced sections instead of inline JSON", async (t) => {
+  const paths = await fixture(t),
+    shown = await capture(["config", "show"], {
+      RR_HOME: paths.root,
+      RR_GATEWAY_PORT: "7400",
+    });
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.match(shown.stdout, /^Effective configuration$/m);
+  assert.match(shown.stdout, /^\[server\]$/m);
+  assert.match(shown.stdout, /^gateway_port = 7400 {2}# source: environment$/m);
+  assert.match(shown.stdout, /^\[runner\]$/m);
+  assert.match(shown.stdout, /^\[connections\]\nnames = \[\]$/m);
+  assert.doesNotMatch(shown.stdout, /^server: \{/m);
 });
 
 test("[SERVER-2C8F41A7] component startup help documents combined and three separate modes", async () => {

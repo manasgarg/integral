@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { oauthAccess, runGenericOAuth } from "../src/oauth.ts";
+import {
+  authorizationCodeFromInput,
+  oauthAccess,
+  runGenericOAuth,
+} from "../src/oauth.ts";
 import { validateConnection } from "../src/connections.ts";
 
 test("[CONNECTION-512D9A25] generic device-code authentication runs authorization and token exchange without exposing the token to UI", async () => {
@@ -59,4 +63,73 @@ test("[CONNECTION-0FB2F92A] OAuth credential serialization yields only the curre
   });
   assert.equal(oauthAccess(raw), "access");
   assert.equal(oauthAccess("not-json"), undefined);
+});
+
+test("[CONNECTION-6D2A9F84] generic OAuth prints its URL and completes from a pasted redirect without a browser", async () => {
+  const connection = validateConnection({
+    name: "headless",
+    kind: "http",
+    url: "https://api.test",
+    auth: "oauth",
+    authorization_url: "https://login.test/authorize",
+    token_url: "https://login.test/token",
+    client_id: "public",
+  });
+  const shown: string[] = [];
+  let callbackClosed = false;
+  const request = (async (_url: string | URL | Request, init?: RequestInit) => {
+    assert.ok(init?.body instanceof URLSearchParams);
+    const form = init.body;
+    assert.equal(form.get("code"), "redirect-code");
+    return new Response(
+      JSON.stringify({ access_token: "headless-access", expires_in: 3600 }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  const stored = await runGenericOAuth(
+    connection,
+    {
+      show: (message) => shown.push(message),
+      prompt: async (message) => {
+        assert.match(
+          message,
+          /Paste the authorization code or full redirect URL/,
+        );
+        const authorization = new URL(shown[0]!.split("\n").at(-1)!);
+        assert.equal(authorization.origin, "https://login.test");
+        return `https://remote-browser.test/callback?code=redirect-code&state=${authorization.searchParams.get("state")}`;
+      },
+    },
+    request,
+    async () => ({
+      redirect: "http://127.0.0.1:7654/callback",
+      code: new Promise<string>(() => undefined),
+      close: async () => {
+        callbackClosed = true;
+      },
+    }),
+  );
+  assert.equal(oauthAccess(stored), "headless-access");
+  assert.match(shown[0]!, /https:\/\/login\.test\/authorize/);
+  assert.equal(callbackClosed, true);
+
+  assert.equal(
+    authorizationCodeFromInput(" pasted-code ", "expected"),
+    "pasted-code",
+  );
+  assert.equal(
+    authorizationCodeFromInput(
+      "http://127.0.0.1/callback?code=url-code&state=expected",
+      "expected",
+    ),
+    "url-code",
+  );
+  assert.throws(
+    () =>
+      authorizationCodeFromInput(
+        "http://127.0.0.1/callback?code=url-code&state=wrong",
+        "expected",
+      ),
+    /state mismatch/,
+  );
 });

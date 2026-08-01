@@ -19,3 +19,11 @@ Given rr is installed
 			And prints the Node.js version
 			And prints the supported Pi image tag
 			And exits successfully
+
+## CLI-A7D3E91B — Accept short help on every command
+
+Given rr is installed
+	When the user adds `-h` to any rr command or subcommand
+		Then rr prints the applicable help
+			And exits successfully
+			And does not perform the command operation

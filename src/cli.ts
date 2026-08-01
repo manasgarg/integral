@@ -70,6 +70,10 @@ const TALK_HELP = `/help                         show this help
 /queue delete <id>            delete a queued message
 /exit                         detach this terminal
 `;
+const VERSION_HELP = `Usage: rr version
+
+Print the rr, Node.js, and supported Pi versions.
+`;
 
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -78,8 +82,100 @@ function flag(args: string[], name: string): string | undefined {
 function has(args: string[], name: string): boolean {
   return args.includes(name);
 }
+function helpRequested(args: string[]): boolean {
+  return has(args, "--help") || has(args, "-h");
+}
 function writeJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function renderEffectiveConfig(
+  config: EffectiveConfig,
+  connections: string[],
+): string {
+  const sections: Array<
+    [string, Array<[string, string | number, string | undefined]>]
+  > = [
+    [
+      "server",
+      [
+        ["gateway_port", config.server.gatewayPort, "server.gateway_port"],
+        [
+          "coordinator_port",
+          config.server.coordinatorPort,
+          "server.coordinator_port",
+        ],
+        ["runner_port", config.server.runnerPort, "server.runner_port"],
+      ],
+    ],
+    [
+      "runner",
+      [
+        ["image", config.runner.image, "runner.image"],
+        ["pull_policy", config.runner.pullPolicy, "runner.pull_policy"],
+        [
+          "turn_timeout_seconds",
+          config.runner.turnTimeoutSeconds,
+          "runner.turn_timeout_seconds",
+        ],
+        [
+          "idle_timeout_seconds",
+          config.runner.idleTimeoutSeconds,
+          "runner.idle_timeout_seconds",
+        ],
+        ["memory_mb", config.runner.memoryMb, "runner.memory_mb"],
+        ["tmpfs_mb", config.runner.tmpfsMb, "runner.tmpfs_mb"],
+      ],
+    ],
+    [
+      "conversation",
+      [
+        [
+          "context_max_messages",
+          config.conversation.contextMaxMessages,
+          "conversation.context_max_messages",
+        ],
+        [
+          "context_max_chars",
+          config.conversation.contextMaxChars,
+          "conversation.context_max_chars",
+        ],
+      ],
+    ],
+    [
+      "logging",
+      [
+        ["level", config.logging.level, "logging.level"],
+        ["format", config.logging.format, "logging.format"],
+      ],
+    ],
+  ];
+  if (config.model.connection || config.model.model)
+    sections.push([
+      "model",
+      [
+        ...(config.model.connection
+          ? ([
+              ["connection", config.model.connection, "model.connection"],
+            ] as Array<[string, string, string]>)
+          : []),
+        ...(config.model.model
+          ? ([["model", config.model.model, "model.model"]] as Array<
+              [string, string, string]
+            >)
+          : []),
+      ],
+    ]);
+  const lines = ["Effective configuration"];
+  for (const [section, values] of sections) {
+    lines.push("", `[${section}]`);
+    for (const [key, value, source] of values)
+      lines.push(
+        `${key} = ${typeof value === "string" ? JSON.stringify(value) : value}${source ? `  # source: ${config.sources[source]}` : ""}`,
+      );
+  }
+  lines.push("", "[connections]", `names = ${JSON.stringify(connections)}`, "");
+  return lines.join("\n");
 }
 
 export async function main(args: string[]): Promise<number> {
@@ -95,6 +191,10 @@ export async function main(args: string[]): Promise<number> {
       return 0;
     }
     if (command === "version" || command === "--version" || command === "-V") {
+      if (helpRequested(rest)) {
+        process.stdout.write(VERSION_HELP);
+        return 0;
+      }
       process.stdout.write(
         `rr ${RR_VERSION}\nNode.js ${process.versions.node}\nPi ${PI_VERSION}\n`,
       );
@@ -113,7 +213,7 @@ export async function main(args: string[]): Promise<number> {
 
 async function configCommand(args: string[]): Promise<number> {
   const command = args[0];
-  if (!command || has(args, "--help") || command === "help") {
+  if (!command || helpRequested(args) || command === "help") {
     process.stdout.write(CONFIG_HELP);
     return 0;
   }
@@ -185,10 +285,8 @@ async function configCommand(args: string[]): Promise<number> {
       sources: config.sources,
     };
     if (has(args, "--json")) writeJson(result);
-    else {
-      for (const [section, values] of Object.entries(result))
-        process.stdout.write(`${section}: ${JSON.stringify(values)}\n`);
-    }
+    else
+      process.stdout.write(renderEffectiveConfig(config, result.connections));
     return 0;
   }
   throw new RrError(`unknown config command: ${command}`);
@@ -196,7 +294,7 @@ async function configCommand(args: string[]): Promise<number> {
 
 async function connectionCommand(args: string[]): Promise<number> {
   const command = args[0];
-  if (!command || has(args, "--help") || command === "help") {
+  if (!command || helpRequested(args) || command === "help") {
     process.stdout.write(CONNECTION_HELP);
     return 0;
   }
@@ -429,7 +527,8 @@ async function authenticateOAuth(connection: Connection): Promise<string> {
   const rl = createInterface({ input, output });
   const ui = {
     show: (message: string) => process.stdout.write(`${message}\n`),
-    prompt: (message: string) => rl.question(message),
+    prompt: (message: string, signal?: AbortSignal) =>
+      signal ? rl.question(message, { signal }) : rl.question(message),
   };
   try {
     return connection.kind === "model"
@@ -470,7 +569,7 @@ async function confirm(
 
 async function serverCommand(args: string[]): Promise<number> {
   const command = args[0];
-  if (!command || has(args, "--help") || command === "help") {
+  if (!command || helpRequested(args) || command === "help") {
     process.stdout.write(SERVER_HELP);
     return 0;
   }
@@ -499,7 +598,7 @@ async function serverCommand(args: string[]): Promise<number> {
 }
 
 async function talkCommand(args: string[]): Promise<number> {
-  if (has(args, "--help")) {
+  if (helpRequested(args)) {
     process.stdout.write(
       `Usage: rr talk\n\nAttach this terminal to the one durable deployment conversation.\n${TALK_HELP}`,
     );

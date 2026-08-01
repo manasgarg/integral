@@ -263,6 +263,8 @@ export async function loadConfig(
     const [section, option] = key.split(".") as [string, string];
     sources[key] = source(section, option);
   }
+  if (model.connection) sources["model.connection"] = "file";
+  if (model.model) sources["model.model"] = "file";
   for (const [component, envValue] of Object.entries(envPorts))
     if (envValue !== undefined)
       sources[`server.${component}_port`] = "environment";
