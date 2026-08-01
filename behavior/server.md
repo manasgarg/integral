@@ -3,6 +3,13 @@
 These behaviors cover the coordinator, runner, and gateway components in
 combined and separate-process modes.
 
+<!-- Automation note (SERVER-F886D80C): Combined orchestration and cleanup are automated; the foreground process is not launched with Docker in the default suite. -->
+<!-- Automation note (SERVER-A74F29C1): Deployment identity, locks, credentials, and state isolation are automated; two live Docker deployments require a Docker-enabled acceptance host. -->
+<!-- Automation note (SERVER-FE2BB5CF): Docker dependency placement is automated by component contract tests; daemon failure is not induced against a live daemon. -->
+<!-- Automation note (SERVER-33E00BBA): Signal registration and complete owned-resource cleanup are automated at the lifecycle boundary; OS signal delivery to a live Docker deployment is an acceptance test. -->
+<!-- Automation note (SERVER-8A31D6C4): Separate component construction and network boundaries are automated in-process; three foreground OS processes are not spawned by the restricted default test runner. -->
+<!-- Automation note (SERVER-E3A74B10): Per-component ownership and cleanup are automated; live process signaling is reserved for an acceptance environment. -->
+
 ## SERVER-F886D80C — Start all components in one foreground process
 
 Given Docker is available

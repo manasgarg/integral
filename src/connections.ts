@@ -16,7 +16,7 @@ export interface Connection {
 export interface ListedConnection extends Connection { state: "active" | "DISABLED (no secret)" }
 
 export const CATALOG = [
-  { name: "openai-codex", kind: "model", auth: ["oauth", "device-code", "key"], defaultAuth: "oauth" },
+  { name: "openai-codex", kind: "model", auth: ["oauth", "device-code"], defaultAuth: "oauth" },
   { name: "anthropic", kind: "model", auth: ["oauth", "key"], defaultAuth: "key" },
   { name: "http", kind: "http", auth: ["oauth", "device-code", "key", "none"] },
   { name: "mcp", kind: "mcp", auth: ["oauth", "device-code", "key", "none"] },
@@ -133,11 +133,14 @@ export async function loadConnections(paths: RrPaths): Promise<{ connections: Co
 export async function credentialFor(paths: RrPaths, name: string): Promise<string | undefined> {
   return readText(join(paths.credentials, name));
 }
+export async function credentialSecretValues(paths: RrPaths): Promise<string[]> { const loaded = await loadConnections(paths), values = new Set<string>(); for (const connection of loaded.connections) { const raw = await credentialFor(paths, connection.name); if (!raw) continue; values.add(raw.trim()); try { collectStrings(JSON.parse(raw), values); } catch { /* opaque key */ } } return [...values].filter(Boolean); }
+function collectStrings(value: unknown, values: Set<string>): void { if (typeof value === "string") { if (value) values.add(value); return; } if (Array.isArray(value)) { for (const item of value) collectStrings(item, values); return; } if (value && typeof value === "object") for (const item of Object.values(value)) collectStrings(item, values); }
 export async function listConnections(paths: RrPaths): Promise<ListedConnection[]> {
   const loaded = await loadConnections(paths);
   if (loaded.errors.length) throw new RrError(loaded.errors.join("\n"));
-  return Promise.all(loaded.connections.map(async (c) => ({ ...c, state: c.auth === "none" || Boolean(await credentialFor(paths, c.name)) ? "active" : "DISABLED (no secret)" })));
+  return Promise.all(loaded.connections.map(async (c) => ({ ...c, state: c.auth === "none" || usableCredential(c, await credentialFor(paths, c.name)) ? "active" : "DISABLED (no secret)" })));
 }
+function usableCredential(connection: Connection, raw: string | undefined): boolean { if (!raw?.trim()) return false; if (connection.auth === "key") return true; try { const value = JSON.parse(raw) as { type?: string; access?: string; refresh?: string; expires?: number }; return value.type === "oauth" && Boolean(value.access) && (Number(value.expires) > Date.now() || Boolean(value.refresh)); } catch { return false; } }
 
 async function bumpGeneration(paths: RrPaths): Promise<number> {
   const file = join(paths.state, "connection-generation");
@@ -155,7 +158,7 @@ export async function saveConnection(paths: RrPaths, connection: Connection, cre
     await atomicWrite(declaration, connectionToml(validateConnection(connection)));
   } else {
     const current = validateConnection(parse(existed), connection.name);
-    if (current.auth === "none" || current.kind !== connection.kind || current.provider !== connection.provider) throw new RrError(`connection name already used: ${connection.name}`);
+    if (current.auth === "none" || current.kind !== connection.kind || current.provider !== connection.provider || current.auth !== connection.auth) throw new RrError(`connection name already used: ${connection.name}`);
   }
   if (connection.auth !== "none") {
     if (!credential) throw new RrError(`authentication credential is required for ${connection.auth}`);

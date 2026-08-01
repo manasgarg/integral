@@ -2,17 +2,19 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { EffectiveConfig } from "./config.ts";
 import type { Connection } from "./connections.ts";
 import { RrError } from "./errors.ts";
+import { atomicWrite, ensureDir } from "./fs.ts";
 
-export interface ContainerSpec { image: string; args: string[]; environment: Record<string, string>; mounts: { source: string; target: string; readonly: boolean }[]; sessionId: string; sessionToken: string; home: string }
+export interface ContainerSpec { image: string; args: string[]; environment: Record<string, string>; mounts: { source: string; target: string; readonly: boolean }[]; sessionId: string; sessionToken: string; home: string; gatewayAddress: string }
 const managed = new Set(["HOME", "PATH", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO", "PIP_CERT"]);
 export function isManagedContainerVariable(name: string): boolean { return managed.has(name) || name.startsWith("RR_"); }
 
-export function buildContainerSpec(options: { config: EffectiveConfig; gatewayUrl: string; caCert: string; caBundle: string; sessionHome: string; sessionId: string; sessionToken: string; model: Connection; mcp: Connection[] }): ContainerSpec {
+export function buildContainerSpec(options: { config: EffectiveConfig; gatewayUrl: string; gatewayAddress?: string; caCert: string; caBundle: string; sessionHome: string; sessionId: string; sessionToken: string; model: Connection; mcp: Connection[] }): ContainerSpec {
   const proxy = new URL(options.gatewayUrl); proxy.username = "rr"; proxy.password = options.sessionToken;
   const proxyUrl = proxy.toString();
   const caPath = "/rr-ca/rr-ca.pem", bundlePath = "/rr-ca/ca-bundle.pem";
@@ -25,16 +27,23 @@ export function buildContainerSpec(options: { config: EffectiveConfig; gatewayUr
   const provider = options.model.provider!;
   // Pi sees only a sentinel. The gateway swaps it for the host credential inside the allowed boundary.
   environment[provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"] = "rr-managed-credential";
-  const args = ["--mode", "rpc", "--no-session", "--no-approve"];
+  const args = ["--mode", "rpc", "--no-session", "--no-approve", "--provider", provider, "--api-key", "rr-managed-credential"];
   if (options.config.model.model) args.push("--model", options.config.model.model);
-  return { image: options.config.runner.image, args, environment, mounts: [{ source: options.caCert, target: caPath, readonly: true }, { source: options.caBundle, target: bundlePath, readonly: true }, { source: options.sessionHome, target: "/home/pi", readonly: false }], sessionId: options.sessionId, sessionToken: options.sessionToken, home: options.sessionHome };
+  return { image: options.config.runner.image, args, environment, mounts: [{ source: options.caCert, target: caPath, readonly: true }, { source: options.caBundle, target: bundlePath, readonly: true }, { source: options.sessionHome, target: "/home/pi", readonly: false }], sessionId: options.sessionId, sessionToken: options.sessionToken, home: options.sessionHome, gatewayAddress: options.gatewayAddress ?? "host-gateway" };
 }
 
 export function dockerRunArgs(spec: ContainerSpec, config: EffectiveConfig, network: string): string[] {
-  const result = ["run", "--rm", "--name", `rr-${spec.sessionId}`, "--network", network, "--add-host", "host.rr.internal:host-gateway", "--user", "1000:1000", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--read-only", "--memory", `${config.runner.memoryMb}m`, "--tmpfs", `/tmp:rw,noexec,nosuid,size=${config.runner.tmpfsMb}m`];
+  const result = ["run", "--rm", "--name", `rr-${spec.sessionId}`, "--network", network, "--add-host", `host.rr.internal:${spec.gatewayAddress}`, "--user", "1000:1000", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--read-only", "--memory", `${config.runner.memoryMb}m`, "--tmpfs", `/tmp:rw,noexec,nosuid,size=${config.runner.tmpfsMb}m`];
   for (const [name, value] of Object.entries(spec.environment)) result.push("--env", `${name}=${value}`);
   for (const mount of spec.mounts) result.push("--mount", `type=bind,source=${mount.source},target=${mount.target}${mount.readonly ? ",readonly" : ""}`);
   return [...result, spec.image, "pi", ...spec.args];
+}
+
+export async function writeMcpExtension(sessionHome: string, connections: Connection[]): Promise<void> {
+  if (!connections.length) return; const directory = join(sessionHome, ".pi", "agent", "extensions"); await ensureDir(directory);
+  const declarations = connections.map((connection) => ({ name: connection.name.replace(/[^A-Za-z0-9_]/g, "_"), url: connection.url, auth: connection.auth !== "none" }));
+  const source = `import { Type } from "typebox";\nconst servers = ${JSON.stringify(declarations)};\nexport default function (pi) {\n  for (const server of servers) pi.registerTool({\n    name: "mcp_" + server.name, label: "MCP " + server.name, description: "Call a tool on the " + server.name + " remote MCP server",\n    parameters: Type.Object({ tool: Type.String(), arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),\n    async execute(_id, params, signal) {\n      const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };\n      if (server.auth) headers.authorization = "Bearer rr-managed-credential";\n      const response = await fetch(server.url, { method: "POST", headers, signal, body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: params.tool, arguments: params.arguments || {} } }) });\n      const body = await response.text(); if (!response.ok) throw new Error("MCP request failed: " + response.status);\n      const data = body.split("\\n").filter(line => line.startsWith("data:")).at(-1)?.slice(5).trim(); const result = JSON.parse(data || body);\n      return { content: result.result?.content || [{ type: "text", text: JSON.stringify(result.result ?? result) }], details: { server: server.name } };\n    }\n  });\n}\n`;
+  await atomicWrite(join(directory, "rr-mcp.ts"), source);
 }
 
 export function dockerAvailable(): boolean { return spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0; }
@@ -43,8 +52,8 @@ export function ensureContainerImage(config: EffectiveConfig): void {
   if (config.runner.pullPolicy === "never") { if (inspect.status !== 0) throw new RrError(`container image is unavailable and pull_policy is never: ${config.runner.image}`); return; }
   if (config.runner.pullPolicy === "if-not-present" && inspect.status === 0) return;
   if (config.runner.image === "rr-pi:0.1.0") {
-    const dockerfile = new URL("../../Dockerfile.pi", import.meta.url).pathname;
-    const root = new URL("../../", import.meta.url).pathname;
+    const dockerfile = fileURLToPath(new URL("../../Dockerfile.pi", import.meta.url));
+    const root = fileURLToPath(new URL("../../", import.meta.url));
     const result = spawnSync("docker", ["build", "--pull", "--build-arg", "PI_VERSION=0.80.3", "--tag", config.runner.image, "--file", dockerfile, root], { encoding: "utf8" });
     if (result.status !== 0) throw new RrError(`cannot build pinned Pi image: ${result.stderr.trim()}`); return;
   }
@@ -90,7 +99,7 @@ export class PiContainer {
   }
   async stop(): Promise<void> {
     const child = this.child; this.child = undefined; if (this.pending) { clearTimeout(this.pending.timer); this.pending = undefined; }
-    if (child) { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
+    if (child) { const exited = new Promise<boolean>((resolve) => child.once("exit", () => resolve(true))); child.kill("SIGTERM"); const stopped = await Promise.race([exited, new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000))]); if (!stopped) { spawnSync("docker", ["rm", "--force", `rr-${this.spec.sessionId}`], { stdio: "ignore" }); await exited; } }
     await rm(this.spec.home, { recursive: true, force: true });
   }
 }

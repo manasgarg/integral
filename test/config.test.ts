@@ -29,7 +29,7 @@ test("[CONFIG-39B8E2F6] [ENV-5F2C7E06] [ENV-C8A14D73] [ENV-BC39A7D2] [ENV-2E7A94
 });
 
 test("[ENV-17B6E9C2] [SERVER-9D42E6A3] invalid or conflicting ports are rejected without fallback", async (t) => {
-  const paths = await fixture(t); await assert.rejects(loadConfig(paths, { RR_GATEWAY_PORT: "abc" }), /RR_GATEWAY_PORT/);
+  const paths = await fixture(t); await assert.rejects(loadConfig(paths, { RR_GATEWAY_PORT: "abc", RR_RUNNER_PORT: "70000" }), (error: Error) => /RR_GATEWAY_PORT/.test(error.message) && /RR_RUNNER_PORT/.test(error.message));
   await assert.rejects(loadConfig(paths, { RR_GATEWAY_PORT: "7301" }), /must be distinct/);
   await assert.rejects(loadConfig(paths, { RR_RUNNER_PORT: "65536" }), /RR_RUNNER_PORT/);
 });

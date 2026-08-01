@@ -9,6 +9,7 @@ export interface ComponentState {
   component: Component; deploymentId: string; endpoint: string; pid: number;
   status: "ready" | "degraded"; fingerprint: string; connectionGeneration: number;
   startedAt: string;
+  error?: string;
 }
 
 export function deploymentId(paths: RrPaths): string {
@@ -22,6 +23,7 @@ export async function readComponentState(paths: RrPaths, component: Component): 
   try { const state = JSON.parse(raw) as ComponentState; return state.component === component && state.deploymentId === deploymentId(paths) ? state : undefined; }
   catch { return undefined; }
 }
+export async function updateComponentState(paths: RrPaths, component: Component, patch: Partial<Pick<ComponentState, "status" | "connectionGeneration" | "error">>): Promise<void> { const current = await readComponentState(paths, component); if (!current || current.pid !== process.pid) return; const next = { ...current, ...patch }; if (patch.error === undefined) delete next.error; await writeComponentState(paths, next); }
 
 export async function componentIdentity(paths: RrPaths): Promise<string> {
   const file = join(paths.state, "component-identity");

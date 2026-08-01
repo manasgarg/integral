@@ -3,7 +3,7 @@ import type { Connection } from "./connections.ts";
 import { RrError } from "./errors.ts";
 
 export const SENTINEL = "rr-managed-credential";
-export interface CredentialedConnection { connection: Connection; credential: string | undefined }
+export interface CredentialedConnection { connection: Connection; credential: string | undefined; injectedHeaders?: Record<string, string> }
 export interface GatewayDecision { connection: Connection; url: URL; headers: Record<string, string | string[]> }
 
 function normalizePort(url: URL): number { return Number(url.port || (url.protocol === "https:" ? 443 : 80)); }
@@ -33,6 +33,7 @@ export function decideRequest(method: string, target: URL, headers: IncomingHttp
     const incoming = clean[header];
     if (incoming !== undefined && !String(incoming).toLowerCase().includes(SENTINEL)) throw new RrError("gateway refused an unmanaged credential", 403);
     clean[header] = `${match.connection.scheme ?? "Bearer"} ${match.credential}`.trim();
+    for (const [name, value] of Object.entries(match.injectedHeaders ?? {})) clean[name.toLowerCase()] = value;
   }
   return { connection: match.connection, url: target, headers: clean };
 }

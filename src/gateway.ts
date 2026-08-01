@@ -3,35 +3,46 @@ import https from "node:https";
 import tls from "node:tls";
 import { readFile } from "node:fs/promises";
 import type { Duplex } from "node:stream";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Connection } from "./connections.ts";
 import { credentialFor, loadConnections } from "./connections.ts";
 import type { RrPaths } from "./paths.ts";
 import type { EffectiveConfig } from "./config.ts";
 import { decideRequest, parseProxyAuthorization, type CredentialedConnection } from "./gateway-policy.ts";
 import { certificateFor, ensureCa, type CaFiles } from "./ca.ts";
-import { componentIdentity, deploymentId, verifyInternal } from "./state.ts";
+import { componentIdentity, deploymentId, readComponentState, updateComponentState, verifyInternal } from "./state.ts";
 import { RrError } from "./errors.ts";
 import type { Logger } from "./logging.ts";
+import { oauthAccess, refreshOAuth } from "./oauth.ts";
+import { atomicWrite } from "./fs.ts";
+import { readText } from "./fs.ts";
+import { join } from "node:path";
 
 function modelBoundary(connection: Connection): Connection {
   if (connection.kind !== "model") return connection;
-  return { ...connection, url: connection.provider === "anthropic" ? "https://api.anthropic.com/" : "https://api.openai.com/", methods: ["*"] };
+  return { ...connection, url: connection.provider === "anthropic" ? "https://api.anthropic.com/" : "https://chatgpt.com/backend-api/", methods: ["*"] };
 }
 
 export class Gateway {
-  readonly sessions = new Map<string, string>(); private servers: http.Server[] = []; private ca?: CaFiles; private token = ""; private candidates: CredentialedConnection[] = [];
+  readonly sessions = new Map<string, string>(); private servers: http.Server[] = []; private ca?: CaFiles; private token = ""; private candidates: CredentialedConnection[] = []; private refreshTimer: NodeJS.Timeout | undefined; private lastConnectionHash: string | undefined; private lastGeneration = 0; private sawInvalidConnections = false;
   constructor(private readonly paths: RrPaths, private readonly config: EffectiveConfig, private readonly logger: Logger) {}
   async start(): Promise<http.Server> {
-    this.ca = await ensureCa(this.paths); this.token = await componentIdentity(this.paths); await this.reload();
+    this.ca = await ensureCa(this.paths); this.token = await componentIdentity(this.paths); await this.reload(true);
     const server = this.makeServer(); this.servers.push(server);
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(this.config.server.gatewayPort, "127.0.0.1", resolve); }); return server;
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(this.config.server.gatewayPort, "127.0.0.1", resolve); }); this.refreshTimer = setInterval(() => void this.reload(false), 500); return server;
   }
   private makeServer(): http.Server { const server = http.createServer((req, res) => void this.route(req, res)); server.on("connect", (req, socket, head) => void this.connect(req, socket, head)); return server; }
-  async reload(): Promise<void> { const loaded = await loadConnections(this.paths); this.candidates = await Promise.all(loaded.connections.map(async (connection) => ({ connection: modelBoundary(connection), credential: await credentialFor(this.paths, connection.name) }))); }
+  async reload(strict = false): Promise<void> {
+    const loaded = await loadConnections(this.paths); if (strict && loaded.errors.length) throw new RrError(loaded.errors.join("\n")); const credentialErrors: string[] = [];
+    this.candidates = await Promise.all(loaded.connections.map(async (connection) => { const raw = await credentialFor(this.paths, connection.name); let credential = raw, injectedHeaders: Record<string, string> | undefined; if (raw && oauthAccess(raw)) try { const refreshed = await refreshOAuth(connection, raw); credential = refreshed.access; if (refreshed.serialized !== raw) await atomicWrite(join(this.paths.credentials, connection.name), refreshed.serialized); } catch (error) { credential = undefined; credentialErrors.push(error instanceof Error ? error.message : String(error)); } if (raw && connection.provider === "openai-codex") try { const accountId = (JSON.parse(raw) as { accountId?: unknown }).accountId; if (typeof accountId === "string") injectedHeaders = { "chatgpt-account-id": accountId }; } catch { /* opaque credential */ } return { connection: modelBoundary(connection), credential, ...(injectedHeaders ? { injectedHeaders } : {}) }; }));
+    const generationFile = join(this.paths.state, "connection-generation"), current = Number((await readText(generationFile))?.trim() || "0"), hash = createHash("sha256").update(JSON.stringify(loaded.connections)).digest("hex"); let generation = current;
+    if (!strict && loaded.errors.length === 0 && this.lastConnectionHash !== undefined && (hash !== this.lastConnectionHash || this.sawInvalidConnections) && current === this.lastGeneration) { generation = current + 1; await atomicWrite(generationFile, `${generation}\n`); }
+    if (loaded.errors.length) this.sawInvalidConnections = true; else { this.lastConnectionHash = hash; this.sawInvalidConnections = false; } this.lastGeneration = generation;
+    const errors = [...loaded.errors, ...credentialErrors]; await updateComponentState(this.paths, "gateway", errors.length ? { connectionGeneration: generation, status: "degraded", error: errors.join("\n") } : { connectionGeneration: generation, status: "ready" });
+  }
   private authenticate(req: IncomingMessage): string | undefined { const token = parseProxyAuthorization(req.headers["proxy-authorization"]); return token && this.sessions.get(token); }
   private async route(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.url === "/rr/health") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ component: "gateway", deploymentId: deploymentId(this.paths), status: "ready" })); return; }
+    if (req.url === "/rr/health") { const state = await readComponentState(this.paths, "gateway"); res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ component: "gateway", deploymentId: deploymentId(this.paths), status: state?.status ?? "ready", error: state?.error })); return; }
     if (req.url === "/rr/internal/session" && req.method === "POST") {
       if (!verifyInternal(req.headers, "runner", this.token, deploymentId(this.paths))) { res.writeHead(401).end("unauthorized\n"); return; }
       const body = await bodyJson(req); const token = String(body.token ?? ""), sessionId = String(body.sessionId ?? ""); if (!token || !sessionId) { res.writeHead(400).end("invalid session\n"); return; }
@@ -48,8 +59,8 @@ export class Gateway {
       const body = await bodyJson(req); this.sessions.delete(String(body.token ?? "")); res.writeHead(204).end(); return;
     }
     const sessionId = this.authenticate(req); if (!sessionId) { res.writeHead(407, { "proxy-authenticate": "Basic realm=rr" }).end("proxy authentication required\n"); return; }
-    try { const target = new URL(req.url!); await this.forward(req, res, target, sessionId); }
-    catch (error) { respondError(res, error); }
+    let target: URL | undefined; try { target = new URL(req.url!); await this.forward(req, res, target, sessionId); }
+    catch (error) { this.logger.event("info", "gateway.decision", "gateway denied request", { verdict: error instanceof RrError && error.exitCode === 403 ? "policy-deny" : "request-failed", method: req.method, host: target?.hostname ?? "invalid", port: target?.port || (target?.protocol === "https:" ? 443 : 80), session_id: sessionId, request_id: randomUUID() }); respondError(res, error); }
   }
   private async forward(req: IncomingMessage, res: ServerResponse, target: URL, sessionId: string): Promise<void> {
     const requestId = randomUUID(); const decision = decideRequest(req.method ?? "GET", target, req.headers, this.candidates);
@@ -75,7 +86,7 @@ export class Gateway {
       tlsServer.emit("connection", socket);
     } catch (error) { this.logger.event("info", "gateway.decision", "gateway denied request", { verdict: "deny", method: "CONNECT", host, port, session_id: sessionId }); socket.end(`HTTP/1.1 ${error instanceof RrError ? error.exitCode : 502} Forbidden\r\n\r\nrequest denied\n`); }
   }
-  async stop(): Promise<void> { const servers = this.servers.splice(0); this.sessions.clear(); await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve())))); }
+  async stop(): Promise<void> { clearInterval(this.refreshTimer); const servers = this.servers.splice(0); this.sessions.clear(); await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve())))); }
 }
 
 async function bodyJson(req: IncomingMessage): Promise<Record<string, unknown>> { const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk)); try { return JSON.parse(Buffer.concat(chunks).toString() || "{}") as Record<string, unknown>; } catch { return {}; } }

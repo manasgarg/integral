@@ -107,15 +107,15 @@ export async function loadConfig(paths: RrPaths, env: NodeJS.ProcessEnv = proces
   }
   const source = (section: string, key: string): ValueSource => object(root[section])[key] === undefined ? "built-in" : "file";
   const val = (section: string, key: string): unknown => object(root[section])[key] ?? defaults[`${section}.${key}` as keyof typeof defaults];
-  const envPorts = {
-    gateway: parseEnvPort(env, "RR_GATEWAY_PORT"), coordinator: parseEnvPort(env, "RR_COORDINATOR_PORT"), runner: parseEnvPort(env, "RR_RUNNER_PORT"),
-  };
+  const envPortErrors: string[] = [], envPorts: Record<Component, number | undefined> = { gateway: undefined, coordinator: undefined, runner: undefined };
+  for (const component of ["gateway", "coordinator", "runner"] as const) { const name = `RR_${component.toUpperCase()}_PORT`; try { envPorts[component] = parseEnvPort(env, name); } catch (error) { envPortErrors.push(error instanceof Error ? error.message : String(error)); } }
+  if (envPortErrors.length) throw new RrError(envPortErrors.join("\n"));
   const server = {
     gatewayPort: envPorts.gateway ?? port(val("server", "gateway_port"), "server.gateway_port"),
     coordinatorPort: envPorts.coordinator ?? port(val("server", "coordinator_port"), "server.coordinator_port"),
     runnerPort: envPorts.runner ?? port(val("server", "runner_port"), "server.runner_port"),
   };
-  if (new Set(Object.values(server)).size !== 3) throw new RrError("gateway, coordinator, and runner ports must be distinct");
+  if (new Set(Object.values(server)).size !== 3) { const conflicts = Object.entries(server).filter(([, value], index, all) => all.some(([_, other], otherIndex) => otherIndex !== index && other === value)).map(([name, value]) => `${name}=${value}`); throw new RrError(`gateway, coordinator, and runner ports must be distinct; conflicts: ${conflicts.join(", ")}`); }
   const fileLogging = object(root.logging);
   const logLevelRaw = env.RR_LOG_LEVEL?.trim() || fileLogging.level || defaults["logging.level"];
   const logFormatRaw = env.RR_LOG_FORMAT?.trim() || fileLogging.format || defaults["logging.format"];

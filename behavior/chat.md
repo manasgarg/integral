@@ -3,6 +3,10 @@
 These behaviors cover interchangeable terminal views over the coordinator-owned
 single-user conversation.
 
+<!-- Automation note (CHAT-888AFAE0): Prompt, local-command, queue, and rendering contracts are automated; keystroke-level PTY interaction is not run by the non-interactive default suite. -->
+<!-- Automation note (CHAT-54B8A1C3): Shared coordinator snapshots and broadcasts are automated; two real PTYs are an acceptance test. -->
+<!-- Automation note (CHAT-1C4A8B7E): Detachment ownership is automated at the coordinator boundary; SIGINT delivery to a real PTY is not part of the default suite. -->
+
 ## CHAT-DB0EF523 — Refuse chat without the server
 
 Given no healthy coordinator is reachable

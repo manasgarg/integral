@@ -1,11 +1,19 @@
 {
   "name": "rr",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "bin": {
     "rr": "bin/rr.js"
   },
+  "files": [
+    "bin",
+    "dist/src",
+    "Dockerfile.pi",
+    ".dockerignore",
+    "README.md",
+    "SPEC.md",
+    "behavior"
+  ],
   "engines": {
     "node": ">=24"
   },

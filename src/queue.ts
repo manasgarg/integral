@@ -76,10 +76,13 @@ export class ConversationStore {
     const handle = await open(this.file, "r+"); try { await handle.sync(); } finally { await handle.close(); }
     this.events.push(full); return { ...full };
   }
+  async editUser(messageId: string, text: string): Promise<void> { const event = this.events.find((item) => item.type === "user" && item.messageId === messageId); if (!event) return; event.text = text; await this.rewrite(); }
+  async deleteUser(messageId: string): Promise<void> { const index = this.events.findIndex((item) => item.type === "user" && item.messageId === messageId); if (index < 0) return; this.events.splice(index, 1); for (let i = 0; i < this.events.length; i++) this.events[i]!.sequence = i + 1; await this.rewrite(); }
+  private async rewrite(): Promise<void> { await atomicWrite(this.file, this.events.map((event) => JSON.stringify(event)).join("\n") + (this.events.length ? "\n" : "")); }
   context(maxMessages: number, maxChars: number): ConversationEvent[] {
     if (maxMessages === 0 || maxChars === 0) return [];
     const selected: ConversationEvent[] = []; let chars = 0;
-    for (const event of this.events.toReversed()) {
+    for (const event of this.events.filter((item) => item.type === "user" || item.type === "assistant").toReversed()) {
       const length = event.text?.length ?? 0;
       if (selected.length >= maxMessages || chars + length > maxChars) break;
       chars += length; selected.unshift({ ...event });

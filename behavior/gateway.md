@@ -3,6 +3,9 @@
 These behaviors cover gateway identity, session authentication, connection
 access, and the default-deny network boundary.
 
+<!-- Automation note (GATEWAY-A2BBBBE8): Boundary matching, sentinel removal, credential injection, and forwarding construction are automated; a public TLS upstream is not contacted by the offline suite. -->
+<!-- Automation note (GATEWAY-EC79406A): The internal-network Docker specification is automated; an external reachability probe from a live container requires a Docker-enabled acceptance environment. -->
+
 ## GATEWAY-3F299566 — Verify the expected gateway
 
 Given the rr gateway component is healthy

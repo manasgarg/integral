@@ -2,6 +2,9 @@
 
 These behaviors cover failures spanning more than one product area.
 
+<!-- Automation note (FAILURE-071CB99A): Interruption, durable release, and cleanup paths are automated at the runner/coordinator boundary; killing a real Pi container requires Docker. -->
+<!-- Automation note (FAILURE-3780301D): Fail-closed gateway-loss handling is automated at component boundaries; a live mid-request gateway kill requires Docker and process-control acceptance infrastructure. -->
+
 ## FAILURE-071CB99A — Report an unexpected Pi exit
 
 Given a chat turn is in progress

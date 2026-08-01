@@ -5,6 +5,11 @@ single user. Connections may describe model providers, generic HTTP endpoints,
 or remote MCP servers. Every active connection is available to Pi; rr has no
 grant or revoke concept.
 
+<!-- Automation note (CONNECTION-03C4E791): Guided setup validation and its explicit equivalent are automated; keystroke-level interactive selection is not driven by the non-interactive default suite. -->
+<!-- Automation note (CONNECTION-1D691391): Commit-after-verification behavior is automated with a controlled failing endpoint; no real provider is contacted. -->
+<!-- Automation note (CONNECTION-741C2F56): The two independent removal decisions and storage outcomes are automated below the PTY prompt layer; prompt keystrokes are an acceptance test. -->
+<!-- Automation note (CONNECTION-E73B40C6): No-auth removal outcomes are automated below the PTY prompt layer; prompt keystrokes are an acceptance test. -->
+
 ## CONNECTION-C14B8E70 — Show connection command help
 
 Given rr is installed

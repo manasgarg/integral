@@ -1,0 +1,8 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { oauthAccess, runGenericOAuth } from "../src/oauth.ts";
+import { validateConnection } from "../src/connections.ts";
+
+test("[CONNECTION-512D9A25] generic device-code authentication runs authorization and token exchange without exposing the token to UI", async () => { const connection = validateConnection({ name: "device", kind: "http", url: "https://api.test", auth: "device-code", authorization_url: "https://login.test/auth", device_authorization_url: "https://login.test/device", token_url: "https://login.test/token", client_id: "public" }); const shown: string[] = []; let requestNumber = 0; const request = (async () => { requestNumber++; if (requestNumber === 1) return new Response(JSON.stringify({ device_code: "device-secret", user_code: "ABCD", verification_uri: "https://login.test/activate", interval: 0 }), { status: 200 }); return new Response(JSON.stringify({ access_token: "access-secret", refresh_token: "refresh-secret", expires_in: 3600 }), { status: 200 }); }) as typeof fetch; const stored = await runGenericOAuth(connection, { show: (message) => shown.push(message), prompt: async () => "" }, request); assert.equal(oauthAccess(stored), "access-secret"); assert.match(shown[0]!, /ABCD/); assert.doesNotMatch(shown.join(""), /access-secret|refresh-secret|device-secret/); });
+
+test("[CONNECTION-0FB2F92A] OAuth credential serialization yields only the current access value to trusted gateway code", () => { const raw = JSON.stringify({ type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 1000 }); assert.equal(oauthAccess(raw), "access"); assert.equal(oauthAccess("not-json"), undefined); });

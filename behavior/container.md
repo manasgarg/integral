@@ -3,6 +3,13 @@
 These behaviors cover the runner component provisioning and managing the warm
 Pi RPC container.
 
+<!-- Automation note (BOX-AB639757): The image, RPC command, session restoration, and lifecycle orchestration are automated; launching the real image is not run in the default suite because its execution environment has no Docker-daemon access. -->
+<!-- Automation note (BOX-601613D4): The complete Docker argument and mount specification is automated; kernel-level enforcement is not exercised without a Docker daemon. -->
+<!-- Automation note (BOX-B45DEA9B): Single-session reuse is tested at the runner lifecycle boundary; a live multi-turn provider call is not made by the offline suite. -->
+<!-- Automation note (BOX-BE26C696): Timeout, release, and cleanup paths are automated at the protocol boundary; real container termination is not exercised without a Docker daemon. -->
+<!-- Automation note (BOX-7D3A19E4): Idle timer and session cleanup paths are automated without waiting five real minutes or launching Docker. -->
+<!-- Automation note (BOX-C28F4A61): Provisioning-failure release behavior is automated without deliberately failing a live Docker daemon. -->
+
 ## BOX-AB639757 — Start Pi for the first message
 
 Given the coordinator, runner, and gateway are healthy
