@@ -25,6 +25,25 @@ export interface ContainerSpec {
   home: string;
   gatewayAddress: string;
 }
+
+export interface PiRuntime {
+  readonly spec: ContainerSpec;
+  start(): Promise<void>;
+  prompt(text: string): Promise<string>;
+  stop(): Promise<void>;
+}
+
+export interface ContainerBackend {
+  ensureImage(config: EffectiveConfig): void | Promise<void>;
+  ensureNetwork(name: string): Promise<void>;
+  networkGateway(name: string): string | Promise<string>;
+  createPi(
+    spec: ContainerSpec,
+    config: EffectiveConfig,
+    network: string,
+    onStderr: (line: string) => void,
+  ): PiRuntime;
+}
 const managed = new Set([
   "HOME",
   "PATH",
@@ -357,6 +376,15 @@ export class PiContainer {
     await rm(this.spec.home, { recursive: true, force: true });
   }
 }
+
+export const dockerContainerBackend: ContainerBackend = {
+  ensureImage: ensureContainerImage,
+  ensureNetwork: createLockedNetwork,
+  networkGateway: dockerNetworkGateway,
+  createPi(spec, config, network, onStderr) {
+    return new PiContainer(spec, config, network, onStderr);
+  },
+};
 
 export async function freshSessionHome(): Promise<string> {
   return mkdtemp(join(tmpdir(), "rr-pi-"));

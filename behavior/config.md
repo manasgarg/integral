@@ -104,6 +104,15 @@ Given `[runner]` may define `image` and `pull_policy`
 			And its default is the Pi image pinned as compatible with the rr package version
 			And `pull_policy` accepts only `always`, `if-not-present`, or `never`
 			And its default is `if-not-present`
+	When `pull_policy` is `never`
+		Then the runner uses an existing local image
+			And refuses to start when the image is absent
+	When `pull_policy` is `if-not-present`
+		Then the runner reuses an existing local image
+			And otherwise builds the default rr image or pulls a configured custom image
+	When `pull_policy` is `always`
+		Then the runner rebuilds the default rr image with refreshed base layers
+			Or pulls the configured custom image
 
 ## CONFIG-4B97D20E — Configure runner timeouts
 
@@ -129,11 +138,14 @@ Given `[runner]` may define `memory_mb` and `tmpfs_mb`
 Given `[conversation]` may define `context_max_messages` and `context_max_chars`
 	When rr starts a new or replacement Pi session
 		Then both options must be non-negative integers
+			And it considers only persisted user and assistant messages
+			And it includes the newest contiguous suffix that fits both limits
 			And it includes at most the configured number of newest persisted messages
 			And includes at most the configured number of rendered characters
 			And `context_max_messages` defaults to `200`
 			And `context_max_chars` defaults to `100000`
 			And zero for either limit disables restored context
+			And session and error events are not supplied as Pi context
 			And the full durable conversation remains available to terminal clients
 
 ## CONFIG-0C6A91E4 — Keep credentials out of configuration files
@@ -195,19 +207,25 @@ Given the user authors rr configuration
 Given server components are running
 	When `rr connection add` or `rr connection rm` commits a valid declaration change
 		Then rr assigns the connection snapshot a new monotonic generation
-			And coordinator, runner, and gateway reload the complete validated snapshot
-			And each component publishes the generation it has adopted
+			And the gateway reloads all currently valid declarations and credentials
+			And the coordinator mirrors the committed generation in component state
+			And the runner reads current connections when it creates a Pi session
+			And each component publishes the generation it has observed
 			And the runner does not claim new messages while component generations disagree
 			And no component observes a partially written connection declaration
+	When a valid manual declaration edit changes the gateway's connection snapshot
+		Then the gateway detects the changed snapshot
+			And advances the generation when the CLI has not already done so
 
 ## CONFIG-B6D29F40 — Fail closed on an invalid connection-file edit
 
 Given server components have a last known valid connection snapshot
 	When a manual connection-file edit makes the connection configuration invalid
-		Then components keep the last known valid snapshot for unaffected connections
-			And disable the invalid connection
-			And report degraded configuration health with the file error
+		Then the gateway continues using declarations that still validate
+			And excludes the invalid declaration from its active candidates
+			And publishes degraded health with the file error
 			And the gateway does not admit new access from the invalid declaration
+			And the runner does not claim new work while gateway health is degraded
 	When the files become valid again
 		Then components adopt the next complete connection generation
 
@@ -215,8 +233,8 @@ Given server components have a last known valid connection snapshot
 
 Given an rr command creates or replaces a configuration file
 	When it commits the file
-		Then it writes a complete temporary file in the destination directory
-			And validates the temporary file before replacement
+		Then it validates generated content before committing it
+			And writes a complete temporary file in the destination directory
 			And atomically renames it over the destination
 			And applies owner-only write permissions
 
@@ -224,7 +242,9 @@ Given an rr command creates or replaces a configuration file
 
 Given a connection file may define `name`, `kind`, `provider`, `url`, and `auth`
 	When rr validates the connection
-		Then `name` must be a unique filesystem-safe connection name
+		Then `name` must contain at most 64 filesystem-safe letters, numbers, dots, underscores, or hyphens
+			And must start with a letter or number
+			And must be unique across loaded connection files
 			And `kind` accepts only `model`, `http`, or `mcp`
 			And `provider` is required for `model` and must name a catalog provider
 			And `url` is required for `http` and `mcp` and must use HTTP or HTTPS
@@ -250,7 +270,7 @@ Given a connection uses `auth = "key"`
 	When rr validates the connection
 		Then `header` defaults to `Authorization`
 			And `scheme` defaults to `Bearer`
-			And neither option may contain credential bytes
+			And neither option may contain carriage returns or newlines
 			And the actual key remains in protected credential storage
 
 ## CONFIG-6A90E2D4 — Configure OAuth authentication metadata
@@ -270,6 +290,7 @@ Given an `mcp` connection file may define `transport`
 		Then `transport` accepts only `streamable-http` or `sse`
 			And defaults to `streamable-http`
 			And rr registers the configured transport and URL with Pi
+			And replaces characters outside letters, numbers, and underscores when forming the Pi tool name
 			And the gateway applies the connection's HTTP boundary and authentication
 
 ## CONFIG-A5D19E72 — Select the model connection used by Pi

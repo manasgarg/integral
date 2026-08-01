@@ -5,7 +5,7 @@ These behaviors cover command discovery and implementation information.
 ## CLI-6001FE46 — Show top-level help
 
 Given rr is installed
-	When the user runs `rr --help`
+	When the user runs `rr`, `rr --help`, `rr -h`, or `rr help`
 		Then the command exits successfully
 			And lists `server`, `talk`, `connection`, `config`, and `version`
 			And does not list a separate `auth` or `credential` command
@@ -17,7 +17,10 @@ Given rr is installed
 	When the user runs `rr version`
 		Then the command prints the rr version
 			And prints the Node.js version
-			And prints the supported Pi image tag
+			And prints the supported Pi package version
+			And exits successfully
+	When the user runs `rr --version` or `rr -V`
+		Then the command prints the same implementation versions
 			And exits successfully
 
 ## CLI-A7D3E91B — Accept short help on every command

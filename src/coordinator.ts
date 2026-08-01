@@ -13,12 +13,26 @@ import {
 import { readText } from "./fs.ts";
 import { join } from "node:path";
 import { RrError } from "./errors.ts";
+import {
+  nodeHttpServerRuntime,
+  nodeIntervalRuntime,
+  type HttpServerRuntime,
+  type IntervalRuntime,
+} from "./runtime.ts";
 
 export interface ClientEvent {
   sequence: number;
   type: string;
   data: unknown;
 }
+export interface CoordinatorDependencies {
+  servers: HttpServerRuntime;
+  intervals: IntervalRuntime;
+}
+const productionDependencies: CoordinatorDependencies = {
+  servers: nodeHttpServerRuntime,
+  intervals: nodeIntervalRuntime,
+};
 export class Coordinator {
   readonly queue: DurableQueue;
   readonly conversation: ConversationStore;
@@ -27,11 +41,14 @@ export class Coordinator {
   private eventSequence = 0;
   private attached = 0;
   private token = "";
-  private refreshTimer: NodeJS.Timeout | undefined;
+  private refreshTimer: unknown;
+  private readonly dependencies: CoordinatorDependencies;
   constructor(
     private readonly paths: RrPaths,
     private readonly config: EffectiveConfig,
+    overrides: Partial<CoordinatorDependencies> = {},
   ) {
+    this.dependencies = { ...productionDependencies, ...overrides };
     this.queue = new DurableQueue(paths.queue, (event) =>
       this.broadcast(`queue.${event.type}`, event),
     );
@@ -43,11 +60,15 @@ export class Coordinator {
     this.token = await componentIdentity(this.paths);
     const server = http.createServer((req, res) => void this.route(req, res));
     this.server = server;
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(this.config.server.coordinatorPort, "127.0.0.1", resolve);
-    });
-    this.refreshTimer = setInterval(() => void this.adoptGeneration(), 500);
+    await this.dependencies.servers.listen(
+      server,
+      this.config.server.coordinatorPort,
+      "127.0.0.1",
+    );
+    this.refreshTimer = this.dependencies.intervals.setInterval(
+      () => void this.adoptGeneration(),
+      500,
+    );
     return server;
   }
   private async adoptGeneration(): Promise<void> {
@@ -254,11 +275,10 @@ export class Coordinator {
     });
   }
   async stop(): Promise<void> {
-    clearInterval(this.refreshTimer);
+    this.dependencies.intervals.clearInterval(this.refreshTimer);
     const server = this.server;
     this.server = undefined;
-    if (server)
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (server) await this.dependencies.servers.close(server);
   }
 }
 

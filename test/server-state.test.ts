@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { acquireLock } from "../src/fs.ts";
+import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
 import {
   componentIdentity,
@@ -11,7 +13,12 @@ import {
   verifyInternal,
   writeComponentState,
 } from "../src/state.ts";
-import { serverStatus } from "../src/server.ts";
+import {
+  serverStatus,
+  startComponents,
+  waitForShutdownSignal,
+  type StartComponentsDependencies,
+} from "../src/server.ts";
 import type { Component } from "../src/constants.ts";
 
 test("[SERVER-DF5FD52E] component locks exclude duplicates only within one normalized deployment", async (t) => {
@@ -132,15 +139,61 @@ test("[SERVER-7C21D5E8] coordinator and runner component state publishes loopbac
   }
 });
 
-test("[SERVER-0D7E29B5] [SERVER-8A31D6C4] combined and separate runtimes use the same HTTP component classes and ports", async () => {
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/server.ts", "utf8"),
-  );
-  assert.match(source, /new Coordinator/);
-  assert.match(source, /new Gateway/);
-  assert.match(source, /new Runner/);
-  assert.match(source, /runtime\.start/);
-  assert.doesNotMatch(source, /coordinator\.queue\./);
+test("[SERVER-F886D80C] [SERVER-0D7E29B5] combined orchestration starts every component, publishes readiness, and stops in reverse order", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = { ...base, logging: { ...base.logging, level: "error" as const } },
+    events: string[] = [];
+  let observedReady = false;
+  const dependencies: StartComponentsDependencies = {
+    async validateRunnerHost() {
+      events.push("preflight:runner");
+    },
+    createRuntime(component) {
+      events.push(`create:${component}`);
+      return {
+        async start() {
+          events.push(`start:${component}`);
+        },
+        async stop() {
+          events.push(`stop:${component}`);
+        },
+      };
+    },
+    async waitForShutdown(stop) {
+      events.push("ready");
+      observedReady = (
+        await Promise.all(
+          (["coordinator", "gateway", "runner"] as const).map((component) =>
+            readComponentState(paths, component),
+          ),
+        )
+      ).every((state) => state?.status === "ready");
+      await stop();
+    },
+  };
+
+  await startComponents(paths, config, undefined, dependencies);
+
+  assert.equal(observedReady, true);
+  assert.deepEqual(events, [
+    "preflight:runner",
+    "create:coordinator",
+    "start:coordinator",
+    "create:gateway",
+    "start:gateway",
+    "create:runner",
+    "start:runner",
+    "ready",
+    "stop:runner",
+    "stop:gateway",
+    "stop:coordinator",
+  ]);
+  for (const component of ["coordinator", "gateway", "runner"] as const) {
+    assert.equal(await readComponentState(paths, component), undefined);
+    const unlock = await acquireLock(join(paths.locks, `${component}.lock`));
+    await unlock();
+  }
 });
 
 test("[SERVER-B4E20F76] [SERVER-6F18C2D9] missing sibling state is represented as degraded or stopped without mutating durable data", async (t) => {
@@ -153,47 +206,81 @@ test("[SERVER-B4E20F76] [SERVER-6F18C2D9] missing sibling state is represented a
   );
 });
 
-test("[SERVER-C6A830F4] [LOG-E5A81D23] combined orchestration has reverse-order cleanup for every partially started component", async () => {
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/server.ts", "utf8"),
+test("[SERVER-C6A830F4] [LOG-E5A81D23] partial startup failure cleans the failing runtime and every earlier component", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = { ...base, logging: { ...base.logging, level: "error" as const } },
+    events: string[] = [];
+  await assert.rejects(
+    startComponents(paths, config, undefined, {
+      async validateRunnerHost() {},
+      createRuntime(component) {
+        events.push(`create:${component}`);
+        return {
+          async start() {
+            events.push(`start:${component}`);
+            if (component === "gateway") throw new Error("cannot bind");
+          },
+          async stop() {
+            events.push(`stop:${component}`);
+          },
+        };
+      },
+      async waitForShutdown() {
+        assert.fail("failed startup must not wait for shutdown");
+      },
+    }),
+    /cannot bind/,
   );
-  assert.match(source, /started\.toReversed\(\)/);
-  assert.match(source, /await stopAll\(\);\s*throw error/);
+  assert.deepEqual(events, [
+    "create:coordinator",
+    "start:coordinator",
+    "create:gateway",
+    "start:gateway",
+    "stop:gateway",
+    "stop:coordinator",
+  ]);
+  for (const component of ["coordinator", "gateway"] as const) {
+    assert.equal(await readComponentState(paths, component), undefined);
+    const unlock = await acquireLock(join(paths.locks, `${component}.lock`));
+    await unlock();
+  }
 });
 
-test("[SERVER-FE2BB5CF] [CONNECTION-20778353] only runner preflight checks active model connection and Docker availability", async () => {
-  const runner = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/runner.ts", "utf8"),
-  );
-  const server = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/server.ts", "utf8"),
-  );
-  const coordinator = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/coordinator.ts", "utf8"),
-  );
-  const gateway = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/gateway.ts", "utf8"),
-  );
-  assert.match(runner, /validateRunnerHost.*selectModel.*dockerAvailable/s);
-  assert.match(server, /validateRunnerHost/);
-  assert.doesNotMatch(coordinator + gateway, /dockerAvailable|selectModel/);
+test("[SERVER-FE2BB5CF] [CONNECTION-20778353] runner selection alone performs model and Docker preflight", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = { ...base, logging: { ...base.logging, level: "error" as const } };
+  for (const component of ["coordinator", "gateway", "runner"] as const) {
+    let preflights = 0,
+      created: Component | undefined;
+    await startComponents(paths, config, component, {
+      async validateRunnerHost() {
+        preflights++;
+      },
+      createRuntime(value) {
+        created = value;
+        return { async start() {}, async stop() {} };
+      },
+      async waitForShutdown(stop) {
+        await stop();
+      },
+    });
+    assert.equal(created, component);
+    assert.equal(preflights, component === "runner" ? 1 : 0);
+  }
 });
 
-test("[SERVER-33E00BBA] [SERVER-E3A74B10] clean shutdown removes only started component state and locks and stops owned runtimes", async () => {
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/server.ts", "utf8"),
-  );
-  assert.match(source, /item\.stop/);
-  assert.match(source, /componentStatePath\(paths, item\.component\)/);
-  assert.match(source, /item\.unlock/);
-  assert.match(source, /SIGINT/);
-  assert.match(source, /SIGTERM/);
-});
-
-test("[SERVER-F886D80C] server orchestration starts coordinator, gateway, and runner in one foreground promise", async () => {
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/server.ts", "utf8"),
-  );
-  assert.match(source, /\["coordinator", "gateway", "runner"\]/);
-  assert.match(source, /new Promise<void>/);
+test("[SERVER-33E00BBA] [SERVER-E3A74B10] the production signal waiter stops once and removes both signal listeners", async () => {
+  const signals = new EventEmitter(),
+    events: string[] = [],
+    waiting = waitForShutdownSignal(async () => {
+      events.push("stop");
+    }, signals);
+  signals.emit("SIGTERM");
+  signals.emit("SIGINT");
+  await waiting;
+  assert.deepEqual(events, ["stop"]);
+  assert.equal(signals.listenerCount("SIGINT"), 0);
+  assert.equal(signals.listenerCount("SIGTERM"), 0);
 });

@@ -72,13 +72,24 @@ Given the selected connection type supports the requested authentication method
 		Then rr runs the configured OAuth authorization flow
 	When the user adds it with `--auth device-code`
 		Then rr runs the configured device authorization flow
+			And displays the verification URL and user code
+			And polls until authorization succeeds, fails, or expires
 	When the user adds it with `--auth key`
 		Then rr reads the key without echoing it
 			And stores it in the host credential area
+	When the user adds it with `--auth key --credential-stdin`
+		Then rr reads one non-empty credential from standard input
+			And does not require an interactive terminal
 	When the user adds it with `--auth none`
 		Then rr creates the connection without requesting or storing a credential
 	When the user requests an authentication method unsupported by the entry
 		Then rr rejects setup without creating a connection
+	When an OAuth access token is within one minute of expiry
+		Then the gateway refreshes it before using the connection
+			And atomically stores the refreshed OAuth record
+	When an expired OAuth credential cannot be refreshed
+		Then the gateway excludes its credential from request injection
+			And publishes degraded gateway health with the refresh error
 
 ## CONNECTION-6D2A9F84 — Complete OAuth without opening a local browser
 
@@ -86,8 +97,11 @@ Given the selected connection uses OAuth
 	And a browser cannot be opened locally
 	When the user runs `rr connection add`
 		Then rr prints the authorization URL in the terminal
+			And accepts a matching loopback callback when one is available
 			And accepts a pasted authorization code or full redirect URL
 			And validates the redirect state when one is present
+			And uses PKCE for generic authorization-code exchange
+			And times out generic authorization after ten minutes
 			And completes the same credential storage as a local callback
 
 ## CONNECTION-1D691391 — Verify a connection during setup
@@ -95,7 +109,7 @@ Given the selected connection uses OAuth
 Given the selected catalog entry supports credential verification
 	When the user runs `rr connection add <entry> --verify`
 		And authentication succeeds
-		Then rr makes one authenticated verification request through trusted host code
+		Then rr makes one authenticated `HEAD` request through trusted host code
 			And completes setup only when verification succeeds
 			And reports verification failure without printing secret values
 
@@ -106,8 +120,12 @@ Given a credentialed connection already exists
 		And authentication succeeds
 		Then rr replaces the stored credential atomically
 			And preserves the connection's name and non-secret configuration
+			And requires the kind, provider, and authentication method to match
 			And new model requests use the replacement credential
+			And advances the connection generation
 			And the command reports rotation rather than duplicate creation
+	When the existing connection uses no authentication
+		Then rr refuses to treat another add as credential rotation
 
 ## CONNECTION-5833EDC7 — List connections
 
@@ -118,7 +136,9 @@ Given zero or more connections have been configured
 			And shows its authentication method
 			And shows `active` when its credential is usable
 			And shows `active` for a valid no-auth connection
+			And treats OAuth as usable when its access token is unexpired or it has a refresh token
 			And shows `DISABLED (no secret)` when a credentialed connection has no credential
+			And shows `DISABLED (no secret)` for malformed or expired OAuth without a refresh token
 			And does not print secret values
 
 ## CONNECTION-475E6AE7 — List connections as JSON
@@ -197,6 +217,8 @@ Given the user has a remote MCP server endpoint
 		And completes the selected authentication setup
 		Then rr records the remote MCP transport and endpoint
 			And registers the named MCP server with Pi for new sessions
+			And supports streamable HTTP and legacy SSE request flows
+			And places only sentinel authentication in the generated Pi extension
 			And configures the gateway to allow only that endpoint boundary
 			And injects its credential only inside that boundary when authentication requires it
 
@@ -205,6 +227,9 @@ Given the user has a remote MCP server endpoint
 Given a connection is valid and active
 	When rr starts a new Pi session
 		Then rr makes the connection available to that session automatically
+			And maps Anthropic model traffic to `https://api.anthropic.com/`
+			And maps OpenAI Codex model traffic to `https://chatgpt.com/backend-api/`
+			And injects the stored OpenAI account ID as `chatgpt-account-id` when present
 			And does not expose another connection's credential on its requests
 
 ## CONNECTION-8F14C3B7 — Reject an invalid generic connection declaration

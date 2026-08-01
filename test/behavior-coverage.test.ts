@@ -10,11 +10,22 @@ test("behavior inventory requires an explicitly tagged automated test or an auto
     testFiles = (await readdir("test")).filter((name) =>
       name.endsWith(".test.ts"),
     );
-  const tests = (
-    await Promise.all(
-      testFiles.map((name) => readFile(join("test", name), "utf8")),
-    )
-  ).join("\n");
+  const sources = await Promise.all(
+      testFiles.map(async (name) => ({
+        name,
+        text: await readFile(join("test", name), "utf8"),
+      })),
+    ),
+    tests = sources.map(({ text }) => text).join("\n");
+  assert.deepEqual(
+    sources
+      .filter(({ text }) =>
+        /(?:readFile|readFileSync)\s*\(\s*["'`]src\//.test(text),
+      )
+      .map(({ name }) => name),
+    [],
+    "behavior tests must not inspect implementation source",
+  );
   const missing: string[] = [];
   for (const name of behaviorFiles) {
     const text = await readFile(join("behavior", name), "utf8");

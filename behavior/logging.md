@@ -70,20 +70,22 @@ Given an rr component emits a log event
 			And identifies the deployment with a non-secret stable deployment ID
 			And does not log the absolute `RR_HOME` path by default
 
-## LOG-7B31C9E0 — Log component lifecycle transitions
+## LOG-7B31C9E0 — Log component startup and shutdown transitions
 
-Given a server component starts, becomes ready, becomes degraded, recovers, or stops
+Given a server component starts, becomes ready, fails during startup, or stops cleanly
 	When its lifecycle state changes
 		Then it emits an event naming the old and new state
-			And includes its bound address without embedded credentials
+			And a ready event includes its bound address without embedded credentials
+			And a startup failure is emitted at `error`
 			And combined mode emits distinct lifecycle events for each component
 
 ## LOG-E5A81D23 — Log aggregate startup failure
 
 Given combined server startup fails
 	When rr stops partially started components
-		Then it logs the original failure at `error`
-			And logs cleanup outcomes for every component it attempted to stop
+		Then it logs the failing component's startup error at `error`
+			And logs successful component stops as lifecycle events
+			And logs stop or unlock failures as `component.cleanup_failed`
 			And does not replace the original cause with a cleanup error
 
 ## LOG-18C7F2A9 — Log gateway decisions without request secrets
@@ -95,13 +97,16 @@ Given the gateway allows or denies a request
 			And omits authorization values, cookies, query strings, and request and response bodies
 			And identifies policy denial separately from upstream failure
 
-## LOG-C4E29B71 — Keep conversation content out of diagnostic logs
+## LOG-C4E29B71 — Keep conversation content out of component diagnostics
 
-Given the coordinator enqueues, edits, deletes, claims, or completes a message
-	When it emits a queue or conversation event
-		Then it logs the message ID and state transition
-			And does not log user message text or assistant response text
+Given the runner or gateway emits a diagnostic related to a message or session
+	When it writes structured context
+		Then it may include applicable message, session, request, and connection identifiers
+			And does not add user message text or assistant response text to that context
 			And preserves this rule at `debug` and `trace` levels
+Given the coordinator publishes queue and conversation events to attached terminals
+	When those events contain conversation text
+		Then it does not also write them through the component diagnostic logger
 
 ## LOG-5D80A3F6 — Handle Pi protocol output separately
 
@@ -109,15 +114,17 @@ Given Pi emits RPC protocol events on stdout or diagnostics on stderr
 	When the runner consumes that output
 		Then it parses stdout as protocol data rather than component log lines
 			And does not forward raw protocol JSON to attached terminals
-			And records Pi stderr as runner diagnostics with session correlation
-			And removes conversation content from captured Pi diagnostics
+			And records Pi stderr at `debug` as runner diagnostics with session correlation
+			And escapes embedded newlines in captured Pi diagnostics
 			And applies rr redaction before emitting captured Pi diagnostics
 
 ## LOG-F19C62A8 — Redact secrets in every format and level
 
-Given a value is a connection credential, authorization header, cookie, OAuth code, refresh token, proxy session token, or component identity
+Given a value is supplied to the component logger as a known credential
+	Or appears under a credential-bearing key such as authorization, cookie, secret, token, password, or API key
 	When rr would emit that value in text or JSON logs
 		Then rr replaces it with a redaction marker
+			And recognizes inline Basic and Bearer authorization values
 			And applies redaction before serialization
 			And applies the same redaction at `trace` level
 			And never treats logging configuration as permission to reveal it

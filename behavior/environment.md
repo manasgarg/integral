@@ -111,7 +111,9 @@ Given the host shell contains arbitrary environment variables
 			And does not inherit the host environment wholesale
 			And excludes `RR_HOME`, `RR_GATEWAY_PORT`, `RR_COORDINATOR_PORT`, and `RR_RUNNER_PORT`
 			And excludes host credential and authorization variables
-			And uses container-specific values for `HOME`, `PATH`, and temporary storage
+			And sets `HOME` to `/home/pi`
+			And sets `PATH` to `/usr/local/bin:/usr/bin:/bin`
+			And sets `TMPDIR` to `/tmp`
 
 ## ENV-3E85C1F9 — Route HTTP traffic through the gateway
 
@@ -130,6 +132,12 @@ Given rr provisions a Pi container
 			And sets `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, and `PIP_CERT` to the mounted combined CA bundle
 			And uses container paths rather than host paths
 			And mounts the referenced certificate files read-only
+	When the deployment CA does not exist
+		Then rr creates one under the deployment data directory
+			And builds a trust bundle from available system roots plus the rr CA
+			And does not mount the CA private key into the container
+	When the gateway intercepts an allowed HTTPS host for the first time
+		Then rr creates and caches a host certificate signed by the deployment CA
 
 ## ENV-7B2D40AC — Protect rr-managed container variables
 

@@ -25,6 +25,7 @@ import { messageOf, RrError } from "./errors.ts";
 import { serverStatus, startComponents } from "./server.ts";
 import { componentEndpoint, verifiedFetch } from "./http-client.ts";
 import { oauthAccess, runGenericOAuth, runModelOAuth } from "./oauth.ts";
+import type { RrPaths } from "./paths.ts";
 
 const TOP_HELP = `rr — a governed, containerized Pi conversation
 
@@ -633,34 +634,66 @@ async function serverCommand(args: string[]): Promise<number> {
   throw new RrError(`unknown server command: ${command}`);
 }
 
-async function talkCommand(args: string[]): Promise<number> {
+export interface TalkTerminal {
+  question(prompt: string): Promise<string>;
+  close(): void;
+}
+
+export interface TalkDependencies {
+  resolvePaths(): RrPaths;
+  componentEndpoint: typeof componentEndpoint;
+  verifiedFetch: typeof verifiedFetch;
+  fetch: typeof globalThis.fetch;
+  createTerminal(): TalkTerminal;
+  writeOutput(text: string): void;
+  writeError(text: string): void;
+}
+
+const productionTalkDependencies: TalkDependencies = {
+  resolvePaths,
+  componentEndpoint,
+  verifiedFetch,
+  fetch: globalThis.fetch,
+  createTerminal: () =>
+    createInterface({ input, output, terminal: Boolean(input.isTTY) }),
+  writeOutput: (text) => process.stdout.write(text),
+  writeError: (text) => process.stderr.write(text),
+};
+
+export async function talkCommand(
+  args: string[],
+  overrides: Partial<TalkDependencies> = {},
+): Promise<number> {
+  const dependencies = { ...productionTalkDependencies, ...overrides };
   if (helpRequested(args)) {
-    process.stdout.write(
+    dependencies.writeOutput(
       `Usage: rr talk\n\nAttach this terminal to the one durable deployment conversation.\n${TALK_HELP}`,
     );
     return 0;
   }
-  const paths = resolvePaths();
+  const paths = dependencies.resolvePaths();
   let endpoint: string;
   try {
-    endpoint = await componentEndpoint(paths, "coordinator");
-    await verifiedFetch(paths, "coordinator", "/rr/health");
+    endpoint = await dependencies.componentEndpoint(paths, "coordinator");
+    await dependencies.verifiedFetch(paths, "coordinator", "/rr/health");
   } catch {
     throw new RrError(
       "coordinator is not reachable; start it with rr server start",
     );
   }
   const abort = new AbortController();
-  const response = await fetch(new URL("/rr/events", endpoint), {
+  const response = await dependencies.fetch(new URL("/rr/events", endpoint), {
     signal: abort.signal,
   });
   if (!response.ok || !response.body)
     throw new RrError("could not attach to coordinator");
-  const follow = consumeEvents(response.body).catch((error) => {
-    if (!abort.signal.aborted)
-      process.stderr.write(`rr: ${messageOf(error)}\n`);
-  });
-  const rl = createInterface({ input, output, terminal: Boolean(input.isTTY) });
+  const follow = consumeEvents(response.body, dependencies.writeOutput).catch(
+    (error) => {
+      if (!abort.signal.aborted)
+        dependencies.writeError(`rr: ${messageOf(error)}\n`);
+    },
+  );
+  const rl = dependencies.createTerminal();
   try {
     while (true) {
       let line: string;
@@ -673,47 +706,65 @@ async function talkCommand(args: string[]): Promise<number> {
       if (!text) continue;
       if (text === "/exit") break;
       if (text === "/help") {
-        process.stdout.write(TALK_HELP);
+        dependencies.writeOutput(TALK_HELP);
         continue;
       }
       if (text === "/status") {
-        const status = await fetchJson(new URL("/rr/status", endpoint));
-        writeJson(status);
+        const status = await fetchJson(
+          new URL("/rr/status", endpoint),
+          dependencies.fetch,
+        );
+        dependencies.writeOutput(`${JSON.stringify(status, null, 2)}\n`);
         continue;
       }
       if (text === "/queue ls") {
-        const snap = (await fetchJson(new URL("/rr/snapshot", endpoint))) as {
+        const snap = (await fetchJson(
+          new URL("/rr/snapshot", endpoint),
+          dependencies.fetch,
+        )) as {
           queue: { id: string; text: string; status: string }[];
         };
         for (const item of snap.queue)
-          process.stdout.write(`${item.status}\t${item.id}\t${item.text}\n`);
+          dependencies.writeOutput(
+            `${item.status}\t${item.id}\t${item.text}\n`,
+          );
         continue;
       }
       const edit = text.match(/^\/queue edit\s+(\S+)\s+(.+)$/);
       if (edit) {
-        await requestOk(new URL(`/rr/queue/${edit[1]}`, endpoint), {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: edit[2] }),
-        });
+        await requestOk(
+          new URL(`/rr/queue/${edit[1]}`, endpoint),
+          {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: edit[2] }),
+          },
+          dependencies.fetch,
+        );
         continue;
       }
       const del = text.match(/^\/queue delete\s+(\S+)$/);
       if (del) {
-        await requestOk(new URL(`/rr/queue/${del[1]}`, endpoint), {
-          method: "DELETE",
-        });
+        await requestOk(
+          new URL(`/rr/queue/${del[1]}`, endpoint),
+          { method: "DELETE" },
+          dependencies.fetch,
+        );
         continue;
       }
       if (text.startsWith("/")) {
-        process.stderr.write("Unknown local command. Enter /help.\n");
+        dependencies.writeError("Unknown local command. Enter /help.\n");
         continue;
       }
-      await requestOk(new URL("/rr/messages", endpoint), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
+      await requestOk(
+        new URL("/rr/messages", endpoint),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text }),
+        },
+        dependencies.fetch,
+      );
     }
     return 0;
   } finally {
@@ -725,6 +776,7 @@ async function talkCommand(args: string[]): Promise<number> {
 
 async function consumeEvents(
   stream: ReadableStream<Uint8Array>,
+  writeOutput: (text: string) => void = (text) => process.stdout.write(text),
 ): Promise<void> {
   const reader = stream.getReader(),
     decoder = new TextDecoder();
@@ -747,31 +799,34 @@ async function consumeEvents(
         };
         for (const item of snapshot.conversation)
           if (item.text && item.type !== "session")
-            process.stdout.write(`${item.type}: ${item.text}\n`);
+            writeOutput(`${item.type}: ${item.text}\n`);
       } else if (
         event === "conversation.user" ||
         event === "conversation.assistant" ||
         event === "conversation.error"
       ) {
         const item = value as { type: string; text?: string };
-        if (item.text) process.stdout.write(`${item.type}: ${item.text}\n`);
+        if (item.text) writeOutput(`${item.type}: ${item.text}\n`);
       } else if (event === "queue.edited") {
         const item = (value as { message: { id: string; text: string } })
           .message;
-        process.stdout.write(`queue: edited ${item.id} ${item.text}\n`);
+        writeOutput(`queue: edited ${item.id} ${item.text}\n`);
       } else if (event === "queue.deleted")
-        process.stdout.write(
+        writeOutput(
           `queue: deleted ${(value as { messageId: string }).messageId}\n`,
         );
       else if (event === "conversation.session") {
         const item = value as { sessionId?: string; text?: string };
-        process.stdout.write(`session: ${item.text} ${item.sessionId}\n`);
+        writeOutput(`session: ${item.text} ${item.sessionId}\n`);
       }
     }
   }
 }
-async function fetchJson(url: URL): Promise<unknown> {
-  const response = await fetch(url);
+async function fetchJson(
+  url: URL,
+  fetcher: typeof globalThis.fetch = globalThis.fetch,
+): Promise<unknown> {
+  const response = await fetcher(url);
   if (!response.ok)
     throw new RrError(
       ((await response.json()) as { error?: string }).error ??
@@ -779,8 +834,12 @@ async function fetchJson(url: URL): Promise<unknown> {
     );
   return response.json();
 }
-async function requestOk(url: URL, init: RequestInit): Promise<void> {
-  const response = await fetch(url, init);
+async function requestOk(
+  url: URL,
+  init: RequestInit,
+  fetcher: typeof globalThis.fetch = globalThis.fetch,
+): Promise<void> {
+  const response = await fetcher(url, init);
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as {
       error?: string;

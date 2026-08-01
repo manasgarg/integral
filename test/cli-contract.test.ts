@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { main, selectAuthentication } from "../src/cli.ts";
+import { main, selectAuthentication, talkCommand } from "../src/cli.ts";
 import { fixture } from "./helpers.ts";
 
 async function capture(
@@ -286,22 +286,100 @@ test("[CHAT-DB0EF523] talk refuses to start an ungoverned Pi when no coordinator
   assert.match(result.stderr, /coordinator is not reachable.*rr server start/);
 });
 
-test("[CHAT-888AFAE0] terminal chat contract uses a stable prompt and submits non-empty lines through the coordinator API", async () => {
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/cli.ts", "utf8"),
+test("[CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal executes local commands and submits only non-empty conversation text", async (t) => {
+  const paths = await fixture(t),
+    lines = [
+      "   ",
+      "/help",
+      "/status",
+      "/queue ls",
+      "/queue edit message-1 revised text",
+      "/queue delete message-1",
+      "/unknown",
+      "  hello Pi  ",
+      "/exit",
+    ],
+    prompts: string[] = [],
+    requests: { path: string; method: string; body?: string }[] = [];
+  let stdout = "",
+    stderr = "";
+  const events = new TextEncoder().encode(
+    'event: snapshot\ndata: {"conversation":[{"type":"user","text":"persisted"},{"type":"session","text":"hidden"}]}\n\n' +
+      'event: conversation.assistant\ndata: {"type":"assistant","text":"response"}\n\n',
   );
-  assert.match(source, /question\("rr> "\)/);
-  assert.match(source, /if \(!text\) continue/);
-  assert.match(source, /\/rr\/messages/);
-});
 
-test("[CHAT-989F5C14] local status is served by the coordinator without exposing credentials", async () => {
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/coordinator.ts", "utf8"),
+  const code = await talkCommand([], {
+    resolvePaths: () => paths,
+    componentEndpoint: async () => "http://coordinator.test",
+    verifiedFetch: async () => new Response("ok"),
+    createTerminal: () => ({
+      async question(prompt) {
+        prompts.push(prompt);
+        const line = lines.shift();
+        if (line === undefined) throw new Error("EOF");
+        return line;
+      },
+      close() {},
+    }),
+    writeOutput(text) {
+      stdout += text;
+    },
+    writeError(text) {
+      stderr += text;
+    },
+    async fetch(input, init) {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input
+            : input.url,
+      );
+      requests.push({
+        path: url.pathname,
+        method: init?.method ?? "GET",
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      if (url.pathname === "/rr/events") return new Response(events);
+      if (url.pathname === "/rr/status")
+        return Response.json({
+          gateway: "healthy",
+          runner: "healthy",
+          container: "idle",
+          session: null,
+          provider: "automatic",
+          queueDepth: 1,
+          inFlight: null,
+          attached: 1,
+        });
+      if (url.pathname === "/rr/snapshot")
+        return Response.json({
+          queue: [{ id: "message-1", text: "queued", status: "queued" }],
+        });
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.ok(prompts.every((prompt) => prompt === "rr> "));
+  assert.match(stdout, /user: persisted/);
+  assert.match(stdout, /assistant: response/);
+  assert.doesNotMatch(stdout, /hidden/);
+  assert.match(stdout, /gateway.*healthy/s);
+  assert.match(stdout, /queued\tmessage-1\tqueued/);
+  assert.match(stderr, /Unknown local command/);
+  assert.deepEqual(
+    requests
+      .filter((request) => request.method !== "GET")
+      .map((request) => [request.method, request.path, request.body]),
+    [
+      [
+        "PATCH",
+        "/rr/queue/message-1",
+        JSON.stringify({ text: "revised text" }),
+      ],
+      ["DELETE", "/rr/queue/message-1", undefined],
+      ["POST", "/rr/messages", JSON.stringify({ text: "hello Pi" })],
+    ],
   );
-  assert.match(
-    source,
-    /gateway.*runner.*container.*session.*provider.*queueDepth.*inFlight.*attached/s,
-  );
-  assert.doesNotMatch(source, /credentialFor/);
 });

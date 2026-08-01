@@ -10,7 +10,10 @@ Given the rr coordinator is healthy
 		Then the coordinator assigns the message a stable opaque ID
 			And writes the message durably before acknowledging it
 			And assigns it an order after all previously acknowledged messages
+			And records its creation time, queued state, and zero delivery attempts
 			And broadcasts the queued message and its ID to every attached terminal
+	When a client submits an empty or whitespace-only message
+		Then the coordinator rejects it without changing the queue or conversation
 
 ## QUEUE-31A6D84F — Serialize messages through one Pi conversation
 
@@ -20,6 +23,7 @@ Given one message is in flight with Pi
 		Then the coordinator durably marks the in-flight message complete
 			And claims the oldest remaining queued message
 			And sends only that message to Pi
+			And increments a message's delivery-attempt count each time it is claimed
 			And preserves acknowledged queue order regardless of submitting terminal
 
 ## QUEUE-A19D6F43 — List queued messages
@@ -39,8 +43,11 @@ Given a message is durably queued and not in flight
 		Then rr atomically replaces that message's text
 			And preserves its stable ID and queue position
 			And persists the edit before reporting success
+			And updates the corresponding durable user-conversation event
 			And broadcasts the edited message to every attached terminal
 			And sends only the edited text when the message is later claimed
+	When the replacement text is empty or whitespace-only
+		Then rr rejects the edit without changing the queue or conversation
 
 ## QUEUE-2F6B9D04 — Delete a queued message
 
@@ -48,6 +55,7 @@ Given a message is durably queued and not in flight
 	When an attached user enters `/queue delete <id>`
 		Then rr atomically removes the message from the delivery queue
 			And persists the deletion before reporting success
+			And removes the corresponding durable user-conversation event
 			And broadcasts the deletion to every attached terminal
 			And never sends the deleted message to Pi
 
@@ -76,19 +84,22 @@ Given queued messages were acknowledged before the coordinator stopped or crashe
 		Then every acknowledged queued message is present in its prior order
 			And deleted messages remain deleted
 			And edits retain their latest acknowledged text
+			And a message recorded as in flight is returned to queued state
+			And its delivery-attempt count is preserved
 			And queue processing resumes without requiring a terminal
 
 ## QUEUE-6A1B4E82 — Order concurrent submissions consistently
 
 Given two or more terminals are attached to the same conversation
 	When they submit messages concurrently
-		Then the coordinator commits one total order for those messages
+		Then the coordinator serializes durable queue mutations through one commit chain
+			And commits one total order for those messages
 			And every attached terminal observes that same order
 			And Pi receives each message once in that order
 
 ## QUEUE-947D3AC0 — Refuse an unknown queued-message ID
 
-Given a queue edit or delete command names an unknown or deleted message ID
+Given a queue edit, delete, completion, or release operation names an unknown or deleted message ID
 	When the coordinator evaluates the command
 		Then rr rejects the operation without changing the queue
 			And reports that the message is not queued

@@ -24,6 +24,78 @@ interface Started {
   unlock: () => Promise<void>;
   logger: Logger;
 }
+
+export interface ComponentRuntime {
+  start(): Promise<{ endpoint: string } | void>;
+  stop(): Promise<void>;
+}
+
+export interface StartComponentsDependencies {
+  validateRunnerHost(paths: RrPaths, config: EffectiveConfig): Promise<void>;
+  createRuntime(
+    component: Component,
+    paths: RrPaths,
+    config: EffectiveConfig,
+    logger: Logger,
+  ): ComponentRuntime;
+  waitForShutdown(stop: () => Promise<void>): Promise<void>;
+}
+
+function createProductionRuntime(
+  component: Component,
+  paths: RrPaths,
+  config: EffectiveConfig,
+  logger: Logger,
+): ComponentRuntime {
+  const runtime =
+    component === "coordinator"
+      ? new Coordinator(paths, config)
+      : component === "gateway"
+        ? new Gateway(paths, config, logger)
+        : new Runner(paths, config, logger);
+  return {
+    async start() {
+      const server = await runtime.start(),
+        address = server.address();
+      if (!address || typeof address === "string") return;
+      return { endpoint: `http://127.0.0.1:${address.port}` };
+    },
+    stop: () => runtime.stop(),
+  };
+}
+
+export interface SignalSource {
+  once(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+}
+
+export async function waitForShutdownSignal(
+  stop: () => Promise<void>,
+  signals: SignalSource = process,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let stopping = false;
+    const cleanup = () => {
+      signals.off("SIGINT", signal);
+      signals.off("SIGTERM", signal);
+    };
+    const signal = () => {
+      if (stopping) return;
+      stopping = true;
+      cleanup();
+      void stop().then(resolve, reject);
+    };
+    signals.once("SIGINT", signal);
+    signals.once("SIGTERM", signal);
+  });
+}
+
+const productionDependencies: StartComponentsDependencies = {
+  validateRunnerHost,
+  createRuntime: createProductionRuntime,
+  waitForShutdown: waitForShutdownSignal,
+};
+
 export async function connectionGeneration(paths: RrPaths): Promise<number> {
   return Number(
     (await readText(join(paths.state, "connection-generation")))?.trim() || "0",
@@ -37,13 +109,16 @@ export async function startComponents(
   paths: RrPaths,
   config: EffectiveConfig,
   selected?: Component,
+  overrides: Partial<StartComponentsDependencies> = {},
 ): Promise<void> {
+  const dependencies = { ...productionDependencies, ...overrides };
   const components = selected
     ? [selected]
     : (["coordinator", "gateway", "runner"] satisfies Component[]);
   const started: Started[] = [],
     secrets = await credentialSecretValues(paths);
-  if (components.includes("runner")) await validateRunnerHost(paths, config);
+  if (components.includes("runner"))
+    await dependencies.validateRunnerHost(paths, config);
   const stopAll = async () => {
     for (const item of started.toReversed()) {
       try {
@@ -93,15 +168,15 @@ export async function startComponents(
         old_state: "stopped",
         new_state: "starting",
       });
-      let runtime: Coordinator | Gateway | Runner;
+      const runtime = dependencies.createRuntime(
+        component,
+        paths,
+        config,
+        logger,
+      );
+      let ready: { endpoint: string } | void;
       try {
-        runtime =
-          component === "coordinator"
-            ? new Coordinator(paths, config)
-            : component === "gateway"
-              ? new Gateway(paths, config, logger)
-              : new Runner(paths, config, logger);
-        await runtime.start();
+        ready = await runtime.start();
       } catch (error) {
         logger.event(
           "error",
@@ -109,6 +184,17 @@ export async function startComponents(
           error instanceof Error ? error.message : String(error),
           { old_state: "starting", new_state: "failed" },
         );
+        try {
+          await runtime.stop();
+        } catch (cleanupError) {
+          logger.event(
+            "error",
+            "component.cleanup_failed",
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError),
+          );
+        }
         await unlock();
         throw error;
       }
@@ -118,7 +204,8 @@ export async function startComponents(
       await writeComponentState(paths, {
         component,
         deploymentId: deploymentId(paths),
-        endpoint: `http://127.0.0.1:${portFor(config, component)}`,
+        endpoint:
+          ready?.endpoint ?? `http://127.0.0.1:${portFor(config, component)}`,
         pid: process.pid,
         status: "ready",
         fingerprint: config.fingerprint,
@@ -135,16 +222,7 @@ export async function startComponents(
     await stopAll();
     throw error;
   }
-  await new Promise<void>((resolve) => {
-    let stopping = false;
-    const signal = () => {
-      if (stopping) return;
-      stopping = true;
-      void stopAll().then(resolve);
-    };
-    process.once("SIGINT", signal);
-    process.once("SIGTERM", signal);
-  });
+  await dependencies.waitForShutdown(stopAll);
 }
 
 export interface DeploymentStatus {

@@ -4,7 +4,7 @@ These behaviors cover the runner component provisioning and managing the warm
 Pi RPC container.
 
 <!-- Automation note (BOX-AB639757): The image, RPC command, session restoration, and lifecycle orchestration are automated; launching the real image is not run in the default suite because its execution environment has no Docker-daemon access. -->
-<!-- Automation note (BOX-601613D4): The complete Docker argument and mount specification is automated; kernel-level enforcement is not exercised without a Docker daemon. -->
+<!-- Automation note (BOX-601613D4): The default suite verifies the complete Docker argument and mount specification; `npm run test:acceptance:docker` inspects the live container's kernel-enforced identity, filesystem, capabilities, resources, mounts, and network. -->
 <!-- Automation note (BOX-B45DEA9B): Single-session reuse is tested at the runner lifecycle boundary; a live multi-turn provider call is not made by the offline suite. -->
 <!-- Automation note (BOX-BE26C696): Timeout, release, and cleanup paths are automated at the protocol boundary; real container termination is not exercised without a Docker daemon. -->
 <!-- Automation note (BOX-7D3A19E4): Idle timer and session cleanup paths are automated without waiting five real minutes or launching Docker. -->
@@ -18,7 +18,8 @@ Given the coordinator, runner, and gateway are healthy
 	When the runner claims the next queued message from the coordinator
 		Then rr creates a fresh temporary session home
 			And starts one non-root Docker container on the locked network
-			And runs the pinned Pi image in RPC mode
+			And runs the configured Pi image in RPC mode with session persistence and approval prompts disabled
+			And supplies the selected provider, optional model, and only a sentinel API key
 			And restores conversational context from the durable conversation record
 			And sends the claimed message as a Pi `prompt` command
 
@@ -30,7 +31,8 @@ Given rr is provisioning a Pi container
 			And disables privilege escalation
 			And drops additional Linux capabilities
 			And uses a read-only root filesystem
-			And limits writable access to bounded temporary locations
+			And mounts `/tmp` as a size-bounded `tmpfs` with execution and set-user-ID disabled
+			And mounts one fresh session home as the other writable location
 			And does not mount host worker directories or repositories
 			And does not mount the Docker socket
 			And does not mount control-plane configuration or credentials
@@ -43,17 +45,19 @@ Given rr has an active Pi RPC session
 		Then rr sends it to the same Pi process
 			And sends it to the same Pi session
 			And preserves preceding turns as conversational context
+			And cancels a pending idle shutdown before starting the turn
 			And does not start a second container
 
 ## BOX-BE26C696 — Bound a stuck turn
 
 Given Pi does not finish a turn within the configured turn timeout
 	When the timeout expires
-		Then rr terminates the container
+		Then rr requests container termination
 			And reports that the turn timed out
 			And durably returns the in-flight message to the queue
 			And removes temporary session data
 			And revokes temporary session credentials
+			And force-removes the Docker container if it has not exited five seconds after SIGTERM
 
 ## BOX-7D3A19E4 — Recycle an idle Pi session without ending the conversation
 

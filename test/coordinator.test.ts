@@ -77,3 +77,38 @@ test("[CHAT-1C4A8B7E] [QUEUE-8E42F5B1] attached-terminal count can fall to zero 
   assert.equal(coordinator.queue.snapshot()[0]?.text, "after detach");
   assert.equal((coordinator as any).snapshot().attached, 0);
 });
+
+test("[SERVER-8A31D6C4] coordinator lifecycle can run against controlled listener and interval boundaries", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    calls: string[] = [],
+    timer = {};
+  const coordinator = new Coordinator(paths, config, {
+    servers: {
+      async listen(_server, port, address) {
+        calls.push(`listen:${address}:${port}`);
+      },
+      async close() {
+        calls.push("close");
+      },
+    },
+    intervals: {
+      setInterval(_callback, milliseconds) {
+        calls.push(`interval:${milliseconds}`);
+        return timer;
+      },
+      clearInterval(handle) {
+        assert.equal(handle, timer);
+        calls.push("clear");
+      },
+    },
+  });
+  await coordinator.start();
+  await coordinator.stop();
+  assert.deepEqual(calls, [
+    `listen:127.0.0.1:${config.server.coordinatorPort}`,
+    "interval:500",
+    "clear",
+    "close",
+  ]);
+});

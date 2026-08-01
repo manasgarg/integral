@@ -14,15 +14,87 @@ import {
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
 import { validateConnection } from "../src/connections.ts";
+import { Gateway, allowsConnect, gatewayHealth } from "../src/gateway.ts";
+import { Logger } from "../src/logging.ts";
+import { deploymentId, writeComponentState } from "../src/state.ts";
 import { fixture } from "./helpers.ts";
 
-test("[GATEWAY-3F299566] gateway health identifies both component and expected deployment", async () => {
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/gateway.ts", "utf8"),
-  );
-  assert.match(source, /\/rr\/health/);
-  assert.match(source, /component: "gateway"/);
-  assert.match(source, /deploymentId: deploymentId\(this\.paths\)/);
+test("[GATEWAY-3F299566] gateway health identifies deployment and publishes the current component state", async (t) => {
+  const paths = await fixture(t),
+    deployment = deploymentId(paths);
+  assert.deepEqual(await gatewayHealth(paths), {
+    component: "gateway",
+    deploymentId: deployment,
+    status: "ready",
+  });
+  await writeComponentState(paths, {
+    component: "gateway",
+    deploymentId: deployment,
+    endpoint: "http://127.0.0.1:7300",
+    pid: process.pid,
+    status: "degraded",
+    fingerprint: "fingerprint",
+    connectionGeneration: 1,
+    startedAt: "now",
+    error: "invalid connection",
+  });
+  assert.deepEqual(await gatewayHealth(paths), {
+    component: "gateway",
+    deploymentId: deployment,
+    status: "degraded",
+    error: "invalid connection",
+  });
+});
+
+test("[SERVER-8A31D6C4] gateway lifecycle can run against controlled CA, listener, and interval boundaries", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    calls: string[] = [],
+    timer = {},
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        ensureCa: async () => ({
+          key: "key",
+          cert: "cert",
+          bundle: "bundle",
+        }),
+        servers: {
+          async listen(_server, port, address) {
+            calls.push(`listen:${address}:${port}`);
+          },
+          async close() {
+            calls.push("close");
+          },
+        },
+        intervals: {
+          setInterval(_callback, milliseconds) {
+            calls.push(`interval:${milliseconds}`);
+            return timer;
+          },
+          clearInterval(handle) {
+            assert.equal(handle, timer);
+            calls.push("clear");
+          },
+        },
+      },
+    );
+  await gateway.start();
+  await gateway.stop();
+  assert.deepEqual(calls, [
+    `listen:127.0.0.1:${config.server.gatewayPort}`,
+    "interval:500",
+    "clear",
+    "close",
+  ]);
 });
 
 test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only an explicit Basic session token", () => {
@@ -34,6 +106,21 @@ test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only a
     ),
     "session-token",
   );
+});
+
+test("[GATEWAY-EB8D96FE] CONNECT admits only the exact configured HTTPS host and port, including non-default ports", () => {
+  const connection = validateConnection({
+    name: "local-tls",
+    kind: "http",
+    url: "https://service.test:8443/api",
+    auth: "none",
+  });
+  const candidates = [{ connection, credential: undefined }];
+  assert.equal(allowsConnect(candidates, "service.test", 8443), true);
+  assert.equal(allowsConnect(candidates, "SERVICE.TEST", 8443), true);
+  assert.equal(allowsConnect(candidates, "service.test", 443), false);
+  assert.equal(allowsConnect(candidates, "other.test", 8443), false);
+  assert.equal(allowsConnect(candidates, "service.test", 0), false);
 });
 
 test("[GATEWAY-A2BBBBE8] a matching connection injects its host credential only inside its exact boundary", () => {
@@ -266,15 +353,9 @@ test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools con
   assert.doesNotMatch(source, /actual-secret/);
 });
 
-test("[BOX-BE26C696] [BOX-7D3A19E4] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-3780301D] runner configuration and coordinator release protocol bound failed or idle sessions without ending durable state", async (t) => {
+test("[BOX-BE26C696] runner configuration resolves finite turn and idle deadlines", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
   assert.equal(config.runner.turnTimeoutSeconds, 1800);
   assert.equal(config.runner.idleTimeoutSeconds, 300);
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("src/runner.ts", "utf8"),
-  );
-  assert.match(source, /\/release/);
-  assert.match(source, /destroyPi/);
-  assert.match(source, /armIdle/);
 });

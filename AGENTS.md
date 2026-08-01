@@ -26,6 +26,39 @@ Speak in plain English.
   files, and use `npm run pack:check` to inspect the package tarball before a
   release.
 
+## Behavior change workflow
+
+Keep the behavior specification, implementation, and tests synchronized as one
+increment.
+
+- Start a product change by locating the applicable behavior ID and every
+  affected `When` path. Add or revise the behavior specification before relying
+  on implementation details as the contract.
+- Preserve existing behavior IDs. Give genuinely new behavior a collision-free
+  ID and retire removed behavior IDs as described below.
+- Implement production code through explicit boundaries for external systems,
+  including time, processes, Docker, terminals, signals, and network peers.
+  Production implementations must remain the default; tests may provide
+  deterministic implementations through the same interfaces.
+- Keep lifecycle ownership explicit. A successful start must return an owned
+  resource that can be stopped, and a failed start must clean up everything it
+  acquired. Cleanup operations must be safe to call after partial startup.
+- Add at least one executable test for each changed `When` path. Put the stable
+  behavior ID in the test name and assert observable outcomes, not source-code
+  spelling or implementation structure.
+- Use unit tests for pure policy, in-process integration tests for filesystem
+  and component boundaries, subprocess tests for CLI and signal behavior, and
+  Docker or PTY acceptance tests for operating-system guarantees.
+- Do not count a skipped acceptance test as verified. Document why it is not in
+  the default suite, give it a dedicated runnable command, and make that command
+  fail clearly when its explicitly requested prerequisite is unavailable.
+- When implementation and specification disagree, first establish which
+  behavior is intentional. Then update the specification, implementation, and
+  tests together; never weaken an assertion merely to preserve current output.
+- Before completing a behavior change, run `npm run check` and every relevant
+  acceptance profile. Review the behavior diff beside the implementation and
+  test diff, and report any acceptance profile that could not run.
+
 ## Git workflow
 
 - This project uses Git from the beginning.

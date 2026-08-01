@@ -17,19 +17,23 @@ Given a chat turn is in progress
 
 ## FAILURE-3780301D — Report loss of the gateway
 
-Given a chat container is running
-	When the gateway becomes unavailable
-		Then model calls fail visibly
-			And rr does not fall back to direct internet access
-			And rr does not place a real credential in the container
-			And the runner ends the failed Pi turn and removes its container
+Given the runner has not claimed its next message
+	When gateway state is missing or not ready
+		Then the runner marks itself degraded
+			And does not claim new work
+			And does not fall back to direct internet access
+Given a chat turn is already in progress
+	When the prompt fails with a gateway, container, timeout, or exit error
+		Then the runner removes the failed Pi container
+			And rr does not place a real credential in any replacement container
 			And the coordinator durably returns the interrupted message to the queue
+			And reports the turn error to attached terminals
 
-## FAILURE-282E3B57 — Redact secrets from diagnostics
+## FAILURE-282E3B57 — Redact known secrets from component diagnostics
 
-Given a CLI, gateway, provider, Docker, or Pi operation fails
-	When rr renders an error or writes a diagnostic line
-		Then it redacts credential values
-			And redacts authorization headers
-			And redacts proxy session tokens
-			And redacts provider refresh tokens
+Given the component logger knows the deployment's stored credential values
+	When a gateway, provider, Docker, or Pi operation writes a diagnostic event
+		Then it redacts those known credential values wherever they occur
+			And redacts values under authorization, cookie, secret, token, password, and API-key fields
+			And redacts inline Basic and Bearer authorization values
+			And emits the sanitized event in the configured format

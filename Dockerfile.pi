@@ -3,7 +3,8 @@ FROM node:24.15.0-slim
 ARG PI_VERSION=0.80.3
 RUN npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && npm cache clean --force \
-    && useradd --create-home --uid 1000 --shell /usr/sbin/nologin pi
+    && groupmod --new-name pi node \
+    && usermod --login pi --home /home/pi --move-home --shell /usr/sbin/nologin node
 
 USER 1000:1000
 WORKDIR /home/pi

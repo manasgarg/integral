@@ -5,14 +5,13 @@ import type { RrPaths } from "./paths.ts";
 import type { Logger } from "./logging.ts";
 import {
   buildContainerSpec,
-  createLockedNetwork,
   dockerAvailable,
-  dockerNetworkGateway,
-  ensureContainerImage,
+  dockerContainerBackend,
   freshSessionHome,
   newSessionIdentity,
-  PiContainer,
   writeMcpExtension,
+  type ContainerBackend,
+  type PiRuntime,
 } from "./container.ts";
 import { ensureCa } from "./ca.ts";
 import { componentEndpoint, internalFetch } from "./http-client.ts";
@@ -23,25 +22,75 @@ import { join } from "node:path";
 import { RrError } from "./errors.ts";
 import type { ConversationEvent, QueuedMessage } from "./queue.ts";
 
+export interface RunnerClock {
+  setTimeout(callback: () => void, milliseconds: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+export interface RunnerDependencies {
+  containers: ContainerBackend;
+  clock: RunnerClock;
+  internalFetch: typeof internalFetch;
+  fetch: typeof globalThis.fetch;
+  ensureCa: typeof ensureCa;
+  freshSessionHome: typeof freshSessionHome;
+  newSessionIdentity: typeof newSessionIdentity;
+  writeMcpExtension: typeof writeMcpExtension;
+  listen(server: http.Server, port: number, address: string): Promise<void>;
+  close(server: http.Server): Promise<void>;
+}
+
+const systemClock: RunnerClock = {
+  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+  clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout | undefined),
+};
+
+const productionDependencies: RunnerDependencies = {
+  containers: dockerContainerBackend,
+  clock: systemClock,
+  internalFetch,
+  fetch: globalThis.fetch,
+  ensureCa,
+  freshSessionHome,
+  newSessionIdentity,
+  writeMcpExtension,
+  async listen(server, port, address) {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, address, resolve);
+    });
+  },
+  async close(server) {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  },
+};
+
 export class Runner {
   private server: http.Server | undefined;
-  private pi: PiContainer | undefined;
+  private pi: PiRuntime | undefined;
   private stopped = false;
-  private polling: NodeJS.Timeout | undefined;
+  private polling: unknown;
   private busy = false;
-  private idle: NodeJS.Timeout | undefined;
+  private idle: unknown;
   private dockerGateway = "";
   private currentMessageId: string | undefined;
+  private readonly dependencies: RunnerDependencies;
   constructor(
     private readonly paths: RrPaths,
     private readonly config: EffectiveConfig,
     private readonly logger: Logger,
-  ) {}
+    overrides: Partial<RunnerDependencies> = {},
+  ) {
+    this.dependencies = { ...productionDependencies, ...overrides };
+  }
   async start(): Promise<http.Server> {
-    ensureContainerImage(this.config);
+    await this.dependencies.containers.ensureImage(this.config);
     const network = `rr-${deploymentId(this.paths)}`;
-    await createLockedNetwork(network);
-    this.dockerGateway = dockerNetworkGateway(network);
+    await this.dependencies.containers.ensureNetwork(network);
+    this.dockerGateway =
+      await this.dependencies.containers.networkGateway(network);
     await this.ensureGatewayListener().catch(() => undefined);
     const server = http.createServer((req, res) => {
       if (req.url === "/rr/health") {
@@ -60,18 +109,27 @@ export class Runner {
       } else res.writeHead(404).end();
     });
     this.server = server;
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(this.config.server.runnerPort, "127.0.0.1", resolve);
-    });
+    await this.dependencies.listen(
+      server,
+      this.config.server.runnerPort,
+      "127.0.0.1",
+    );
     this.schedule(0);
     return server;
   }
   private schedule(ms = 500): void {
-    if (!this.stopped) this.polling = setTimeout(() => void this.poll(), ms);
+    if (!this.stopped)
+      this.polling = this.dependencies.clock.setTimeout(
+        () => void this.poll(),
+        ms,
+      );
   }
   private async poll(): Promise<void> {
-    if (this.busy || this.stopped) return this.schedule();
+    await this.runOnce();
+    this.schedule();
+  }
+  async runOnce(): Promise<void> {
+    if (this.busy || this.stopped) return;
     this.busy = true;
     let item: QueuedMessage | undefined;
     try {
@@ -101,11 +159,11 @@ export class Runner {
           "component configuration or connection generations disagree",
         );
       await this.ensureGatewayListener();
-      const gateway = await fetch(
+      const gateway = await this.dependencies.fetch(
         new URL("/rr/health", await componentEndpoint(this.paths, "gateway")),
       );
       if (!gateway.ok) throw new RrError("gateway unavailable");
-      const response = await internalFetch(
+      const response = await this.dependencies.internalFetch(
         this.paths,
         "runner",
         "coordinator",
@@ -123,10 +181,10 @@ export class Runner {
         return;
       }
       this.currentMessageId = item.id;
-      clearTimeout(this.idle);
+      this.dependencies.clock.clearTimeout(this.idle);
       await this.ensurePi(body.context);
       const answer = await this.pi!.prompt(item.text);
-      const completed = await internalFetch(
+      const completed = await this.dependencies.internalFetch(
         this.paths,
         "runner",
         "coordinator",
@@ -142,18 +200,20 @@ export class Runner {
         error: error instanceof Error ? error.message : String(error),
       });
       if (item) {
-        await internalFetch(
-          this.paths,
-          "runner",
-          "coordinator",
-          `/rr/internal/work/${item.id}/release`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              reason: error instanceof Error ? error.message : String(error),
-            }),
-          },
-        ).catch(() => undefined);
+        await this.dependencies
+          .internalFetch(
+            this.paths,
+            "runner",
+            "coordinator",
+            `/rr/internal/work/${item.id}/release`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                reason: error instanceof Error ? error.message : String(error),
+              }),
+            },
+          )
+          .catch(() => undefined);
         this.currentMessageId = undefined;
       }
       if (
@@ -177,11 +237,10 @@ export class Runner {
       );
     } finally {
       this.busy = false;
-      this.schedule();
     }
   }
   private async ensureGatewayListener(): Promise<void> {
-    const response = await internalFetch(
+    const response = await this.dependencies.internalFetch(
       this.paths,
       "runner",
       "gateway",
@@ -198,10 +257,10 @@ export class Runner {
     const all = await listConnections(this.paths),
       model = selectModel(all, this.config),
       mcp = all.filter((c) => c.kind === "mcp");
-    const identity = newSessionIdentity(),
-      ca = await ensureCa(this.paths),
-      home = await freshSessionHome();
-    await writeMcpExtension(home, mcp);
+    const identity = this.dependencies.newSessionIdentity(),
+      ca = await this.dependencies.ensureCa(this.paths),
+      home = await this.dependencies.freshSessionHome();
+    await this.dependencies.writeMcpExtension(home, mcp);
     const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
     gatewayUrl.hostname = "host.rr.internal";
     const spec = buildContainerSpec({
@@ -217,7 +276,7 @@ export class Runner {
     });
     if (context.length)
       spec.args.push("--append-system-prompt", renderContext(context));
-    await internalFetch(
+    await this.dependencies.internalFetch(
       this.paths,
       "runner",
       "gateway",
@@ -230,7 +289,7 @@ export class Runner {
         }),
       },
     );
-    const pi = new PiContainer(
+    const pi = this.dependencies.containers.createPi(
       spec,
       this.config,
       `rr-${deploymentId(this.paths)}`,
@@ -242,7 +301,7 @@ export class Runner {
     try {
       await pi.start();
       this.pi = pi;
-      await internalFetch(
+      await this.dependencies.internalFetch(
         this.paths,
         "runner",
         "coordinator",
@@ -263,60 +322,65 @@ export class Runner {
   }
   private armIdle(): void {
     if (!this.pi || this.idle) return;
-    this.idle = setTimeout(
+    this.idle = this.dependencies.clock.setTimeout(
       () => void this.destroyPi(),
       this.config.runner.idleTimeoutSeconds * 1000,
     );
   }
   private async revoke(token: string): Promise<void> {
-    await internalFetch(
-      this.paths,
-      "runner",
-      "gateway",
-      "/rr/internal/session",
-      { method: "DELETE", body: JSON.stringify({ token }) },
-    ).catch(() => undefined);
+    await this.dependencies
+      .internalFetch(this.paths, "runner", "gateway", "/rr/internal/session", {
+        method: "DELETE",
+        body: JSON.stringify({ token }),
+      })
+      .catch(() => undefined);
   }
   private async destroyPi(): Promise<void> {
-    clearTimeout(this.idle);
+    this.dependencies.clock.clearTimeout(this.idle);
     this.idle = undefined;
     const pi = this.pi;
     this.pi = undefined;
     if (pi) {
       await this.revoke(pi.spec.sessionToken);
       await pi.stop();
-      await internalFetch(
-        this.paths,
-        "runner",
-        "coordinator",
-        "/rr/internal/session",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            sessionId: pi.spec.sessionId,
-            state: "ended",
-          }),
-        },
-      ).catch(() => undefined);
+      await this.dependencies
+        .internalFetch(
+          this.paths,
+          "runner",
+          "coordinator",
+          "/rr/internal/session",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              sessionId: pi.spec.sessionId,
+              state: "ended",
+            }),
+          },
+        )
+        .catch(() => undefined);
     }
   }
   async stop(): Promise<void> {
     this.stopped = true;
-    clearTimeout(this.polling);
+    this.dependencies.clock.clearTimeout(this.polling);
     const messageId = this.currentMessageId;
     this.currentMessageId = undefined;
     if (messageId)
-      await internalFetch(
-        this.paths,
-        "runner",
-        "coordinator",
-        `/rr/internal/work/${messageId}/release`,
-        { method: "POST", body: JSON.stringify({ reason: "runner stopped" }) },
-      ).catch(() => undefined);
+      await this.dependencies
+        .internalFetch(
+          this.paths,
+          "runner",
+          "coordinator",
+          `/rr/internal/work/${messageId}/release`,
+          {
+            method: "POST",
+            body: JSON.stringify({ reason: "runner stopped" }),
+          },
+        )
+        .catch(() => undefined);
     await this.destroyPi();
     const server = this.server;
-    if (server)
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (server) await this.dependencies.close(server);
   }
 }
 

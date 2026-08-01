@@ -29,6 +29,9 @@
     "pack:check": "npm pack --dry-run",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
+    "test:acceptance": "npm run build && node --test --test-concurrency=1 dist/test/acceptance/process.acceptance.test.js",
+    "test:acceptance:docker": "npm run build && node --test --test-concurrency=1 dist/test/acceptance/docker.acceptance.test.js",
+    "test:full": "npm test && npm run test:acceptance && npm run test:acceptance:docker",
     "test:coverage": "npm run build && node --experimental-test-coverage --test --test-concurrency=1 --test-coverage-include=dist/src/**/*.js --test-coverage-lines=50 --test-coverage-branches=75 --test-coverage-functions=60 dist/test/*.test.js"
   },
   "dependencies": {

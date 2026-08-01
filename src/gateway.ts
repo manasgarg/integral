@@ -27,6 +27,12 @@ import { oauthAccess, refreshOAuth } from "./oauth.ts";
 import { atomicWrite } from "./fs.ts";
 import { readText } from "./fs.ts";
 import { join } from "node:path";
+import {
+  nodeHttpServerRuntime,
+  nodeIntervalRuntime,
+  type HttpServerRuntime,
+  type IntervalRuntime,
+} from "./runtime.ts";
 
 function modelBoundary(connection: Connection): Connection {
   if (connection.kind !== "model") return connection;
@@ -40,32 +46,57 @@ function modelBoundary(connection: Connection): Connection {
   };
 }
 
+export function allowsConnect(
+  candidates: CredentialedConnection[],
+  host: string,
+  port: number,
+): boolean {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+  return candidates.some(({ connection }) => {
+    if (!connection.url) return false;
+    const url = new URL(connection.url);
+    return (
+      url.protocol === "https:" &&
+      url.hostname.toLowerCase() === host.toLowerCase() &&
+      Number(url.port || 443) === port
+    );
+  });
+}
+
 export class Gateway {
   readonly sessions = new Map<string, string>();
   private servers: http.Server[] = [];
   private ca?: CaFiles;
   private token = "";
   private candidates: CredentialedConnection[] = [];
-  private refreshTimer: NodeJS.Timeout | undefined;
+  private refreshTimer: unknown;
   private lastConnectionHash: string | undefined;
   private lastGeneration = 0;
   private sawInvalidConnections = false;
+  private readonly dependencies: GatewayDependencies;
   constructor(
     private readonly paths: RrPaths,
     private readonly config: EffectiveConfig,
     private readonly logger: Logger,
-  ) {}
+    overrides: Partial<GatewayDependencies> = {},
+  ) {
+    this.dependencies = { ...productionDependencies, ...overrides };
+  }
   async start(): Promise<http.Server> {
-    this.ca = await ensureCa(this.paths);
+    this.ca = await this.dependencies.ensureCa(this.paths);
     this.token = await componentIdentity(this.paths);
     await this.reload(true);
     const server = this.makeServer();
     this.servers.push(server);
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(this.config.server.gatewayPort, "127.0.0.1", resolve);
-    });
-    this.refreshTimer = setInterval(() => void this.reload(false), 500);
+    await this.dependencies.servers.listen(
+      server,
+      this.config.server.gatewayPort,
+      "127.0.0.1",
+    );
+    this.refreshTimer = this.dependencies.intervals.setInterval(
+      () => void this.reload(false),
+      500,
+    );
     return server;
   }
   private makeServer(): http.Server {
@@ -88,7 +119,10 @@ export class Gateway {
           injectedHeaders: Record<string, string> | undefined;
         if (raw && oauthAccess(raw))
           try {
-            const refreshed = await refreshOAuth(connection, raw);
+            const refreshed = await this.dependencies.refreshOAuth(
+              connection,
+              raw,
+            );
             credential = refreshed.access;
             if (refreshed.serialized !== raw)
               await atomicWrite(
@@ -161,16 +195,8 @@ export class Gateway {
     res: ServerResponse,
   ): Promise<void> {
     if (req.url === "/rr/health") {
-      const state = await readComponentState(this.paths, "gateway");
       res.setHeader("content-type", "application/json");
-      res.end(
-        JSON.stringify({
-          component: "gateway",
-          deploymentId: deploymentId(this.paths),
-          status: state?.status ?? "ready",
-          error: state?.error,
-        }),
-      );
+      res.end(JSON.stringify(await gatewayHealth(this.paths)));
       return;
     }
     if (req.url === "/rr/internal/session" && req.method === "POST") {
@@ -221,10 +247,11 @@ export class Gateway {
         )
       ) {
         const dockerServer = this.makeServer();
-        await new Promise<void>((resolve, reject) => {
-          dockerServer.once("error", reject);
-          dockerServer.listen(this.config.server.gatewayPort, address, resolve);
-        });
+        await this.dependencies.servers.listen(
+          dockerServer,
+          this.config.server.gatewayPort,
+          address,
+        );
         this.servers.push(dockerServer);
       }
       res.writeHead(204).end();
@@ -295,8 +322,7 @@ export class Gateway {
       request_id: requestId,
       connection: decision.connection.name,
     });
-    const transport = target.protocol === "https:" ? https : http;
-    const upstream = transport.request(
+    const upstream = this.dependencies.request(
       target,
       {
         method: req.method,
@@ -334,24 +360,20 @@ export class Gateway {
     }
     const [host, rawPort] = (req.url ?? "").split(":");
     const port = Number(rawPort || 443);
-    if (!host || port !== 443) {
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
       socket.end("HTTP/1.1 403 Forbidden\r\n\r\npolicy denied CONNECT\n");
       return;
     }
     try {
       // Deny before TLS interception when no HTTPS connection can possibly match this host and port.
-      const possible = this.candidates.some(({ connection }) => {
-        if (!connection.url) return false;
-        const url = new URL(connection.url);
-        return (
-          url.protocol === "https:" &&
-          url.hostname.toLowerCase() === host.toLowerCase() &&
-          Number(url.port || 443) === port
-        );
-      });
+      const possible = allowsConnect(this.candidates, host, port);
       if (!possible)
         throw new RrError("policy denied the requested destination", 403);
-      const cert = await certificateFor(this.paths, host, this.ca!);
+      const cert = await this.dependencies.certificateFor(
+        this.paths,
+        host,
+        this.ca!,
+      );
       const key = await readFile(cert.key),
         certificate = await readFile(cert.cert);
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -386,16 +408,56 @@ export class Gateway {
     }
   }
   async stop(): Promise<void> {
-    clearInterval(this.refreshTimer);
+    this.dependencies.intervals.clearInterval(this.refreshTimer);
     const servers = this.servers.splice(0);
     this.sessions.clear();
     await Promise.all(
-      servers.map(
-        (server) =>
-          new Promise<void>((resolve) => server.close(() => resolve())),
-      ),
+      servers.map((server) => this.dependencies.servers.close(server)),
     );
   }
+}
+
+export interface GatewayDependencies {
+  servers: HttpServerRuntime;
+  intervals: IntervalRuntime;
+  ensureCa: typeof ensureCa;
+  certificateFor: typeof certificateFor;
+  refreshOAuth: typeof refreshOAuth;
+  request(
+    target: URL,
+    options: http.RequestOptions,
+    response: (message: http.IncomingMessage) => void,
+  ): http.ClientRequest;
+}
+
+const productionDependencies: GatewayDependencies = {
+  servers: nodeHttpServerRuntime,
+  intervals: nodeIntervalRuntime,
+  ensureCa,
+  certificateFor,
+  refreshOAuth,
+  request(target, options, response) {
+    return (target.protocol === "https:" ? https : http).request(
+      target,
+      options,
+      response,
+    );
+  },
+};
+
+export async function gatewayHealth(paths: RrPaths): Promise<{
+  component: "gateway";
+  deploymentId: string;
+  status: "ready" | "degraded";
+  error?: string;
+}> {
+  const state = await readComponentState(paths, "gateway");
+  return {
+    component: "gateway",
+    deploymentId: deploymentId(paths),
+    status: state?.status ?? "ready",
+    ...(state?.error ? { error: state.error } : {}),
+  };
 }
 
 async function bodyJson(

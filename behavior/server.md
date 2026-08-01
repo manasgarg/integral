@@ -3,10 +3,10 @@
 These behaviors cover the coordinator, runner, and gateway components in
 combined and separate-process modes.
 
-<!-- Automation note (SERVER-F886D80C): Combined orchestration and cleanup are automated; the foreground process is not launched with Docker in the default suite. -->
+<!-- Automation note (SERVER-F886D80C): Combined orchestration and cleanup run in the default suite; `npm run test:acceptance` launches the real foreground CLI with a controlled Docker boundary. -->
 <!-- Automation note (SERVER-A74F29C1): Deployment identity, locks, credentials, and state isolation are automated; two live Docker deployments require a Docker-enabled acceptance host. -->
 <!-- Automation note (SERVER-FE2BB5CF): Docker dependency placement is automated by component contract tests; daemon failure is not induced against a live daemon. -->
-<!-- Automation note (SERVER-33E00BBA): Signal registration and complete owned-resource cleanup are automated at the lifecycle boundary; OS signal delivery to a live Docker deployment is an acceptance test. -->
+<!-- Automation note (SERVER-33E00BBA): Lifecycle cleanup runs in the default suite; `npm run test:acceptance` delivers SIGTERM to the real foreground CLI and verifies owned deployment-state cleanup. -->
 <!-- Automation note (SERVER-8A31D6C4): Separate component construction and network boundaries are automated in-process; three foreground OS processes are not spawned by the restricted default test runner. -->
 <!-- Automation note (SERVER-E3A74B10): Per-component ownership and cleanup are automated; live process signaling is reserved for an acceptance environment. -->
 
@@ -16,9 +16,11 @@ Given Docker is available
 	And an active model connection is configured
 	And no server component is running for this deployment
 	When the user runs `rr server start`
-		Then rr starts the coordinator, runner, and gateway in one process
+		Then rr validates the runner's model connection and Docker daemon before starting listeners
+			And starts the coordinator, gateway, and runner in that order in one process
 			And each component listens on its own configured port
-			And reports ready only after all three components are healthy
+			And publishes each component as ready after its listener starts
+			And reports the deployment healthy only when all three ready states agree
 			And remains in the foreground until interrupted
 
 ## SERVER-DF5FD52E — Reject a duplicate component for the same deployment
@@ -28,6 +30,9 @@ Given a server component is running for a deployment
 		Then the second process exits non-zero
 			And reports that the component lock is already held
 			And does not disturb any running component
+	When the lock file names a process that no longer exists
+		Then rr removes the stale lock
+			And lets the new component acquire it
 
 ## SERVER-A74F29C1 — Run independent deployments on one machine
 
@@ -56,11 +61,11 @@ Given the Docker daemon cannot be reached
 
 Given all components are running in one foreground process
 	When it receives SIGINT or SIGTERM
-		Then it stops all three component listeners
+		Then it stops owned components in reverse startup order
+			And stops all three component listeners
 			And durably returns any interrupted in-flight message to the queue
 			And terminates any active chat container
 			And revokes temporary session identity material
-			And removes temporary session identity material
 			And removes its lock and ready-state files
 			And exits without leaving a rr container running
 
@@ -143,16 +148,26 @@ Given two or more component port settings resolve to the same port
 
 Given one or more server components are running
 	When the user runs `rr server status`
-		Then rr reports coordinator, runner, and gateway health separately
+		Then rr probes each recorded health endpoint with a bounded timeout
+			And treats missing, unreachable, or identity-mismatched endpoints as stopped
+			And reports coordinator, runner, and gateway health separately
 			And reports whether the deployment is healthy or degraded overall
 			And produces the same status model in combined and separate modes
+			And exits successfully only when the overall deployment is healthy
+	When the user runs `rr server status --json`
+		Then rr returns the same overall and component status as structured JSON
+Given no recorded component answers a valid health probe
+	When the user runs `rr server status`
+		Then rr reports the deployment and all three components as stopped
+			And exits non-zero
 
 ## SERVER-7C21D5E8 — Bind each component only where required
 
 Given rr starts the server components
 	When it binds their listeners
 		Then the coordinator and runner listen on loopback only
-			And the gateway listens on loopback and the Docker host-gateway address
+			And the gateway initially listens on loopback
+			And the runner asks it to add the deployment Docker-network gateway address
 			And no component listens on every host interface by default
 
 ## SERVER-C6A830F4 — Fail combined startup atomically
@@ -167,7 +182,8 @@ Given rr is starting all components in one process
 
 Given server components communicate over their distinct listeners
 	When a component sends an internal request
-		Then it authenticates with deployment-scoped component identity
-			And the receiver verifies the expected deployment and calling component
+		Then it sends a shared deployment-scoped bearer identity
+			And identifies the calling component in a separate header
+			And the receiver verifies the bearer identity, expected deployment, and expected caller
 	When a request has missing, invalid, or cross-deployment component identity
 		Then the receiving component refuses it without changing state
