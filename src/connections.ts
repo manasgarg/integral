@@ -39,7 +39,7 @@ export const CATALOG = [
     name: "anthropic",
     kind: "model",
     auth: ["oauth", "key"],
-    defaultAuth: "key",
+    defaultAuth: "oauth",
   },
   { name: "http", kind: "http", auth: ["oauth", "device-code", "key", "none"] },
   { name: "mcp", kind: "mcp", auth: ["oauth", "device-code", "key", "none"] },

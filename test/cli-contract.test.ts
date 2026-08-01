@@ -133,6 +133,19 @@ test("[CONNECTION-512D9A25] unsupported authentication is rejected before creati
   assert.match(result.stderr, /does not support|do not support/);
 });
 
+test("[CONNECTION-B4E83C2D] bare Anthropic setup selects OAuth rather than credential entry", async (t) => {
+  const paths = await fixture(t),
+    result = await capture(["connection", "add", "anthropic"], {
+      RR_HOME: paths.root,
+    });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /OAuth setup requires an interactive terminal/);
+  assert.doesNotMatch(
+    `${result.stdout}${result.stderr}`,
+    /Credential \(hidden/,
+  );
+});
+
 test("[CONNECTION-03C4E791] bare add clearly requires the guided interactive terminal", async (t) => {
   const paths = await fixture(t),
     result = await capture(["connection", "add"], { RR_HOME: paths.root });

@@ -51,6 +51,15 @@ Given no connection exists for the selected provider
 			And makes the connection available to new chat sessions
 			And identifies the connection without printing secret values
 
+## CONNECTION-B4E83C2D — Default Anthropic setup to OAuth
+
+Given Anthropic supports OAuth and API-key authentication
+	When the user runs `rr connection add anthropic`
+		Then rr starts the Anthropic OAuth authorization flow
+			And does not ask for an API key
+	When the user runs `rr connection add anthropic --auth key`
+		Then rr asks for an API key without echoing it
+
 ## CONNECTION-512D9A25 — Select an authentication method explicitly
 
 Given the selected connection type supports the requested authentication method
