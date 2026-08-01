@@ -10,6 +10,7 @@ import {
   freshSessionHome,
   newSessionIdentity,
   writeMcpExtension,
+  writePiCredential,
   type ContainerBackend,
   type PiRuntime,
 } from "./container.ts";
@@ -37,6 +38,7 @@ export interface RunnerDependencies {
   freshSessionHome: typeof freshSessionHome;
   newSessionIdentity: typeof newSessionIdentity;
   writeMcpExtension: typeof writeMcpExtension;
+  writePiCredential: typeof writePiCredential;
   listen(server: http.Server, port: number, address: string): Promise<void>;
   close(server: http.Server): Promise<void>;
 }
@@ -55,6 +57,7 @@ const productionDependencies: RunnerDependencies = {
   freshSessionHome,
   newSessionIdentity,
   writeMcpExtension,
+  writePiCredential,
   async listen(server, port, address) {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -227,7 +230,7 @@ export class Runner {
       }
       if (
         this.pi &&
-        /gateway|container|timed out|exited/i.test(
+        /gateway|container|timed out|exited|rejected prompt/i.test(
           error instanceof Error ? error.message : String(error),
         )
       )
@@ -281,6 +284,7 @@ export class Runner {
       ca = await this.dependencies.ensureCa(this.paths),
       home = await this.dependencies.freshSessionHome();
     await this.dependencies.writeMcpExtension(home, mcp);
+    await this.dependencies.writePiCredential(home, model);
     const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
     gatewayUrl.hostname = "host.rr.internal";
     const spec = buildContainerSpec({

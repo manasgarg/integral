@@ -160,6 +160,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
         sessionToken: "token-1",
       }),
       writeMcpExtension: async () => undefined,
+      writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
     },
@@ -178,7 +179,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
   await runner.stop();
 });
 
-test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed work and destroys a failed Pi runtime", async (t) => {
+test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-A4C19E72] runner releases claimed work and destroys a failed Pi runtime", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
     config = {
@@ -200,7 +201,7 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed w
       spec,
       async start() {},
       async prompt() {
-        throw new Error("gateway connection lost");
+        throw new Error("Pi rejected prompt: gateway authentication failed");
       },
       async stop() {
         calls.push("pi:stop");
@@ -279,6 +280,7 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] runner releases claimed w
         sessionToken: "token-2",
       }),
       writeMcpExtension: async () => undefined,
+      writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
     },

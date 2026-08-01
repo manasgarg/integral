@@ -14,6 +14,7 @@ import type { Connection } from "./connections.ts";
 import { RrError } from "./errors.ts";
 import { atomicWrite, ensureDir } from "./fs.ts";
 import { DEFAULT_PI_IMAGE, RR_VERSION } from "./constants.ts";
+import { SENTINEL } from "./gateway-policy.ts";
 
 export interface ContainerSpec {
   image: string;
@@ -108,7 +109,7 @@ export function buildContainerSpec(options: {
   // Pi sees only a sentinel. The gateway swaps it for the host credential inside the allowed boundary.
   environment[
     provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"
-  ] = "rr-managed-credential";
+  ] = SENTINEL;
   const args = [
     "--mode",
     "rpc",
@@ -118,7 +119,7 @@ export function buildContainerSpec(options: {
     "--provider",
     provider,
     "--api-key",
-    "rr-managed-credential",
+    SENTINEL,
   ];
   args.push("--model", options.selectedModel);
   return {
@@ -189,6 +190,27 @@ export async function writeMcpExtension(
   }));
   const source = `import { Type } from "typebox";\nconst servers = ${JSON.stringify(declarations)};\nfunction headers(server) { const value = { "content-type": "application/json", accept: "application/json, text/event-stream" }; if (server.auth) value.authorization = "Bearer rr-managed-credential"; return value; }\nasync function call(server, payload, signal) {\n  if (server.transport !== "sse") { const response = await fetch(server.url, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); const body = await response.text(); if (!response.ok) throw new Error("MCP request failed: " + response.status); const data = body.split("\\n").filter(line => line.startsWith("data:")).at(-1)?.slice(5).trim(); return JSON.parse(data || body); }\n  const events = await fetch(server.url, { headers: headers(server), signal }); if (!events.ok || !events.body) throw new Error("MCP SSE connection failed: " + events.status); const reader = events.body.getReader(), decoder = new TextDecoder(); let buffer = "", endpoint;\n  while (!endpoint) { const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before endpoint"); buffer += decoder.decode(part.value, { stream: true }); const match = buffer.match(/event: endpoint\\r?\\ndata: (.+)\\r?\\n\\r?\\n/); if (match) { endpoint = new URL(match[1].trim(), server.url).toString(); buffer = buffer.slice((match.index || 0) + match[0].length); } }\n  const sent = await fetch(endpoint, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); if (!sent.ok) throw new Error("MCP SSE send failed: " + sent.status);\n  while (true) { const match = buffer.match(/data: (.+)\\r?\\n\\r?\\n/); if (match) { buffer = buffer.slice((match.index || 0) + match[0].length); const value = JSON.parse(match[1]); if (value.id === payload.id) { await reader.cancel(); return value; } } const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before response"); buffer += decoder.decode(part.value, { stream: true }); }\n}\nexport default function (pi) {\n  for (const server of servers) pi.registerTool({\n    name: "mcp_" + server.name, label: "MCP " + server.name, description: "Call a tool on the " + server.name + " remote MCP server",\n    parameters: Type.Object({ tool: Type.String(), arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),\n    async execute(_id, params, signal) {\n      const result = await call(server, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: params.tool, arguments: params.arguments || {} } }, signal);\n      return { content: result.result?.content || [{ type: "text", text: JSON.stringify(result.result ?? result) }], details: { server: server.name } };\n    }\n  });\n}\n`;
   await atomicWrite(join(directory, "rr-mcp.ts"), source);
+}
+
+export async function writePiCredential(
+  sessionHome: string,
+  model: Connection,
+): Promise<void> {
+  const directory = join(sessionHome, ".pi", "agent");
+  await ensureDir(directory);
+  const credential =
+    model.auth === "oauth" || model.auth === "device-code"
+      ? {
+          type: "oauth",
+          access: SENTINEL,
+          refresh: SENTINEL,
+          expires: Number.MAX_SAFE_INTEGER,
+        }
+      : { type: "api_key", key: SENTINEL };
+  await atomicWrite(
+    join(directory, "auth.json"),
+    `${JSON.stringify({ [model.provider!]: credential })}\n`,
+  );
 }
 
 export function dockerAvailable(): boolean {
@@ -365,6 +387,42 @@ export function dockerNetworkGateway(name: string): string {
   return result.stdout.trim();
 }
 
+export type PiProtocolResult =
+  | { type: "text"; text: string }
+  | { type: "complete" }
+  | { type: "rejected"; error: string }
+  | { type: "ignored" };
+
+export function interpretPiProtocol(line: string): PiProtocolResult {
+  let event: Record<string, unknown>;
+  try {
+    event = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return { type: "ignored" };
+  }
+  if (
+    event.type === "response" &&
+    event.command === "prompt" &&
+    event.success === false
+  )
+    return {
+      type: "rejected",
+      error:
+        typeof event.error === "string"
+          ? `Pi rejected prompt: ${event.error}`
+          : "Pi rejected prompt",
+    };
+  if (event.type === "message_update") {
+    const delta = event.assistantMessageEvent as
+      Record<string, unknown> | undefined;
+    if (delta?.type === "text_delta" && typeof delta.delta === "string")
+      return { type: "text", text: delta.delta };
+  }
+  return event.type === "agent_end"
+    ? { type: "complete" }
+    : { type: "ignored" };
+}
+
 export class PiContainer {
   private child: ChildProcessWithoutNullStreams | undefined;
   private response = "";
@@ -409,20 +467,17 @@ export class PiContainer {
     });
   }
   private protocol(line: string): void {
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(line) as Record<string, unknown>;
-    } catch {
+    if (!this.pending) return;
+    const event = interpretPiProtocol(line);
+    if (event.type === "rejected") {
+      const pending = this.pending;
+      this.pending = undefined;
+      clearTimeout(pending.timer);
+      pending.reject(new RrError(event.error));
       return;
     }
-    if (!this.pending) return;
-    if (event.type === "message_update") {
-      const delta = event.assistantMessageEvent as
-        Record<string, unknown> | undefined;
-      if (delta?.type === "text_delta" && typeof delta.delta === "string")
-        this.response += delta.delta;
-    }
-    if (event.type === "agent_end") {
+    if (event.type === "text") this.response += event.text;
+    if (event.type === "complete") {
       const pending = this.pending;
       this.pending = undefined;
       clearTimeout(pending.timer);

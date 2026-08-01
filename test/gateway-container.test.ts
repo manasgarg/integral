@@ -9,9 +9,11 @@ import {
   buildContainerSpec,
   dockerRunArgs,
   isManagedContainerVariable,
+  interpretPiProtocol,
   newSessionIdentity,
   parsePiModelList,
   writeMcpExtension,
+  writePiCredential,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
 import { validateConnection } from "../src/connections.ts";
@@ -358,6 +360,46 @@ test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools con
   assert.match(source, /"name":"work_docs"/);
   assert.match(source, /rr-managed-credential/);
   assert.doesNotMatch(source, /actual-secret/);
+});
+
+test("[BOX-AB639757] OAuth model connections receive only a temporary sentinel OAuth credential", async (t) => {
+  const paths = await fixture(t),
+    model = validateConnection({
+      name: "codex",
+      kind: "model",
+      provider: "openai-codex",
+      auth: "oauth",
+    });
+  await writePiCredential(paths.root, model);
+  const credential = await import("node:fs/promises").then((fs) =>
+    fs.readFile(`${paths.root}/.pi/agent/auth.json`, "utf8"),
+  );
+  assert.deepEqual(JSON.parse(credential), {
+    "openai-codex": {
+      type: "oauth",
+      access: SENTINEL,
+      refresh: SENTINEL,
+      expires: Number.MAX_SAFE_INTEGER,
+    },
+  });
+  assert.doesNotMatch(credential, /actual-secret/);
+});
+
+test("[FAILURE-A4C19E72] an immediate Pi prompt rejection becomes a turn error", () => {
+  assert.deepEqual(
+    interpretPiProtocol(
+      JSON.stringify({
+        type: "response",
+        command: "prompt",
+        success: false,
+        error: "provider authentication failed",
+      }),
+    ),
+    {
+      type: "rejected",
+      error: "Pi rejected prompt: provider authentication failed",
+    },
+  );
 });
 
 test("[BOX-BE26C696] runner configuration resolves finite turn and idle deadlines", async (t) => {
