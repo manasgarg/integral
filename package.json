@@ -18,19 +18,31 @@
     "node": ">=24"
   },
   "scripts": {
-    "check": "npm run typecheck && npm test && npm run behavior:coverage",
+    "check": "npm run format:check && npm run typecheck && npm run lint && npm run test:coverage && npm run behavior:coverage && npm run package:check",
     "build": "tsc",
     "prepare": "npm run build",
     "behavior:coverage": "node scripts/check-behavior-coverage.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "package:check": "npm run build && publint",
+    "pack:check": "npm pack --dry-run",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js"
+    "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
+    "test:coverage": "npm run build && node --experimental-test-coverage --test --test-concurrency=1 --test-coverage-include=dist/src/**/*.js --test-coverage-lines=50 --test-coverage-branches=75 --test-coverage-functions=60 dist/test/*.test.js"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.3",
     "smol-toml": "1.4.2"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "@types/node": "24.10.1",
-    "typescript": "5.9.3"
+    "eslint": "10.8.0",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.9.6",
+    "publint": "0.3.22",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0"
   }
 }

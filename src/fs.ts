@@ -1,4 +1,12 @@
-import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -7,7 +15,11 @@ export async function ensureDir(path: string, mode = 0o700): Promise<void> {
   await chmod(path, mode).catch(() => undefined);
 }
 
-export async function atomicWrite(path: string, content: string | Uint8Array, mode = 0o600): Promise<void> {
+export async function atomicWrite(
+  path: string,
+  content: string | Uint8Array,
+  mode = 0o600,
+): Promise<void> {
   await ensureDir(dirname(path));
   const temp = join(dirname(path), `.${randomUUID()}.tmp`);
   try {
@@ -31,12 +43,21 @@ export async function readText(path: string): Promise<string | undefined> {
 export async function acquireLock(path: string): Promise<() => Promise<void>> {
   await ensureDir(dirname(path));
   let handle;
-  try { handle = await open(path, "wx", 0o600); }
-  catch (error) {
+  try {
+    handle = await open(path, "wx", 0o600);
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const pid = Number((await readText(path))?.trim()); let alive = Number.isInteger(pid) && pid > 0;
-    if (alive) try { process.kill(pid, 0); } catch (check) { if ((check as NodeJS.ErrnoException).code === "ESRCH") alive = false; }
-    if (alive) throw error; await rm(path, { force: true }); handle = await open(path, "wx", 0o600);
+    const pid = Number((await readText(path))?.trim());
+    let alive = Number.isInteger(pid) && pid > 0;
+    if (alive)
+      try {
+        process.kill(pid, 0);
+      } catch (check) {
+        if ((check as NodeJS.ErrnoException).code === "ESRCH") alive = false;
+      }
+    if (alive) throw error;
+    await rm(path, { force: true });
+    handle = await open(path, "wx", 0o600);
   }
   await handle.writeFile(`${process.pid}\n`);
   return async () => {

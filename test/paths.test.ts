@@ -20,7 +20,10 @@ test("[ENV-8D13B6F0] HOME supplies the default .rr deployment", () => {
 });
 
 test("[ENV-4C9E20A7] invalid deployment homes fail clearly", () => {
-  assert.throws(() => resolveRrHome({ RR_HOME: "relative" }), /must be an absolute path/);
+  assert.throws(
+    () => resolveRrHome({ RR_HOME: "relative" }),
+    /must be an absolute path/,
+  );
   assert.throws(() => resolveRrHome({}), /set RR_HOME/);
 });
 

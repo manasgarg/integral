@@ -2,11 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { main } from "../src/cli.ts";
 
-async function capture(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  let stdout = "", stderr = ""; const out = process.stdout.write, err = process.stderr.write;
-  process.stdout.write = ((chunk: string | Uint8Array) => { stdout += chunk.toString(); return true; }) as typeof process.stdout.write;
-  process.stderr.write = ((chunk: string | Uint8Array) => { stderr += chunk.toString(); return true; }) as typeof process.stderr.write;
-  try { return { code: await main(args), stdout, stderr }; } finally { process.stdout.write = out; process.stderr.write = err; }
+async function capture(
+  args: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  let stdout = "",
+    stderr = "";
+  const out = process.stdout.write,
+    err = process.stderr.write;
+  process.stdout.write = (chunk: string | Uint8Array) => {
+    stdout += chunk.toString();
+    return true;
+  };
+  process.stderr.write = (chunk: string | Uint8Array) => {
+    stderr += chunk.toString();
+    return true;
+  };
+  try {
+    return { code: await main(args), stdout, stderr };
+  } finally {
+    process.stdout.write = out;
+    process.stderr.write = err;
+  }
 }
 
 test("[CLI-6001FE46] top-level help lists the public command surface", async () => {

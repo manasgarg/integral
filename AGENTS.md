@@ -2,6 +2,30 @@
 
 Speak in plain English.
 
+## TypeScript workflow
+
+- Use the project-local Node.js and npm tooling. Do not rely on globally
+  installed formatters, linters, compilers, or test runners.
+- Run `npm run check` before committing a completed increment. The gate checks
+  formatting, TypeScript types, typed lint rules, tests and coverage, behavior
+  references, and package metadata.
+- Run `npm run format` after editing supported source or documentation files.
+  Never auto-format files under `behavior/`; their literal tab indentation is
+  part of the executable product contract.
+- Keep TypeScript strict. Do not weaken compiler options or lint rules to make a
+  change pass. Narrow unknown values, model data explicitly, and keep unsafe
+  assertions at validated system boundaries.
+- Prefer Node.js built-ins over adding dependencies when they provide the
+  required behavior. Use `node:test` for automated tests and keep tests
+  deterministic and isolated from external services.
+- Add tests for changed behavior and include the relevant stable behavior ID in
+  each test name.
+- Pin development-tool versions exactly. Review lockfile changes and do not add
+  overlapping tools that perform the same job.
+- Use `npm run package:check` after changing package entry points or published
+  files, and use `npm run pack:check` to inspect the package tarball before a
+  release.
+
 ## Git workflow
 
 - This project uses Git from the beginning.

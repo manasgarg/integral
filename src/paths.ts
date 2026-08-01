@@ -37,9 +37,12 @@ function canonicalize(path: string): string {
 }
 
 export function resolveRrHome(env: NodeJS.ProcessEnv = process.env): string {
-  const candidate = env.RR_HOME?.trim() || (env.HOME ? join(env.HOME, ".rr") : "");
+  const candidate =
+    env.RR_HOME?.trim() || (env.HOME ? join(env.HOME, ".rr") : "");
   if (!candidate) {
-    throw new RrError("RR_HOME is not set and HOME is unavailable; set RR_HOME to an absolute path");
+    throw new RrError(
+      "RR_HOME is not set and HOME is unavailable; set RR_HOME to an absolute path",
+    );
   }
   if (!isAbsolute(candidate)) {
     throw new RrError("RR_HOME must be an absolute path");

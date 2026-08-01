@@ -1,35 +1,280 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import http from "node:http";
-import { createServer } from "node:net";
-import { decideRequest, parseProxyAuthorization, SENTINEL } from "../src/gateway-policy.ts";
-import { buildContainerSpec, dockerRunArgs, isManagedContainerVariable, newSessionIdentity, writeMcpExtension } from "../src/container.ts";
+import {
+  decideRequest,
+  parseProxyAuthorization,
+  SENTINEL,
+} from "../src/gateway-policy.ts";
+import {
+  buildContainerSpec,
+  dockerRunArgs,
+  isManagedContainerVariable,
+  newSessionIdentity,
+  writeMcpExtension,
+} from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
 import { validateConnection } from "../src/connections.ts";
 import { fixture } from "./helpers.ts";
 
-test("[GATEWAY-3F299566] gateway health identifies both component and expected deployment", async () => { const source = await import("node:fs/promises").then((fs) => fs.readFile("src/gateway.ts", "utf8")); assert.match(source, /\/rr\/health/); assert.match(source, /component: "gateway"/); assert.match(source, /deploymentId: deploymentId\(this\.paths\)/); });
+test("[GATEWAY-3F299566] gateway health identifies both component and expected deployment", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile("src/gateway.ts", "utf8"),
+  );
+  assert.match(source, /\/rr\/health/);
+  assert.match(source, /component: "gateway"/);
+  assert.match(source, /deploymentId: deploymentId\(this\.paths\)/);
+});
 
-test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only an explicit Basic session token", () => { assert.equal(parseProxyAuthorization(undefined), undefined); assert.equal(parseProxyAuthorization("Bearer token"), undefined); assert.equal(parseProxyAuthorization(`Basic ${Buffer.from("rr:session-token").toString("base64")}`), "session-token"); });
+test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only an explicit Basic session token", () => {
+  assert.equal(parseProxyAuthorization(undefined), undefined);
+  assert.equal(parseProxyAuthorization("Bearer token"), undefined);
+  assert.equal(
+    parseProxyAuthorization(
+      `Basic ${Buffer.from("rr:session-token").toString("base64")}`,
+    ),
+    "session-token",
+  );
+});
 
-test("[GATEWAY-A2BBBBE8] a matching connection injects its host credential only inside its exact boundary", () => { const connection = validateConnection({ name: "api", kind: "http", url: "https://api.test/v1", auth: "key", methods: ["POST"], path_prefix: "/v1/messages" }); const decision = decideRequest("POST", new URL("https://api.test/v1/messages/1?private=yes"), { authorization: `Bearer ${SENTINEL}` }, [{ connection, credential: "real-secret" }]); assert.equal(decision.connection.name, "api"); assert.equal(decision.headers.authorization, "Bearer real-secret"); });
+test("[GATEWAY-A2BBBBE8] a matching connection injects its host credential only inside its exact boundary", () => {
+  const connection = validateConnection({
+    name: "api",
+    kind: "http",
+    url: "https://api.test/v1",
+    auth: "key",
+    methods: ["POST"],
+    path_prefix: "/v1/messages",
+  });
+  const decision = decideRequest(
+    "POST",
+    new URL("https://api.test/v1/messages/1?private=yes"),
+    { authorization: `Bearer ${SENTINEL}` },
+    [{ connection, credential: "real-secret" }],
+  );
+  assert.equal(decision.connection.name, "api");
+  assert.equal(decision.headers.authorization, "Bearer real-secret");
+});
 
-test("[GATEWAY-EB8D96FE] destinations, methods, paths, schemes, and ports outside active boundaries are denied", () => { const connection = validateConnection({ name: "api", kind: "http", url: "https://api.test:8443/v1", auth: "none", methods: ["GET"] }); for (const [method, url] of [["POST", "https://api.test:8443/v1"], ["GET", "https://other.test:8443/v1"], ["GET", "http://api.test:8443/v1"], ["GET", "https://api.test/v2"], ["GET", "https://api.test/v1"]] as const) { if (url.endsWith(":8443/v1") && method === "GET") continue; assert.throws(() => decideRequest(method, new URL(url), {}, [{ connection, credential: undefined }]), /policy denied/); } });
+test("[GATEWAY-EB8D96FE] destinations, methods, paths, schemes, and ports outside active boundaries are denied", () => {
+  const connection = validateConnection({
+    name: "api",
+    kind: "http",
+    url: "https://api.test:8443/v1",
+    auth: "none",
+    methods: ["GET"],
+  });
+  for (const [method, url] of [
+    ["POST", "https://api.test:8443/v1"],
+    ["GET", "https://other.test:8443/v1"],
+    ["GET", "http://api.test:8443/v1"],
+    ["GET", "https://api.test/v2"],
+    ["GET", "https://api.test/v1"],
+  ] as const) {
+    if (url.endsWith(":8443/v1") && method === "GET") continue;
+    assert.throws(
+      () =>
+        decideRequest(method, new URL(url), {}, [
+          { connection, credential: undefined },
+        ]),
+      /policy denied/,
+    );
+  }
+});
 
-test("[GATEWAY-123EDBDF] credentialed requests fail closed when injection is missing or unmanaged", () => { const connection = validateConnection({ name: "api", kind: "http", url: "https://api.test", auth: "key" }); assert.throws(() => decideRequest("GET", new URL("https://api.test"), {}, [{ connection, credential: undefined }]), /rotate or reconfigure/); assert.throws(() => decideRequest("GET", new URL("https://api.test"), { authorization: "Bearer user-secret" }, [{ connection, credential: "real" }]), /unmanaged credential/); });
+test("[GATEWAY-123EDBDF] credentialed requests fail closed when injection is missing or unmanaged", () => {
+  const connection = validateConnection({
+    name: "api",
+    kind: "http",
+    url: "https://api.test",
+    auth: "key",
+  });
+  assert.throws(
+    () =>
+      decideRequest("GET", new URL("https://api.test"), {}, [
+        { connection, credential: undefined },
+      ]),
+    /rotate or reconfigure/,
+  );
+  assert.throws(
+    () =>
+      decideRequest(
+        "GET",
+        new URL("https://api.test"),
+        { authorization: "Bearer user-secret" },
+        [{ connection, credential: "real" }],
+      ),
+    /unmanaged credential/,
+  );
+});
 
-test("[ENV-D20B7A48] [ENV-3E85C1F9] [ENV-F19A64B2] [ENV-6C3F91E5] container environment is a managed allowlist with authenticated proxy and CA trust", async (t) => { const paths = await fixture(t), config = await loadConfig(paths, {}), model = validateConnection({ name: "model", kind: "model", provider: "anthropic", auth: "key" }), identity = newSessionIdentity(); const spec = buildContainerSpec({ config, gatewayUrl: "http://host.rr.internal:7300", caCert: "/host/ca", caBundle: "/host/bundle", sessionHome: "/tmp/session", ...identity, model, mcp: [] }); assert.equal(spec.environment.ANTHROPIC_API_KEY, SENTINEL); assert.match(spec.environment.HTTP_PROXY!, /rr:.*@host\.rr\.internal/); assert.equal(spec.environment.HTTP_PROXY, spec.environment.HTTPS_PROXY); assert.equal(spec.environment.NO_PROXY, ""); assert.equal(spec.environment.NODE_EXTRA_CA_CERTS, "/rr-ca/rr-ca.pem"); assert.equal(spec.environment.SSL_CERT_FILE, "/rr-ca/ca-bundle.pem"); assert.equal("RR_HOME" in spec.environment, false); assert.equal("AWS_SECRET_ACCESS_KEY" in spec.environment, false); });
+test("[ENV-D20B7A48] [ENV-3E85C1F9] [ENV-F19A64B2] [ENV-6C3F91E5] container environment is a managed allowlist with authenticated proxy and CA trust", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    model = validateConnection({
+      name: "model",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    identity = newSessionIdentity();
+  const spec = buildContainerSpec({
+    config,
+    gatewayUrl: "http://host.rr.internal:7300",
+    caCert: "/host/ca",
+    caBundle: "/host/bundle",
+    sessionHome: "/tmp/session",
+    ...identity,
+    model,
+    mcp: [],
+  });
+  assert.equal(spec.environment.ANTHROPIC_API_KEY, SENTINEL);
+  assert.match(spec.environment.HTTP_PROXY!, /rr:.*@host\.rr\.internal/);
+  assert.equal(spec.environment.HTTP_PROXY, spec.environment.HTTPS_PROXY);
+  assert.equal(spec.environment.NO_PROXY, "");
+  assert.equal(spec.environment.NODE_EXTRA_CA_CERTS, "/rr-ca/rr-ca.pem");
+  assert.equal(spec.environment.SSL_CERT_FILE, "/rr-ca/ca-bundle.pem");
+  assert.equal("RR_HOME" in spec.environment, false);
+  assert.equal("AWS_SECRET_ACCESS_KEY" in spec.environment, false);
+});
 
-test("[ENV-7B2D40AC] rr-managed environment names cannot be delegated to connection configuration", () => { for (const name of ["HOME", "PATH", "HTTPS_PROXY", "NODE_EXTRA_CA_CERTS", "RR_HOME", "RR_CUSTOM"]) assert.equal(isManagedContainerVariable(name), true); assert.equal(isManagedContainerVariable("LANG"), false); });
+test("[ENV-7B2D40AC] rr-managed environment names cannot be delegated to connection configuration", () => {
+  for (const name of [
+    "HOME",
+    "PATH",
+    "HTTPS_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "RR_HOME",
+    "RR_CUSTOM",
+  ])
+    assert.equal(isManagedContainerVariable(name), true);
+  assert.equal(isManagedContainerVariable("LANG"), false);
+});
 
-test("[CONNECTION-0FB2F92A] [CONNECTION-D20F6A85] real credentials are absent from container environment, arguments, mounts, and Docker metadata", async (t) => { const paths = await fixture(t), config = await loadConfig(paths, {}), model = validateConnection({ name: "m", kind: "model", provider: "anthropic", auth: "key" }); const spec = buildContainerSpec({ config, gatewayUrl: "http://host.rr.internal:7300", caCert: "/ca", caBundle: "/bundle", sessionHome: "/session", ...newSessionIdentity(), model, mcp: [] }); const rendered = JSON.stringify(spec); assert.doesNotMatch(rendered, /actual-provider-secret/); assert.match(rendered, new RegExp(SENTINEL)); });
+test("[CONNECTION-0FB2F92A] [CONNECTION-D20F6A85] real credentials are absent from container environment, arguments, mounts, and Docker metadata", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    model = validateConnection({
+      name: "m",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    });
+  const spec = buildContainerSpec({
+    config,
+    gatewayUrl: "http://host.rr.internal:7300",
+    caCert: "/ca",
+    caBundle: "/bundle",
+    sessionHome: "/session",
+    ...newSessionIdentity(),
+    model,
+    mcp: [],
+  });
+  const rendered = JSON.stringify(spec);
+  assert.doesNotMatch(rendered, /actual-provider-secret/);
+  assert.match(rendered, new RegExp(SENTINEL));
+});
 
-test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-only, capability-free, bounded, and locked to an internal network", async (t) => { const paths = await fixture(t), config = await loadConfig(paths, {}), model = validateConnection({ name: "m", kind: "model", provider: "anthropic", auth: "key" }), spec = buildContainerSpec({ config, gatewayUrl: "http://host.rr.internal:7300", caCert: "/ca", caBundle: "/bundle", sessionHome: "/fresh", ...newSessionIdentity(), model, mcp: [] }); const args = dockerRunArgs(spec, config, "rr-locked"); for (const expected of ["--network", "rr-locked", "--user", "1000:1000", "no-new-privileges", "--cap-drop", "ALL", "--read-only", "--memory", "2048m", "--tmpfs"]) assert.ok(args.includes(expected)); assert.equal(args.includes("/var/run/docker.sock"), false); assert.equal(args.includes(process.cwd()), false); });
+test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-only, capability-free, bounded, and locked to an internal network", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    model = validateConnection({
+      name: "m",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    spec = buildContainerSpec({
+      config,
+      gatewayUrl: "http://host.rr.internal:7300",
+      caCert: "/ca",
+      caBundle: "/bundle",
+      sessionHome: "/fresh",
+      ...newSessionIdentity(),
+      model,
+      mcp: [],
+    });
+  const args = dockerRunArgs(spec, config, "rr-locked");
+  for (const expected of [
+    "--network",
+    "rr-locked",
+    "--user",
+    "1000:1000",
+    "no-new-privileges",
+    "--cap-drop",
+    "ALL",
+    "--read-only",
+    "--memory",
+    "2048m",
+    "--tmpfs",
+  ])
+    assert.ok(args.includes(expected));
+  assert.equal(args.includes("/var/run/docker.sock"), false);
+  assert.equal(args.includes(process.cwd()), false);
+});
 
-test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the pinned image and prompt-capable Pi mode", async (t) => { const paths = await fixture(t), config = await loadConfig(paths, {}), model = validateConnection({ name: "m", kind: "model", provider: "anthropic", auth: "key" }), identity = newSessionIdentity(), spec = buildContainerSpec({ config, gatewayUrl: "http://host.rr.internal:7300", caCert: "/ca", caBundle: "/bundle", sessionHome: "/fresh", ...identity, model, mcp: [] }); assert.equal(spec.image, "rr-pi:0.1.0"); assert.deepEqual(spec.args.slice(0, 4), ["--mode", "rpc", "--no-session", "--no-approve"]); assert.deepEqual(spec.args.slice(4, 8), ["--provider", "anthropic", "--api-key", "rr-managed-credential"]); assert.equal(spec.sessionId, identity.sessionId); });
+test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the pinned image and prompt-capable Pi mode", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    model = validateConnection({
+      name: "m",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    identity = newSessionIdentity(),
+    spec = buildContainerSpec({
+      config,
+      gatewayUrl: "http://host.rr.internal:7300",
+      caCert: "/ca",
+      caBundle: "/bundle",
+      sessionHome: "/fresh",
+      ...identity,
+      model,
+      mcp: [],
+    });
+  assert.equal(spec.image, "rr-pi:0.1.0");
+  assert.deepEqual(spec.args.slice(0, 4), [
+    "--mode",
+    "rpc",
+    "--no-session",
+    "--no-approve",
+  ]);
+  assert.deepEqual(spec.args.slice(4, 8), [
+    "--provider",
+    "anthropic",
+    "--api-key",
+    "rr-managed-credential",
+  ]);
+  assert.equal(spec.sessionId, identity.sessionId);
+});
 
-test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools containing only sentinel authentication", async (t) => { const paths = await fixture(t), mcp = validateConnection({ name: "work-docs", kind: "mcp", url: "https://mcp.test/rpc", auth: "key" }); await writeMcpExtension(paths.root, [mcp]); const source = await import("node:fs/promises").then((fs) => fs.readFile(`${paths.root}/.pi/agent/extensions/rr-mcp.ts`, "utf8")); assert.match(source, /"mcp_" \+ server\.name/); assert.match(source, /"name":"work_docs"/); assert.match(source, /rr-managed-credential/); assert.doesNotMatch(source, /actual-secret/); });
+test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools containing only sentinel authentication", async (t) => {
+  const paths = await fixture(t),
+    mcp = validateConnection({
+      name: "work-docs",
+      kind: "mcp",
+      url: "https://mcp.test/rpc",
+      auth: "key",
+    });
+  await writeMcpExtension(paths.root, [mcp]);
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(`${paths.root}/.pi/agent/extensions/rr-mcp.ts`, "utf8"),
+  );
+  assert.match(source, /"mcp_" \+ server\.name/);
+  assert.match(source, /"name":"work_docs"/);
+  assert.match(source, /rr-managed-credential/);
+  assert.doesNotMatch(source, /actual-secret/);
+});
 
-test("[BOX-BE26C696] [BOX-7D3A19E4] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-3780301D] runner configuration and coordinator release protocol bound failed or idle sessions without ending durable state", async (t) => { const paths = await fixture(t), config = await loadConfig(paths, {}); assert.equal(config.runner.turnTimeoutSeconds, 1800); assert.equal(config.runner.idleTimeoutSeconds, 300); const source = await import("node:fs/promises").then((fs) => fs.readFile("src/runner.ts", "utf8")); assert.match(source, /\/release/); assert.match(source, /destroyPi/); assert.match(source, /armIdle/); });
-
-async function freePort(): Promise<number> { const server = createServer(); await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const port = (server.address() as { port: number }).port; await new Promise<void>((resolve) => server.close(() => resolve())); return port; }
+test("[BOX-BE26C696] [BOX-7D3A19E4] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-3780301D] runner configuration and coordinator release protocol bound failed or idle sessions without ending durable state", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  assert.equal(config.runner.turnTimeoutSeconds, 1800);
+  assert.equal(config.runner.idleTimeoutSeconds, 300);
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile("src/runner.ts", "utf8"),
+  );
+  assert.match(source, /\/release/);
+  assert.match(source, /destroyPi/);
+  assert.match(source, /armIdle/);
+});

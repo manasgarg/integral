@@ -37,5 +37,5 @@ Behavior contracts are grouped under [`behavior/`](behavior/README.md). Every
 automated test names the behavior ID it covers. Run the complete gate with:
 
 ```console
-npm check
+npm run check
 ```
