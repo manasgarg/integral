@@ -3,7 +3,7 @@
 These behaviors cover the single-user terminal interface and ephemeral
 conversation lifecycle.
 
-## CHAT-001 — Refuse chat without the server
+## CHAT-DB0EF523 — Refuse chat without the server
 
 Given no healthy rr server is reachable
 	When the user runs `rr talk`
@@ -11,7 +11,7 @@ Given no healthy rr server is reachable
 			And tells the user to run `rr server start`
 			And does not start an ungoverned local Pi process
 
-## CHAT-002 — Hold an interactive conversation
+## CHAT-888AFAE0 — Hold an interactive conversation
 
 Given the terminal is interactive
 	And the rr server is healthy
@@ -22,7 +22,7 @@ Given the terminal is interactive
 			And does not display protocol events or raw JSON
 			And does not display model credentials
 
-## CHAT-003 — Show local chat help
+## CHAT-84D839CE — Show local chat help
 
 Given the user is in `rr talk`
 	When the user enters `/help`
@@ -30,7 +30,7 @@ Given the user is in `rr talk`
 			And handles the command on the host
 			And does not send the command to Pi
 
-## CHAT-004 — Show chat status
+## CHAT-989F5C14 — Show chat status
 
 Given the user is in `rr talk`
 	When the user enters `/status`
@@ -39,7 +39,7 @@ Given the user is in `rr talk`
 			And identifies the configured provider and current session
 			And does not print secrets
 
-## CHAT-005 — Leave a chat
+## CHAT-A2EAD40A — Leave a chat
 
 Given the user is in an active chat
 	When the user enters `/exit`, sends EOF, or interrupts the client
@@ -49,7 +49,7 @@ Given the user is in an active chat
 			And removes the temporary chat home and transcript
 			And returns terminal control to the user
 
-## CHAT-006 — Start a fresh later conversation
+## CHAT-7C6DE818 — Start a fresh later conversation
 
 Given a previous `rr talk` invocation ended
 	When the user runs `rr talk` again

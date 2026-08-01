@@ -20,9 +20,15 @@ organized the same way as test cases.
 - Group closely related behaviors in one file. Split files by product area,
   not by individual behavior.
 - Give every behavior a unique, stable ID formed from an uppercase product-area
-  prefix and a three-digit number, for example `CHAT-001`.
-- Never reuse or renumber an existing behavior ID. A removed behavior keeps its
-  historical ID unavailable.
+  prefix, a hyphen, and eight randomly generated uppercase hexadecimal
+  characters, for example `CHAT-7A3F19C2`.
+- The random suffix must not encode sequence, file position, title, or priority.
+  Adding, moving, or removing a behavior must never change another behavior's
+  ID.
+- Check the whole `behavior/` directory for a collision before assigning a new
+  ID.
+- Never change or reuse an assigned behavior ID. When a behavior is removed,
+  record its ID in the retired-ID list in `behavior/README.md`.
 - Use one level-two heading per behavior in the form
   `## <ID> — <short description>`.
 - Express each behavior as Given/When/Then, using literal tab indentation.
@@ -39,7 +45,7 @@ organized the same way as test cases.
 Use this exact layout:
 
 ```text
-## CHAT-001 — Hold an interactive conversation
+## CHAT-7A3F19C2 — Hold an interactive conversation
 
 Given the server is healthy
 	And the terminal is interactive

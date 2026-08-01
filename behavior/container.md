@@ -2,7 +2,7 @@
 
 These behaviors cover provisioning and managing the warm Pi RPC container.
 
-## BOX-001 — Start Pi for the first message
+## BOX-AB639757 — Start Pi for the first message
 
 Given the server and gateway are healthy
 	And no chat is active
@@ -13,7 +13,7 @@ Given the server and gateway are healthy
 			And runs the pinned Pi image in RPC mode
 			And sends the user's message as a Pi `prompt` command
 
-## BOX-002 — Apply container restrictions
+## BOX-601613D4 — Apply container restrictions
 
 Given rr is provisioning a Pi container
 	When Docker receives the container specification
@@ -27,7 +27,7 @@ Given rr is provisioning a Pi container
 			And does not mount control-plane configuration or credentials
 			And mounts only the gateway CA and fresh temporary session home as required
 
-## BOX-003 — Keep one warm Pi conversation
+## BOX-B45DEA9B — Keep one warm Pi conversation
 
 Given `rr talk` has an active Pi RPC session
 	When the user submits a message after the prior turn completes
@@ -36,7 +36,7 @@ Given `rr talk` has an active Pi RPC session
 			And preserves preceding turns as conversational context
 			And does not start a second container
 
-## BOX-004 — Serialize rapid input
+## BOX-64D9E7BA — Serialize rapid input
 
 Given a Pi turn is running
 	When the user submits another message
@@ -44,7 +44,7 @@ Given a Pi turn is running
 			And waits for the current turn to end before sending it
 			And delivers queued messages in submission order
 
-## BOX-005 — Bound a stuck turn
+## BOX-BE26C696 — Bound a stuck turn
 
 Given Pi does not finish a turn within the configured turn timeout
 	When the timeout expires

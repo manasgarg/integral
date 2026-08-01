@@ -2,10 +2,10 @@
 
 These behaviors cover the trusted foreground process that owns the gateway.
 
-## SERVER-001 — Start a healthy foreground server
+## SERVER-F886D80C — Start a healthy foreground server
 
 Given Docker is available
-	And a usable model credential is configured
+	And an active model connection is configured
 	And no rr server is running for this deployment
 	When the user runs `rr server start`
 		Then rr starts the gateway on loopback
@@ -13,7 +13,7 @@ Given Docker is available
 			And reports that the server is ready
 			And remains in the foreground until interrupted
 
-## SERVER-002 — Reject a second server
+## SERVER-DF5FD52E — Reject a second server
 
 Given a healthy rr server is running for this deployment
 	When the user runs `rr server start` again
@@ -21,7 +21,7 @@ Given a healthy rr server is running for this deployment
 			And reports that the existing server owns the deployment lock
 			And does not disturb the existing server
 
-## SERVER-003 — Fail clearly when Docker is unavailable
+## SERVER-FE2BB5CF — Fail clearly when Docker is unavailable
 
 Given the Docker daemon cannot be reached
 	When the user runs `rr server start`
@@ -29,7 +29,7 @@ Given the Docker daemon cannot be reached
 			And identifies Docker as unavailable
 			And does not publish gateway-ready state
 
-## SERVER-004 — Stop the server cleanly
+## SERVER-33E00BBA — Stop the server cleanly
 
 Given the foreground server is running
 	When it receives SIGINT or SIGTERM
