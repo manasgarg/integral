@@ -84,6 +84,7 @@ const TALK_HELP = `/help                         show this help
 /queue delete <id>            delete a queued message
 /exit                         detach this terminal
 `;
+const TALK_USER_LABEL = "\u001b[48;5;238m\u001b[97m you> \u001b[0m";
 const VERSION_HELP = `Usage: rr version
 
 Print the rr, Node.js, and supported Pi versions.
@@ -702,6 +703,7 @@ export async function queueCommand(
 export interface TalkTerminal {
   question(prompt: string): Promise<string>;
   writeEvent?(text: string): void;
+  colors?: boolean;
   close(): void;
 }
 
@@ -768,6 +770,7 @@ export function createTalkTerminal(overrides?: {
     };
   let activePrompt: string | undefined;
   return {
+    colors: Boolean(destination.isTTY) && process.env.NO_COLOR === undefined,
     async question(prompt) {
       activePrompt = prompt;
       try {
@@ -839,6 +842,7 @@ export async function talkCommand(
       response.body,
       rl.writeEvent?.bind(rl) ?? dependencies.writeOutput,
       terminalId,
+      Boolean(rl.colors),
     ).catch((error) => {
       if (!abort.signal.aborted)
         dependencies.writeError(`rr: ${messageOf(error)}\n`);
@@ -846,7 +850,7 @@ export async function talkCommand(
     while (true) {
       let line: string;
       try {
-        line = await rl.question("you> ");
+        line = await rl.question(humanLabel(Boolean(rl.colors)));
       } catch {
         break;
       }
@@ -1069,6 +1073,7 @@ async function consumeEvents(
   stream: ReadableStream<Uint8Array>,
   writeOutput: (text: string) => void = (text) => process.stdout.write(text),
   terminalId?: string,
+  colors = false,
 ): Promise<void> {
   const reader = stream.getReader(),
     decoder = new TextDecoder();
@@ -1090,8 +1095,13 @@ async function consumeEvents(
           conversation: { type: string; text?: string }[];
         };
         for (const item of snapshot.conversation)
-          if (item.text && item.type !== "session")
-            writeOutput(`${item.type}> ${item.text}\n`);
+          if (item.text && item.type !== "session") {
+            writeOutput(
+              item.type === "user"
+                ? `${humanLabel(colors)}${item.text}\n`
+                : `rr> ${item.text}\n`,
+            );
+          }
       } else if (event === "conversation.user") {
         const item = value as {
           type: string;
@@ -1099,13 +1109,13 @@ async function consumeEvents(
           terminalId?: string;
         };
         if (item.text && item.terminalId !== terminalId)
-          writeOutput(`user> ${item.text}\n`);
+          writeOutput(`${humanLabel(colors)}${item.text}\n`);
       } else if (
         event === "conversation.assistant" ||
         event === "conversation.error"
       ) {
         const item = value as { type: string; text?: string };
-        if (item.text) writeOutput(`${item.type}> ${item.text}\n`);
+        if (item.text) writeOutput(`rr> ${item.text}\n`);
       } else if (event === "queue.edited") {
         const item = (value as { message: { id: string; text: string } })
           .message;
@@ -1125,6 +1135,10 @@ async function consumeEvents(
       }
     }
   }
+}
+
+function humanLabel(colors: boolean): string {
+  return colors ? TALK_USER_LABEL : "you> ";
 }
 async function fetchJson(
   url: URL,

@@ -28,7 +28,10 @@ Given the terminal is interactive
 			And ignores empty or whitespace-only input
 			And does not repeat a user message already echoed by that terminal's input editor
 			And displays user messages submitted by other attached terminals
-			And displays persisted user, assistant, and error text with a readable speaker label
+			And labels every human message as `you>`
+			And gives the `you>` label a distinct background color on color terminals
+			And does not emit color escapes to non-color output
+			And labels every assistant or error message as `rr>`
 			And displays assistant text emitted by Pi as assistant output
 			And does not display protocol events or raw JSON
 			And does not display model credentials

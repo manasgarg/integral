@@ -423,23 +423,24 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
     }),
     pending = terminal.question("you> ");
 
-  terminal.writeEvent!("assistant> hello\n");
+  terminal.writeEvent!("rr> hello\n");
   assert.deepEqual(actions, [
     "clear",
     "start",
-    "write:assistant> hello\n",
+    "write:rr> hello\n",
     "write:you> draft",
     "move:-3",
   ]);
 
   finishQuestion("done");
   assert.equal(await pending, "done");
-  terminal.writeEvent!("assistant> later\n");
-  assert.equal(actions.at(-1), "write:assistant> later\n");
+  terminal.writeEvent!("rr> later\n");
+  assert.equal(actions.at(-1), "write:rr> later\n");
 });
 
 test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
+    userLabel = "\u001b[48;5;238m\u001b[97m you> \u001b[0m",
     lines = [
       "   ",
       "   ",
@@ -469,6 +470,7 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
     verifiedFetch: async () => new Response("ok"),
     createTerminalId: () => "terminal-test",
     createTerminal: () => ({
+      colors: true,
       async question(prompt) {
         prompts.push(prompt);
         const line = lines.shift();
@@ -543,12 +545,12 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
   });
 
   assert.equal(code, 0);
-  assert.ok(prompts.every((prompt) => prompt === "you> "));
+  assert.ok(prompts.every((prompt) => prompt === userLabel));
   assert.doesNotMatch(stdout, /Available models/);
-  assert.match(stdout, /\[event\]user> persisted/);
+  assert.ok(stdout.includes(`[event]${userLabel}persisted`));
   assert.doesNotMatch(stdout, /local echo/);
-  assert.match(stdout, /\[event\]user> from another terminal/);
-  assert.match(stdout, /\[event\]assistant> response/);
+  assert.ok(stdout.includes(`[event]${userLabel}from another terminal`));
+  assert.match(stdout, /\[event\]rr> response/);
   assert.doesNotMatch(stdout, /hidden/);
   assert.match(stdout, /gateway.*healthy/s);
   assert.match(stdout, /queued\tmessage-1\tqueued/);
