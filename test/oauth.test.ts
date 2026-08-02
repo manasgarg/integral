@@ -181,3 +181,47 @@ test("[CONNECTION-6D2A9F84] generic OAuth prints its URL and completes from a pa
     /state mismatch/,
   );
 });
+
+test("[EMAIL-B765A312] Gmail OAuth requests offline consent and provider-derived scopes", async () => {
+  const connection = validateConnection({
+      name: "gmail",
+      kind: "email",
+      provider: "gmail",
+      auth: "oauth",
+      account: "me@example.com",
+      client_id: "public-client",
+      capabilities: ["read", "send"],
+      allowed_recipients: ["friend@example.com"],
+    }),
+    shown: string[] = [];
+  await runGenericOAuth(
+    connection,
+    {
+      show: (message) => shown.push(message),
+      prompt: async () => {
+        const authorization = new URL(shown[0]!.split("\n").at(-1)!);
+        assert.equal(authorization.searchParams.get("access_type"), "offline");
+        assert.equal(authorization.searchParams.get("prompt"), "consent");
+        assert.match(
+          authorization.searchParams.get("scope")!,
+          /gmail\.readonly.*gmail\.send/,
+        );
+        return "authorization-code";
+      },
+    },
+    async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "access",
+          refresh_token: "refresh",
+          expires_in: 3600,
+        }),
+        { status: 200 },
+      ),
+    async () => ({
+      redirect: "http://127.0.0.1:7654/callback",
+      code: new Promise<string>(() => undefined),
+      close: async () => undefined,
+    }),
+  );
+});

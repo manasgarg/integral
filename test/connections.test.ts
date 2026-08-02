@@ -234,3 +234,77 @@ test("[CONFIG-0C6A91E4] literal credential fields in connection configuration ar
     /credentials must be stored/,
   );
 });
+
+test("[EMAIL-B765A312] Gmail derives OAuth endpoints and least-privilege scopes from its capabilities", () => {
+  const connection = validateConnection({
+    name: "work-mail",
+    kind: "email",
+    provider: "gmail",
+    auth: "oauth",
+    account: "me@example.com",
+    client_id: "public-client",
+    capabilities: ["read", "search", "send"],
+    allowed_recipients: ["colleague@example.com", "*@company.example"],
+  });
+  assert.equal(
+    connection.authorizationUrl,
+    "https://accounts.google.com/o/oauth2/v2/auth",
+  );
+  assert.equal(connection.tokenUrl, "https://oauth2.googleapis.com/token");
+  assert.deepEqual(connection.scopes, [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+  ]);
+  assert.equal(connection.account, "me@example.com");
+});
+
+test("[EMAIL-B765A312] Mailgun is a send-only regional provider with a fixed domain From identity", () => {
+  const connection = validateConnection({
+    name: "transactional",
+    kind: "email",
+    provider: "mailgun",
+    auth: "key",
+    capabilities: ["send"],
+    domain: "mg.example.com",
+    from_address: "robot@mg.example.com",
+    region: "eu",
+    allowed_recipients: ["*@example.com"],
+  });
+  assert.equal(connection.domain, "mg.example.com");
+  assert.equal(connection.fromAddress, "robot@mg.example.com");
+  assert.equal(connection.region, "eu");
+  assert.throws(
+    () =>
+      validateConnection({
+        name: "bad",
+        kind: "email",
+        provider: "mailgun",
+        auth: "key",
+        capabilities: ["read"],
+        domain: "mg.example.com",
+        from_address: "robot@mg.example.com",
+      }),
+    /mailgun capabilities.*send/,
+  );
+});
+
+test("[EMAIL-B765A312] send capability requires a valid explicit recipient policy", () => {
+  const base = {
+    name: "mail",
+    kind: "email",
+    provider: "gmail",
+    auth: "oauth",
+    account: "me@example.com",
+    client_id: "public-client",
+    capabilities: ["send"],
+  };
+  assert.throws(() => validateConnection(base), /requires allowed_recipients/);
+  assert.throws(
+    () => validateConnection({ ...base, allowed_recipients: ["example.com"] }),
+    /email addresses or \*@domain/,
+  );
+  assert.throws(
+    () => validateConnection({ ...base, allowed_recipients: ["*"] }),
+    /email addresses or \*@domain/,
+  );
+});

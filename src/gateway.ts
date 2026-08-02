@@ -33,6 +33,7 @@ import {
   type HttpServerRuntime,
   type IntervalRuntime,
 } from "./runtime.ts";
+import { executeEmail, parseEmailOperation } from "./email.ts";
 
 function modelBoundary(connection: Connection): Connection {
   if (connection.kind !== "model") return connection;
@@ -285,6 +286,28 @@ export class Gateway {
         .end("proxy authentication required\n");
       return;
     }
+    if (req.url === "/integral/email" && req.method === "POST") {
+      try {
+        const body = await bodyJson(req, 500_000),
+          name = stringValue(body.connection),
+          candidate = this.candidates.find(
+            ({ connection }) =>
+              connection.kind === "email" && connection.name === name,
+          );
+        if (!candidate)
+          throw new IntegralError(`email connection not found: ${name}`, 404);
+        const result = await this.dependencies.executeEmail(
+          candidate.connection,
+          candidate.credential,
+          parseEmailOperation(body),
+        );
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        respondError(res, error);
+      }
+      return;
+    }
     let target: URL | undefined;
     try {
       target = new URL(req.url!);
@@ -427,6 +450,7 @@ export interface GatewayDependencies {
   ensureCa: typeof ensureCa;
   certificateFor: typeof certificateFor;
   refreshOAuth: typeof refreshOAuth;
+  executeEmail: typeof executeEmail;
   request(
     target: URL,
     options: http.RequestOptions,
@@ -440,6 +464,7 @@ const productionDependencies: GatewayDependencies = {
   ensureCa,
   certificateFor,
   refreshOAuth,
+  executeEmail,
   request(target, options, response) {
     return (target.protocol === "https:" ? https : http).request(
       target,
@@ -466,9 +491,17 @@ export async function gatewayHealth(paths: IntegralPaths): Promise<{
 
 async function bodyJson(
   req: IncomingMessage,
+  maxBytes = 1_000_000,
 ): Promise<Record<string, unknown>> {
   const chunks: Uint8Array[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  let bytes = 0;
+  for await (const chunk of req) {
+    const part = Buffer.from(chunk);
+    bytes += part.byteLength;
+    if (bytes > maxBytes)
+      throw new IntegralError("request body is too large", 413);
+    chunks.push(part);
+  }
   try {
     return JSON.parse(Buffer.concat(chunks).toString() || "{}") as Record<
       string,

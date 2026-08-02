@@ -5,8 +5,9 @@ import { atomicWrite, ensureDir, readText } from "./fs.ts";
 import { IntegralError } from "./errors.ts";
 import type { IntegralPaths } from "./paths.ts";
 
-export type ConnectionKind = "model" | "http" | "mcp";
+export type ConnectionKind = "model" | "http" | "mcp" | "email";
 export type AuthMethod = "oauth" | "device-code" | "key" | "none";
+export type EmailCapability = "read" | "search" | "send";
 export interface Connection {
   name: string;
   kind: ConnectionKind;
@@ -23,6 +24,12 @@ export interface Connection {
   clientId?: string;
   scopes?: string[];
   transport?: "streamable-http" | "sse";
+  capabilities?: EmailCapability[];
+  account?: string;
+  domain?: string;
+  fromAddress?: string;
+  region?: "us" | "eu";
+  allowedRecipients?: string[];
 }
 export interface ListedConnection extends Connection {
   state: "active" | "DISABLED (no secret)";
@@ -43,6 +50,8 @@ export const CATALOG = [
   },
   { name: "http", kind: "http", auth: ["oauth", "device-code", "key", "none"] },
   { name: "mcp", kind: "mcp", auth: ["oauth", "device-code", "key", "none"] },
+  { name: "gmail", kind: "email", auth: ["oauth"] },
+  { name: "mailgun", kind: "email", auth: ["key"] },
 ] as const;
 
 const namePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -62,7 +71,17 @@ const knownKeys = new Set([
   "client_id",
   "scopes",
   "transport",
+  "capabilities",
+  "account",
+  "domain",
+  "from_address",
+  "region",
+  "allowed_recipients",
 ]);
+
+const emailAddressPattern = /^[^\s<>@,;]+@[^\s<>@,;]+$/;
+const domainPattern =
+  /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
 
 function table(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -127,8 +146,8 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
       `connection file stem ${stem} does not match declared name ${name}`,
     );
   const kind = requiredString(value.kind, "kind") as ConnectionKind;
-  if (!["model", "http", "mcp"].includes(kind))
-    throw new IntegralError("kind must be model, http, or mcp");
+  if (!["model", "http", "mcp", "email"].includes(kind))
+    throw new IntegralError("kind must be model, http, mcp, or email");
   const provider =
     value.provider === undefined
       ? undefined
@@ -138,6 +157,11 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     !CATALOG.some((e) => e.kind === "model" && e.name === provider)
   )
     throw new IntegralError("provider must name a catalog model provider");
+  if (
+    kind === "email" &&
+    !CATALOG.some((e) => e.kind === "email" && e.name === provider)
+  )
+    throw new IntegralError("provider must be gmail or mailgun");
   const catalog = CATALOG.find((e) => e.name === provider);
   const auth = (value.auth ??
     (catalog && "defaultAuth" in catalog ? catalog.defaultAuth : undefined)) as
@@ -148,7 +172,8 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     throw new IntegralError(
       "model connections do not support no authentication",
     );
-  const url = kind === "model" ? undefined : secureUrl(value.url, "url");
+  const url =
+    kind === "http" || kind === "mcp" ? secureUrl(value.url, "url") : undefined;
   const methods =
     optionalStrings(value.methods, "methods")?.map((m) => m.toUpperCase()) ??
     (kind === "http" ? ["*"] : undefined);
@@ -174,7 +199,7 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
   if (url) result.url = url;
   if (methods) result.methods = methods;
   if (pathPrefix) result.pathPrefix = pathPrefix;
-  if (auth === "key") {
+  if (auth === "key" && kind !== "email") {
     result.header =
       value.header === undefined
         ? "Authorization"
@@ -189,7 +214,7 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
       );
   }
   if (auth === "oauth" || auth === "device-code") {
-    if (kind !== "model") {
+    if (kind === "http" || kind === "mcp") {
       result.authorizationUrl = oauthUrl(
         value.authorization_url,
         "authorization_url",
@@ -211,6 +236,85 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
       throw new IntegralError("transport must be streamable-http or sse");
     result.transport = transport;
   }
+  if (kind === "email") {
+    const supported: readonly EmailCapability[] =
+      provider === "gmail" ? ["read", "search", "send"] : ["send"];
+    const capabilities = optionalStrings(value.capabilities, "capabilities") as
+      EmailCapability[] | undefined;
+    if (!capabilities?.length)
+      throw new IntegralError("email capabilities must not be empty");
+    if (
+      new Set(capabilities).size !== capabilities.length ||
+      capabilities.some((capability) => !supported.includes(capability))
+    )
+      throw new IntegralError(
+        `${provider} capabilities must contain unique values from: ${supported.join(", ")}`,
+      );
+    result.capabilities = capabilities;
+    if (capabilities.includes("send")) {
+      const allowed = optionalStrings(
+        value.allowed_recipients,
+        "allowed_recipients",
+      );
+      if (!allowed?.length)
+        throw new IntegralError("send capability requires allowed_recipients");
+      if (
+        allowed.some(
+          (recipient) =>
+            !emailAddressPattern.test(recipient) &&
+            !(
+              recipient.startsWith("*@") &&
+              domainPattern.test(recipient.slice(2))
+            ),
+        )
+      )
+        throw new IntegralError(
+          "allowed_recipients must contain email addresses or *@domain wildcards",
+        );
+      result.allowedRecipients = allowed.map((recipient) =>
+        recipient.toLowerCase(),
+      );
+    }
+    if (provider === "gmail") {
+      if (auth !== "oauth")
+        throw new IntegralError("gmail requires oauth authentication");
+      const account = requiredString(value.account, "account");
+      if (!emailAddressPattern.test(account))
+        throw new IntegralError("account must be an email address");
+      result.account = account;
+      result.authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth";
+      result.tokenUrl = "https://oauth2.googleapis.com/token";
+      result.clientId = requiredString(value.client_id, "client_id");
+      result.scopes = [
+        ...(capabilities.some((capability) => capability !== "send")
+          ? ["https://www.googleapis.com/auth/gmail.readonly"]
+          : []),
+        ...(capabilities.includes("send")
+          ? ["https://www.googleapis.com/auth/gmail.send"]
+          : []),
+      ];
+    } else {
+      if (auth !== "key")
+        throw new IntegralError("mailgun requires key authentication");
+      const domain = requiredString(value.domain, "domain").toLowerCase();
+      if (!domainPattern.test(domain))
+        throw new IntegralError("domain must be a valid DNS domain");
+      const fromAddress = requiredString(value.from_address, "from_address");
+      if (
+        !emailAddressPattern.test(fromAddress) ||
+        fromAddress.toLowerCase().split("@")[1] !== domain
+      )
+        throw new IntegralError(
+          "from_address must be an email address in the Mailgun domain",
+        );
+      const region = value.region ?? "us";
+      if (region !== "us" && region !== "eu")
+        throw new IntegralError("region must be us or eu");
+      result.domain = domain;
+      result.fromAddress = fromAddress;
+      result.region = region;
+    }
+  }
   return result;
 }
 
@@ -231,12 +335,22 @@ export function connectionToml(c: Connection): string {
     ["device_authorization_url", c.deviceAuthorizationUrl],
     ["client_id", c.clientId],
     ["transport", c.transport],
+    ["account", c.account],
+    ["domain", c.domain],
+    ["from_address", c.fromAddress],
+    ["region", c.region],
   ];
   for (const [key, value] of scalar)
     if (value !== undefined && !rows.some((row) => row.startsWith(`${key} =`)))
       rows.push(`${key} = ${quote(value)}`);
   if (c.methods) rows.push(`methods = [${c.methods.map(quote).join(", ")}]`);
   if (c.scopes) rows.push(`scopes = [${c.scopes.map(quote).join(", ")}]`);
+  if (c.capabilities)
+    rows.push(`capabilities = [${c.capabilities.map(quote).join(", ")}]`);
+  if (c.allowedRecipients)
+    rows.push(
+      `allowed_recipients = [${c.allowedRecipients.map(quote).join(", ")}]`,
+    );
   return `${rows.join("\n")}\n`;
 }
 
@@ -364,7 +478,7 @@ export async function saveConnection(
 ): Promise<{ rotated: boolean; generation: number }> {
   const declaration = join(paths.connections, `${connection.name}.toml`);
   const existed = await readText(declaration);
-  const validated = validateConnection(connection);
+  const validated = validateConnection(parse(connectionToml(connection)));
   if (connection.auth !== "none" && !credential)
     throw new IntegralError(
       `authentication credential is required for ${connection.auth}`,

@@ -56,12 +56,16 @@ Commands:
 const CONNECTION_HELP = `Usage: integral connection <command>
 
 Commands:
-  catalog    show model providers and generic connection types
+  catalog    show model, email, and generic connection types
   add        guided setup (or: add <entry> --auth <method> [options])
   ls         list configured connections
   rm <name>  deliberately remove a connection
 
 All active connections are available automatically. There are no grant or revoke commands.
+
+Email examples:
+  integral connection add gmail --auth oauth --account <email> --client-id <id> --capabilities read,search,send --allowed-recipients <addresses>
+  integral connection add mailgun --auth key --domain <domain> --from <email> --capabilities send --allowed-recipients <addresses>
 `;
 const SERVER_HELP = `Usage: integral server start [--component <name>]
        integral server status [--json]
@@ -387,7 +391,8 @@ async function explicitConnection(args: string[]): Promise<Connection> {
     rl?.close();
   }
   const raw: Record<string, unknown> = { name, kind: entry.kind, auth };
-  if (entry.kind === "model") raw.provider = entryName;
+  if (entry.kind === "model" || entry.kind === "email")
+    raw.provider = entryName;
   else raw.url = flag(args, "--url");
   const methods = flag(args, "--methods");
   if (methods) raw.methods = methods.split(",");
@@ -400,9 +405,24 @@ async function explicitConnection(args: string[]): Promise<Connection> {
     ["--device-authorization-url", "device_authorization_url"],
     ["--client-id", "client_id"],
     ["--transport", "transport"],
+    ["--account", "account"],
+    ["--domain", "domain"],
+    ["--from", "from_address"],
+    ["--region", "region"],
   ] as const) {
     const value = flag(args, option);
     if (value) raw[key] = value;
+  }
+  for (const [option, key] of [
+    ["--capabilities", "capabilities"],
+    ["--allowed-recipients", "allowed_recipients"],
+  ] as const) {
+    const value = flag(args, option);
+    if (value)
+      raw[key] = value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
   }
   return validateConnection(raw);
 }
@@ -457,13 +477,13 @@ async function guidedConnection(): Promise<Connection> {
         )
       ).trim() || defaultAuth;
     const args = [entry.name, "--name", name, "--auth", chosenAuth];
-    if (entry.kind !== "model") {
+    if (entry.kind === "http" || entry.kind === "mcp") {
       args.push("--url", await rl.question("URL: "));
       const path = (await rl.question("Path prefix [URL path]: ")).trim();
       if (path) args.push("--path-prefix", path);
     }
     if (
-      entry.kind !== "model" &&
+      (entry.kind === "http" || entry.kind === "mcp") &&
       (chosenAuth === "oauth" || chosenAuth === "device-code")
     ) {
       args.push(
@@ -485,6 +505,34 @@ async function guidedConnection(): Promise<Connection> {
         await rl.question("Transport (streamable-http/sse) [streamable-http]: ")
       ).trim();
       if (transport) args.push("--transport", transport);
+    }
+    if (entry.kind === "email") {
+      const defaultCapabilities =
+          entry.name === "gmail" ? "read,search,send" : "send",
+        capabilities =
+          (
+            await rl.question(`Capabilities [${defaultCapabilities}]: `)
+          ).trim() || defaultCapabilities;
+      args.push("--capabilities", capabilities);
+      if (entry.name === "gmail")
+        args.push(
+          "--account",
+          await rl.question("Account email: "),
+          "--client-id",
+          await rl.question("OAuth client ID: "),
+        );
+      else
+        args.push(
+          "--domain",
+          await rl.question("Mailgun domain: "),
+          "--from",
+          await rl.question("From address: "),
+        );
+      if (capabilities.split(",").includes("send"))
+        args.push(
+          "--allowed-recipients",
+          await rl.question("Allowed recipients (comma-separated): "),
+        );
     }
     return await explicitConnection(args);
   } finally {

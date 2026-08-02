@@ -84,13 +84,16 @@ test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and
   assert.doesNotMatch(result.stdout, /^\s+(grant|revoke)\b/m);
 });
 
-test("[CONNECTION-75EC27E8] catalog describes model, HTTP, MCP and every supported authentication family", async () => {
+test("[CONNECTION-75EC27E8] catalog describes model, email, HTTP, MCP and every supported authentication family", async () => {
   const result = await capture(["connection", "catalog"]);
   for (const word of [
     "openai-codex",
     "anthropic",
     "http",
     "mcp",
+    "gmail",
+    "mailgun",
+    "email",
     "model",
     "oauth",
     "device-code",
