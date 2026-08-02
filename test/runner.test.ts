@@ -418,6 +418,7 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
     },
     deployment = deploymentId(paths),
     calls: string[] = [];
+  let taskRegistration: Record<string, unknown> | undefined;
   await saveConnection(
     paths,
     validateConnection({
@@ -527,6 +528,7 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
             value.args.at(-1)!,
             /Scheduled time: 2026-08-02T12:00:00.000Z/,
           );
+          assert.match(value.args.at(-1)!, /task_complete or task_fail/);
           return taskRuntime;
         },
       },
@@ -534,6 +536,13 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
       fetch: async () => new Response("ok"),
       async internalFetch(_paths, _caller, target, path, init) {
         calls.push(`${init?.method ?? "GET"}:${target}:${path}`);
+        if (
+          target === "gateway" &&
+          path === "/integral/internal/session" &&
+          typeof init?.body === "string" &&
+          init.body.includes("executionId")
+        )
+          taskRegistration = JSON.parse(init.body) as Record<string, unknown>;
         if (path === "/integral/internal/tasks/claim")
           return Response.json({ task });
         if (path.endsWith("/start"))
@@ -561,6 +570,10 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
         );
         calls.push("task:email-tools");
       },
+      async writeTaskExtension(home) {
+        assert.equal(home, "/test/task-home");
+        calls.push("task:outcome-tools");
+      },
       writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
@@ -574,6 +587,7 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
     calls.filter((call) => call.startsWith("task:")),
     [
       "task:email-tools",
+      "task:outcome-tools",
       "task:create",
       "task:start",
       "task:prompt:perform scheduled work",
@@ -581,7 +595,18 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
       "task:cleanup",
     ],
   );
-  const completeIndex = calls.findIndex((call) => call.endsWith("/complete"));
-  assert.ok(completeIndex > calls.indexOf("task:exit:0"));
+  const finalizeIndex = calls.findIndex((call) => call.endsWith("/finalize"));
+  assert.ok(finalizeIndex > calls.indexOf("task:exit:0"));
+  assert.equal(
+    calls.filter((call) => call === "POST:gateway:/integral/internal/session")
+      .length,
+    2,
+  );
+  assert.deepEqual(taskRegistration, {
+    token: "task-token",
+    sessionId: "task-session",
+    executionId: "execution-1",
+    attemptId: "attempt-1",
+  });
   assert.ok(calls.includes("DELETE:gateway:/integral/internal/session"));
 });

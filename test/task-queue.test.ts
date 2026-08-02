@@ -98,10 +98,15 @@ test("[SCHEDULE-4205553B] [SCHEDULE-930581F7] a one-time task retries in a fresh
     queue.complete("execution-o", second.attempts[1]!.attemptId, "partial", 1),
     /exit code zero/,
   );
-  const completed = await queue.complete(
+  await queue.declareOutcome(
     "execution-o",
     second.attempts[1]!.attemptId,
+    "complete",
     "done",
+  );
+  const completed = await queue.finalize(
+    "execution-o",
+    second.attempts[1]!.attemptId,
     0,
   );
   assert.equal(completed.state, "completed");
@@ -167,10 +172,28 @@ test("[SCHEDULE-42E63F16] successful outbox acknowledgement is durable and idemp
   await queue.accept(occurrence("execution", "once"));
   const claim = await queue.claim(),
     running = await queue.start("execution", claim!.claimId!);
-  await queue.complete("execution", running.attempts[0]!.attemptId, "done", 0);
+  await queue.declareOutcome(
+    "execution",
+    running.attempts[0]!.attemptId,
+    "complete",
+    "done",
+  );
   await assert.rejects(
-    queue.complete("execution", running.attempts[0]!.attemptId, "different", 0),
-    /different result/,
+    queue.declareOutcome(
+      "execution",
+      running.attempts[0]!.attemptId,
+      "failed",
+      "different",
+    ),
+    /conflicting outcome declaration/,
+  );
+  await queue.finalize("execution", running.attempts[0]!.attemptId, 0);
+  await queue.finalize("execution", running.attempts[0]!.attemptId, 0);
+  await queue.declareOutcome(
+    "execution",
+    running.attempts[0]!.attemptId,
+    "complete",
+    "done",
   );
   assert.equal(queue.outbox().length, 1);
   await queue.acknowledgeOutbox("execution");
@@ -179,6 +202,50 @@ test("[SCHEDULE-42E63F16] successful outbox acknowledgement is durable and idemp
   await restored.load();
   assert.deepEqual(restored.outbox(), []);
   assert.equal(restored.snapshot()[0]!.state, "completed");
+});
+
+test("[SCHEDULE-930581F7] clean exit finalizes Pi's declared failure and rejects success without a declaration", async (t) => {
+  const paths = await fixture(t),
+    queue = new DurableTaskQueue(
+      paths,
+      undefined,
+      (() => {
+        let id = 0;
+        return () => `id-${++id}`;
+      })(),
+    );
+  await queue.load();
+  await queue.accept(occurrence("execution-failed", "recurring"));
+  const failedClaim = await queue.claim(),
+    failed = await queue.start("execution-failed", failedClaim!.claimId!),
+    failedAttempt = failed.attempts[0]!.attemptId;
+  await queue.declareOutcome(
+    "execution-failed",
+    failedAttempt,
+    "failed",
+    "mail provider rejected the message",
+  );
+  const finalizedFailure = await queue.finalize(
+    "execution-failed",
+    failedAttempt,
+    0,
+  );
+  assert.equal(finalizedFailure.state, "failed");
+  assert.equal(
+    finalizedFailure.lastError,
+    "mail provider rejected the message",
+  );
+
+  await queue.accept(occurrence("execution-missing", "once"));
+  const missingClaim = await queue.claim(),
+    missing = await queue.start("execution-missing", missingClaim!.claimId!),
+    finalizedMissing = await queue.finalize(
+      "execution-missing",
+      missing.attempts[0]!.attemptId,
+      0,
+    );
+  assert.equal(finalizedMissing.state, "retry-wait");
+  assert.match(finalizedMissing.lastError!, /without declaring/);
 });
 
 test("[SCHEDULE-FDFA799E] a later occurrence cannot overlap a running occurrence", async (t) => {

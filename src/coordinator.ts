@@ -327,8 +327,29 @@ export class Coordinator {
         json(res, 200, { task: await this.tasks.claim() });
         return;
       }
+      const taskDeclaration = url.pathname.match(
+        /^\/integral\/internal\/tasks\/([^/]+)\/declare$/,
+      );
+      if (taskDeclaration && req.method === "POST") {
+        if (!this.internal(req, "gateway")) return unauthorized(res);
+        const body = await bodyJson(req),
+          outcome = stringValue(body.outcome);
+        if (outcome !== "complete" && outcome !== "failed")
+          throw new IntegralError("invalid task outcome declaration", 400);
+        json(
+          res,
+          200,
+          await this.tasks.declareOutcome(
+            taskDeclaration[1]!,
+            stringValue(body.attemptId),
+            outcome,
+            stringValue(body.message),
+          ),
+        );
+        return;
+      }
       const taskOutcome = url.pathname.match(
-        /^\/integral\/internal\/tasks\/([^/]+)\/(start|defer|complete|fail)$/,
+        /^\/integral\/internal\/tasks\/([^/]+)\/(start|defer|complete|fail|finalize)$/,
       );
       if (taskOutcome && req.method === "POST") {
         if (!this.internal(req)) return unauthorized(res);
@@ -352,12 +373,18 @@ export class Coordinator {
                       stringValue(body.result),
                       numberValue(body.exitCode),
                     )
-                  : await this.tasks.fail(
-                      taskOutcome[1]!,
-                      stringValue(body.attemptId),
-                      stringValue(body.error, "task failed"),
-                      optionalNumber(body.exitCode),
-                    );
+                  : taskOutcome[2] === "finalize"
+                    ? await this.tasks.finalize(
+                        taskOutcome[1]!,
+                        stringValue(body.attemptId),
+                        numberValue(body.exitCode),
+                      )
+                    : await this.tasks.fail(
+                        taskOutcome[1]!,
+                        stringValue(body.attemptId),
+                        stringValue(body.error, "task failed"),
+                        optionalNumber(body.exitCode),
+                      );
         json(res, 200, task);
         return;
       }

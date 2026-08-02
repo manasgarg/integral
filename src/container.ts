@@ -245,6 +245,24 @@ export default function (pi) { for (const account of accounts) for (const capabi
   await atomicWrite(join(directory, "integral-email.ts"), source);
 }
 
+export async function writeTaskExtension(sessionHome: string): Promise<void> {
+  const directory = join(sessionHome, ".pi", "agent", "extensions");
+  await ensureDir(directory);
+  const source = `import { request } from "node:http";
+import { Type } from "typebox";
+let declaredOutcome;
+function endpoint() { const proxy = new URL(process.env.HTTP_PROXY); const authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = "/integral/task-outcome"; return { url: proxy.toString(), authorization }; }
+function post(body, signal) { return new Promise((resolve, reject) => { const target = endpoint(), payload = JSON.stringify(body), chunks = []; let settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }, req = request(target.url, { agent: false, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload), "proxy-authorization": target.authorization } }, (res) => { res.on("data", (chunk) => chunks.push(chunk)); res.on("end", () => finish(() => resolve({ status: res.statusCode || 500, text: Buffer.concat(chunks).toString("utf8") }))); res.on("error", (error) => finish(() => reject(error))); }), abort = () => req.destroy(new Error("task outcome request was cancelled")); signal?.addEventListener("abort", abort, { once: true }); req.on("error", (error) => finish(() => reject(error))); req.end(payload); }); }
+async function declare(outcome, message, signal) { const response = await post({ outcome, message }, signal); if (response.status < 200 || response.status >= 300) throw new Error(response.text.trim() || "task outcome declaration failed"); declaredOutcome = outcome; return { content: [{ type: "text", text: outcome === "complete" ? "Task completion recorded." : "Task failure recorded." }], details: { outcome, message }, terminate: true }; }
+export default function (pi) {
+  pi.registerTool({ name: "task_complete", label: "Complete task", description: "Declare that the isolated scheduled task completed successfully. This must be your final action when the task succeeded.", promptSnippet: "Declare successful completion of the scheduled task", promptGuidelines: ["Call task_complete as the final action when the scheduled task has succeeded."], parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: 100000 }) }), async execute(_id, params, signal) { return declare("complete", params.summary, signal); } });
+  pi.registerTool({ name: "task_fail", label: "Fail task", description: "Declare that the isolated scheduled task could not be completed. This must be your final action when the task failed.", promptSnippet: "Declare failure of the scheduled task", promptGuidelines: ["Call task_fail as the final action when the scheduled task cannot be completed."], parameters: Type.Object({ reason: Type.String({ minLength: 1, maxLength: 100000 }) }), async execute(_id, params, signal) { return declare("failed", params.reason, signal); } });
+  pi.on("turn_end", async (event) => { if (declaredOutcome || event.toolResults?.length) return; pi.sendMessage({ customType: "integral-task-outcome-required", content: "You attempted to finish this scheduled task without declaring its outcome. Review the work and call exactly one of task_complete or task_fail now. Do not answer with ordinary text.", display: true }, { deliverAs: "steer", triggerTurn: true }); });
+}
+`;
+  await atomicWrite(join(directory, "integral-task.ts"), source);
+}
+
 export async function writePiCredential(
   sessionHome: string,
   model: Connection,

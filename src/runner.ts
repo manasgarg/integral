@@ -11,6 +11,7 @@ import {
   newSessionIdentity,
   writeMcpExtension,
   writeEmailExtension,
+  writeTaskExtension,
   writePiCredential,
   type ContainerBackend,
   type PiRuntime,
@@ -42,6 +43,7 @@ export interface RunnerDependencies {
   newSessionIdentity: typeof newSessionIdentity;
   writeMcpExtension: typeof writeMcpExtension;
   writeEmailExtension: typeof writeEmailExtension;
+  writeTaskExtension: typeof writeTaskExtension;
   writePiCredential: typeof writePiCredential;
   listen(server: http.Server, port: number, address: string): Promise<void>;
   close(server: http.Server): Promise<void>;
@@ -62,6 +64,7 @@ const productionDependencies: RunnerDependencies = {
   newSessionIdentity,
   writeMcpExtension,
   writeEmailExtension,
+  writeTaskExtension,
   writePiCredential,
   async listen(server, port, address) {
     await new Promise<void>((resolve, reject) => {
@@ -202,26 +205,44 @@ export class Runner {
         attempt = running.attempts.at(-1);
       if (!attempt) throw new IntegralError("started task has no attempt");
       this.currentTask.attemptId = attempt.attemptId;
-      const result = await runtime.prompt(task.prompt);
+      const taskSession = await this.dependencies.internalFetch(
+        this.paths,
+        "runner",
+        "gateway",
+        "/integral/internal/session",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            token: runtime.spec.sessionToken,
+            sessionId: runtime.spec.sessionId,
+            executionId: task.executionId,
+            attemptId: attempt.attemptId,
+          }),
+        },
+      );
+      if (!taskSession.ok)
+        throw new IntegralError(
+          `task gateway identity update failed: ${taskSession.status}`,
+        );
+      await runtime.prompt(task.prompt);
       exitCode = await runtime.finish();
-      if (exitCode !== 0)
-        throw new IntegralError(`Pi task exited non-zero (${exitCode})`);
-      const completed = await this.dependencies.internalFetch(
+      const finalized = await this.dependencies.internalFetch(
         this.paths,
         "runner",
         "coordinator",
-        `/integral/internal/tasks/${task.id}/complete`,
+        `/integral/internal/tasks/${task.id}/finalize`,
         {
           method: "POST",
           body: JSON.stringify({
             attemptId: attempt.attemptId,
-            result,
             exitCode,
           }),
         },
       );
-      if (!completed.ok)
-        throw new IntegralError(`task completion failed: ${completed.status}`);
+      if (!finalized.ok)
+        throw new IntegralError(
+          `task finalization failed: ${finalized.status}`,
+        );
       this.currentTask = undefined;
     } catch (error) {
       if (task && this.currentTask) {
@@ -286,6 +307,7 @@ export class Runner {
       task.profile,
       task.profile.piImage,
     );
+    await this.dependencies.writeTaskExtension(spec.home);
     spec.args.push("--append-system-prompt", renderTaskContext(task));
     const registered = await this.dependencies.internalFetch(
       this.paths,
@@ -695,5 +717,5 @@ export function renderContext(events: ConversationEvent[]): string {
 
 export function renderTaskContext(task: ScheduledTask): string {
   const attempt = task.attempts.length + 1;
-  return `You are executing an isolated scheduled task.\nSchedule ID: ${task.scheduleId}\nExecution ID: ${task.executionId}\nAttempt: ${attempt}\nScheduled time: ${task.scheduledFor}\nComplete only the supplied task. Do not assume access to the interactive conversation. Use the execution ID as an idempotency key for external side effects.`;
+  return `You are executing an isolated scheduled task.\nSchedule ID: ${task.scheduleId}\nExecution ID: ${task.executionId}\nAttempt: ${attempt}\nScheduled time: ${task.scheduledFor}\nComplete only the supplied task. Do not assume access to the interactive conversation. Use the execution ID as an idempotency key for external side effects. Before ending, call exactly one of task_complete or task_fail as your final action.`;
 }

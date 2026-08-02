@@ -67,6 +67,10 @@ export function allowsConnect(
 
 export class Gateway {
   readonly sessions = new Map<string, string>();
+  readonly taskSessions = new Map<
+    string,
+    { executionId: string; attemptId: string }
+  >();
   private servers: http.Server[] = [];
   private ca?: CaFiles;
   private token = "";
@@ -216,12 +220,20 @@ export class Gateway {
       }
       const body = await bodyJson(req);
       const token = stringValue(body.token),
-        sessionId = stringValue(body.sessionId);
+        sessionId = stringValue(body.sessionId),
+        executionId = stringValue(body.executionId),
+        attemptId = stringValue(body.attemptId);
       if (!token || !sessionId) {
         res.writeHead(400).end("invalid session\n");
         return;
       }
+      if (Boolean(executionId) !== Boolean(attemptId)) {
+        res.writeHead(400).end("incomplete task session identity\n");
+        return;
+      }
       this.sessions.set(token, sessionId);
+      if (executionId && attemptId)
+        this.taskSessions.set(sessionId, { executionId, attemptId });
       res.writeHead(204).end();
       return;
     }
@@ -276,7 +288,10 @@ export class Gateway {
         return;
       }
       const body = await bodyJson(req);
-      this.sessions.delete(stringValue(body.token));
+      const token = stringValue(body.token),
+        sessionId = this.sessions.get(token);
+      this.sessions.delete(token);
+      if (sessionId) this.taskSessions.delete(sessionId);
       res.writeHead(204).end();
       return;
     }
@@ -285,6 +300,44 @@ export class Gateway {
       res
         .writeHead(407, { "proxy-authenticate": "Basic realm=integral" })
         .end("proxy authentication required\n");
+      return;
+    }
+    if (req.url === "/integral/task-outcome" && req.method === "POST") {
+      try {
+        const task = this.taskSessions.get(sessionId);
+        if (!task)
+          throw new IntegralError(
+            "task outcome is unavailable outside an active task attempt",
+            403,
+          );
+        const body = await bodyJson(req, 110_000),
+          outcome = stringValue(body.outcome),
+          message = stringValue(body.message);
+        if (outcome !== "complete" && outcome !== "failed")
+          throw new IntegralError("invalid task outcome declaration", 400);
+        const upstream = await this.dependencies.internalFetch(
+          this.paths,
+          "gateway",
+          "coordinator",
+          `/integral/internal/tasks/${encodeURIComponent(task.executionId)}/declare`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              attemptId: task.attemptId,
+              outcome,
+              message,
+            }),
+          },
+        );
+        const responseBody = await upstream.text();
+        res.writeHead(upstream.status, {
+          "content-type":
+            upstream.headers.get("content-type") ?? "application/json",
+        });
+        res.end(responseBody);
+      } catch (error) {
+        respondError(res, error);
+      }
       return;
     }
     if (req.url === "/integral/email" && req.method === "POST") {
@@ -554,6 +607,7 @@ export class Gateway {
     this.dependencies.intervals.clearInterval(this.refreshTimer);
     const servers = this.servers.splice(0);
     this.sessions.clear();
+    this.taskSessions.clear();
     await Promise.all(
       servers.map((server) => this.dependencies.servers.close(server)),
     );

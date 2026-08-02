@@ -72,11 +72,23 @@ Given the coordinator task queue contains an occurrence ready to run
 ## SCHEDULE-930581F7 — Require a clean one-shot exit for task success
 
 Given an isolated task container is processing exactly one occurrence
-	When Pi produces the expected protocol-level completion and then exits naturally with status zero
+	When Pi reaches the end of a turn without calling any tool and has not declared the task complete or failed
+		Then the task completion extension injects a steering message before the agent loop settles
+			And requires Pi to call exactly one of `task_complete` or `task_fail`
+			And the task remains running while Pi performs the additional turn
+	When Pi calls `task_complete` or `task_fail`
+		Then the extension durably records Pi's declared outcome for the current authenticated attempt
+			And a repeated identical declaration is harmless
+			And a conflicting declaration is rejected
+			And the declaration alone does not finalize the task
+	When Pi durably declares completion and then exits naturally with status zero
 		Then the coordinator durably records the complete task result
 			And durably records a pending scheduler acknowledgement
 			And only then reports successful execution
-	When the task times out, is cancelled, rejects the prompt, violates the protocol, exits non-zero, or is forcibly terminated
+	When Pi durably declares failure and then exits naturally with status zero
+		Then integral records an unsuccessful attempt using Pi's declared reason
+			And does not report successful execution
+	When the task times out, is cancelled, rejects the prompt, exits without a declared outcome, exits non-zero, or is forcibly terminated
 		Then integral records an unsuccessful attempt
 			And does not treat partial output as a successful task result
 			And does not send a successful acknowledgement to the scheduler

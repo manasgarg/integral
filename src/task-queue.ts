@@ -22,6 +22,13 @@ export interface TaskAttempt {
   outcome?: "succeeded" | "failed" | "interrupted";
   exitCode?: number;
   error?: string;
+  declaration?: TaskOutcomeDeclaration;
+}
+
+export interface TaskOutcomeDeclaration {
+  outcome: "complete" | "failed";
+  message: string;
+  declaredAt: string;
 }
 
 export interface ScheduledTask {
@@ -242,6 +249,16 @@ export class DurableTaskQueue {
       const attempt = this.runningAttempt(task, attemptId);
       if (exitCode !== 0)
         throw new IntegralError("task success requires exit code zero", 409);
+      if (attempt.declaration?.outcome !== "complete")
+        throw new IntegralError(
+          "task success requires Pi to declare completion",
+          409,
+        );
+      if (attempt.declaration.message !== result)
+        throw new IntegralError(
+          "task result does not match Pi's completion declaration",
+          409,
+        );
       const timestamp = new Date(this.now()).toISOString();
       attempt.finishedAt = timestamp;
       attempt.outcome = "succeeded";
@@ -251,6 +268,94 @@ export class DurableTaskQueue {
       task.completedAt = timestamp;
       delete task.lastError;
       this.addOutbox(task.executionId, "succeeded");
+      await this.persist();
+      return structuredClone(task);
+    });
+  }
+
+  async declareOutcome(
+    executionId: string,
+    attemptId: string,
+    outcome: "complete" | "failed",
+    message: string,
+  ): Promise<ScheduledTask> {
+    return this.exclusive(async () => {
+      if (!message.trim())
+        throw new IntegralError("task outcome message is required", 400);
+      if (message.length > 100_000)
+        throw new IntegralError("task outcome message is too large", 413);
+      const task = this.find(executionId),
+        priorAttempt = task.attempts.find(
+          (item) => item.attemptId === attemptId,
+        ),
+        attempt = priorAttempt ?? this.runningAttempt(task, attemptId),
+        existing = attempt.declaration;
+      if (existing) {
+        if (existing.outcome !== outcome || existing.message !== message)
+          throw new IntegralError(
+            `task attempt ${attemptId} already has a conflicting outcome declaration`,
+            409,
+          );
+        return structuredClone(task);
+      }
+      this.runningAttempt(task, attemptId);
+      attempt.declaration = {
+        outcome,
+        message,
+        declaredAt: new Date(this.now()).toISOString(),
+      };
+      await this.persist();
+      return structuredClone(task);
+    });
+  }
+
+  async finalize(
+    executionId: string,
+    attemptId: string,
+    exitCode: number,
+  ): Promise<ScheduledTask> {
+    return this.exclusive(async () => {
+      const task = this.find(executionId),
+        priorAttempt = task.attempts.find(
+          (item) => item.attemptId === attemptId,
+        );
+      if (task.state !== "running" && priorAttempt?.finishedAt)
+        return structuredClone(task);
+      const attempt = this.runningAttempt(task, attemptId),
+        declaration = attempt.declaration,
+        timestamp = new Date(this.now()).toISOString();
+      if (exitCode === 0 && declaration?.outcome === "complete") {
+        attempt.finishedAt = timestamp;
+        attempt.outcome = "succeeded";
+        attempt.exitCode = exitCode;
+        task.state = "completed";
+        task.result = declaration.message;
+        task.completedAt = timestamp;
+        delete task.lastError;
+        this.addOutbox(task.executionId, "succeeded");
+      } else {
+        const error =
+          exitCode !== 0
+            ? `Pi task exited non-zero (${exitCode})`
+            : declaration?.outcome === "failed"
+              ? declaration.message
+              : "Pi exited without declaring task completion or failure";
+        attempt.finishedAt = timestamp;
+        attempt.outcome = "failed";
+        attempt.exitCode = exitCode;
+        attempt.error = error;
+        task.lastError = error;
+        if (task.triggerType === "recurring") {
+          task.state = "failed";
+          task.completedAt = timestamp;
+          this.addOutbox(task.executionId, "failed", error);
+        } else {
+          task.state = "retry-wait";
+          task.nextAttemptAt = new Date(
+            this.now() + retryDelay(task.attempts.length),
+          ).toISOString();
+        }
+      }
       await this.persist();
       return structuredClone(task);
     });
