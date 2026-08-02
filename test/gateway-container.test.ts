@@ -673,7 +673,7 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose r
   assert.match(source, /schedule_create/);
   assert.match(source, /schedule_update/);
   assert.match(source, /proxy-authorization/);
-  assert.match(source, /request\(target\.url/);
+  assert.match(source, /request\(target\.url, \{ agent: false/);
   assert.doesNotMatch(source, /fetch\("http:\/\/integral\.control/);
   assert.doesNotMatch(source, /actual-secret/);
 });

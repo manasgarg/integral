@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
+import type http from "node:http";
 import { join } from "node:path";
 import { acquireLock } from "../src/fs.ts";
 import { loadConfig } from "../src/config.ts";
@@ -19,6 +20,7 @@ import {
   waitForShutdownSignal,
   type StartComponentsDependencies,
 } from "../src/server.ts";
+import { nodeHttpServerRuntime } from "../src/runtime.ts";
 import type { Component } from "../src/constants.ts";
 import { requireActiveModelConnection } from "../src/runner.ts";
 
@@ -326,4 +328,24 @@ test("[SERVER-33E00BBA] [SERVER-E3A74B10] the production signal waiter stops onc
   assert.deepEqual(events, ["stop"]);
   assert.equal(signals.listenerCount("SIGINT"), 0);
   assert.equal(signals.listenerCount("SIGTERM"), 0);
+});
+
+test("[SERVER-33E00BBA] shutdown closes active connections after refusing new ones", async () => {
+  const events: string[] = [];
+  let closed: ((error?: Error) => void) | undefined;
+  const server = {
+    close(callback: (error?: Error) => void) {
+      events.push("close");
+      closed = callback;
+      return server;
+    },
+    closeAllConnections() {
+      events.push("close-all");
+      closed?.();
+    },
+  } as unknown as http.Server;
+
+  await nodeHttpServerRuntime.close(server);
+
+  assert.deepEqual(events, ["close", "close-all"]);
 });
