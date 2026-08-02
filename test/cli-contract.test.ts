@@ -310,7 +310,7 @@ test("[CONFIG-D4A70C31] human config output uses readable sourced sections inste
   assert.doesNotMatch(shown.stdout, /^server: \{/m);
 });
 
-test("[SERVER-2C8F41A7] component startup help documents combined and three separate modes", async () => {
+test("[SERVER-2C8F41A7] component startup help documents combined and four separate modes", async () => {
   const result = await capture(["server", "start", "--help"]);
   for (const word of [
     "Combined mode",
@@ -318,6 +318,7 @@ test("[SERVER-2C8F41A7] component startup help documents combined and three sepa
     "coordinator",
     "runner",
     "gateway",
+    "scheduler",
   ])
     assert.match(result.stdout, new RegExp(word));
 });

@@ -287,6 +287,71 @@ test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only a
   );
 });
 
+test("[SCHEDULE-55BD779F] gateway attributes Pi schedule mutations and injects the selected execution profile", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = { ...base, server: { ...base.server, gatewayPort: 0 } },
+    forwarded: Array<{ path: string; body?: string }> = [],
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        ensureCa: async () => ({ key: "key", cert: "cert", bundle: "bundle" }),
+        async internalFetch(_paths, _caller, target, path, init) {
+          if (target === "coordinator")
+            return Response.json({
+              modelSelection: {
+                connection: "model",
+                provider: "anthropic",
+                model: "claude-sonnet-4-6",
+                piVersion: "1.2.3",
+                piImage: "sha256:test",
+              },
+            });
+          forwarded.push({
+            path,
+            ...(typeof init?.body === "string" ? { body: init.body } : {}),
+          });
+          return Response.json(
+            { id: "schedule-1", revision: 1 },
+            { status: 201 },
+          );
+        },
+      },
+    );
+  const body = {
+    prompt: "work",
+    trigger: { type: "once", runAt: "2026-08-03T12:00:00Z" },
+    profile: { provider: "forged" },
+  };
+  const result = await gateway.scheduleControl(
+    "session-1",
+    "POST",
+    "/integral/schedules",
+    body,
+  );
+  assert.equal(result.status, 201);
+  const forwardedRequest = forwarded[0];
+  assert.equal(forwardedRequest?.path, "/integral/schedules");
+  assert.ok(forwardedRequest?.body);
+  const forwardedBody = JSON.parse(forwardedRequest.body) as Record<
+    string,
+    unknown
+  >;
+  assert.equal(forwardedBody.actor, "pi:session-1");
+  assert.equal(
+    (forwardedBody.profile as Record<string, unknown>).provider,
+    "anthropic",
+  );
+});
+
 test("[GATEWAY-EB8D96FE] CONNECT admits only the exact configured HTTPS host and port, including non-default ports", () => {
   const connection = validateConnection({
     name: "local-tls",
@@ -416,6 +481,7 @@ test("[ENV-D20B7A48] [ENV-3E85C1F9] [ENV-F19A64B2] [ENV-6C3F91E5] container envi
   );
   assert.equal(spec.environment.SSL_CERT_FILE, "/integral-ca/ca-bundle.pem");
   assert.equal(spec.environment.PI_CODING_AGENT_DIR, "/home/pi/.pi/agent");
+  assert.equal(spec.environment.NODE_USE_ENV_PROXY, "1");
   assert.equal("INTEGRAL_HOME" in spec.environment, false);
   assert.equal("AWS_SECRET_ACCESS_KEY" in spec.environment, false);
 });
@@ -537,7 +603,7 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
   assert.equal(spec.sessionId, identity.sessionId);
 });
 
-test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools containing only sentinel authentication", async (t) => {
+test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose remote MCP and authenticated schedule tools", async (t) => {
   const paths = await fixture(t),
     mcp = validateConnection({
       name: "work-docs",
@@ -552,6 +618,9 @@ test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools con
   assert.match(source, /"mcp_" \+ server\.name/);
   assert.match(source, /"name":"work_docs"/);
   assert.match(source, /integral-managed-credential/);
+  assert.match(source, /schedule_create/);
+  assert.match(source, /schedule_update/);
+  assert.match(source, /http:\/\/integral\.control/);
   assert.doesNotMatch(source, /actual-secret/);
 });
 

@@ -34,6 +34,7 @@ import {
   type IntervalRuntime,
 } from "./runtime.ts";
 import { executeEmail, parseEmailOperation } from "./email.ts";
+import { internalFetch } from "./http-client.ts";
 
 function modelBoundary(connection: Connection): Connection {
   if (connection.kind !== "model") return connection;
@@ -343,7 +344,13 @@ export class Gateway {
     let target: URL | undefined;
     try {
       target = new URL(req.url!);
-      await this.forward(req, res, target, sessionId);
+      if (
+        target.protocol === "http:" &&
+        target.hostname === "integral.control" &&
+        !target.port
+      )
+        await this.control(req, res, target, sessionId);
+      else await this.forward(req, res, target, sessionId);
     } catch (error) {
       this.logger.event("info", "gateway.decision", "gateway denied request", {
         verdict:
@@ -358,6 +365,70 @@ export class Gateway {
       });
       respondError(res, error);
     }
+  }
+  private async control(
+    req: IncomingMessage,
+    res: ServerResponse,
+    target: URL,
+    sessionId: string,
+  ): Promise<void> {
+    if (!target.pathname.startsWith("/integral/control/schedules"))
+      throw new IntegralError("unknown integral control endpoint", 404);
+    const schedulerPath = target.pathname.replace(
+        "/integral/control",
+        "/integral",
+      ),
+      body = await bodyJson(req);
+    const upstream = await this.scheduleControl(
+      sessionId,
+      req.method ?? "GET",
+      `${schedulerPath}${target.search}`,
+      body,
+    );
+    const responseBody = await upstream.text();
+    res.writeHead(upstream.status, {
+      "content-type":
+        upstream.headers.get("content-type") ?? "application/json",
+    });
+    res.end(responseBody);
+  }
+  async scheduleControl(
+    sessionId: string,
+    method: string,
+    schedulerPath: string,
+    body: Record<string, unknown>,
+  ): Promise<Response> {
+    if (method !== "GET") {
+      body.actor = `pi:${sessionId}`;
+      delete body.profile;
+    }
+    if (method === "POST" && schedulerPath === "/integral/schedules") {
+      const snapshot = await this.dependencies.internalFetch(
+        this.paths,
+        "gateway",
+        "coordinator",
+        "/integral/snapshot",
+      );
+      if (!snapshot.ok)
+        throw new IntegralError("conversation model is unavailable", 409);
+      const data = (await snapshot.json()) as { modelSelection?: unknown };
+      if (!data.modelSelection)
+        throw new IntegralError(
+          "select a model before creating a schedule",
+          409,
+        );
+      body.profile = data.modelSelection;
+    }
+    return this.dependencies.internalFetch(
+      this.paths,
+      "gateway",
+      "scheduler",
+      schedulerPath,
+      {
+        method,
+        ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
+      },
+    );
   }
   private async forward(
     req: IncomingMessage,
@@ -488,6 +559,7 @@ export interface GatewayDependencies {
     options: http.RequestOptions,
     response: (message: http.IncomingMessage) => void,
   ): http.ClientRequest;
+  internalFetch: typeof internalFetch;
 }
 
 const productionDependencies: GatewayDependencies = {
@@ -497,6 +569,7 @@ const productionDependencies: GatewayDependencies = {
   certificateFor,
   refreshOAuth,
   executeEmail,
+  internalFetch,
   request(target, options, response) {
     return (target.protocol === "https:" ? https : http).request(
       target,

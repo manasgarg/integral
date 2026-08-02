@@ -17,6 +17,11 @@ export interface IntegralPaths {
   piRuntime: string;
   piRuntimeState: string;
   queue: string;
+  taskQueue: string;
+  scheduler: string;
+  schedules: string;
+  occurrences: string;
+  completionOutbox: string;
   ca: string;
 }
 
@@ -74,6 +79,11 @@ export function pathsFor(root: string): IntegralPaths {
     piRuntime: join(data, "pi-runtime"),
     piRuntimeState: join(state, "pi-runtime.json"),
     queue: join(data, "queue.json"),
+    taskQueue: join(data, "task-queue.json"),
+    scheduler: join(data, "scheduler"),
+    schedules: join(data, "scheduler", "schedules"),
+    occurrences: join(data, "scheduler", "occurrences.json"),
+    completionOutbox: join(data, "task-completion-outbox.json"),
     ca: join(data, "ca"),
   };
 }

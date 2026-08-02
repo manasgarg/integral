@@ -89,11 +89,11 @@ Given a supported option has a built-in default
 
 ## CONFIG-A16F73C8 — Configure component ports in the main file
 
-Given `[server]` may define `gateway_port`, `coordinator_port`, and `runner_port`
+Given `[server]` may define `gateway_port`, `coordinator_port`, `runner_port`, and `scheduler_port`
 	When integral resolves those options
 		Then each value must be a decimal port from `1` through `65535`
-			And the three effective ports must be distinct
-			And their built-in defaults are `7310`, `7311`, and `7312`
+			And the four effective ports must be distinct
+			And their built-in defaults are `7310`, `7311`, `7312`, and `7313`
 			And matching `INTEGRAL_*_PORT` variables override file values
 
 ## CONFIG-E82C4A19 — Configure the Pi container image

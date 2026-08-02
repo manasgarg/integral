@@ -105,8 +105,8 @@ level = "error"
     async () =>
       (
         await Promise.all(
-          (["coordinator", "gateway", "runner"] as const).map((component) =>
-            readComponentState(paths, component),
+          (["coordinator", "scheduler", "gateway", "runner"] as const).map(
+            (component) => readComponentState(paths, component),
           ),
         )
       ).every((state) => state?.status === "ready"),
@@ -139,7 +139,12 @@ level = "error"
     child.once("exit", (code, signal) => resolve({ code, signal })),
   );
   assert.deepEqual(exit, { code: 0, signal: null }, stderr);
-  for (const component of ["coordinator", "gateway", "runner"] as const)
+  for (const component of [
+    "coordinator",
+    "scheduler",
+    "gateway",
+    "runner",
+  ] as const)
     await assert.rejects(readFile(componentStatePath(paths, component)), {
       code: "ENOENT",
     });

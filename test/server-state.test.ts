@@ -55,11 +55,16 @@ test("[SERVER-4E19B7A6] deployment-scoped component identity verifies caller, de
 test("[SERVER-3B7F90C2] [CONFIG-35D8A2F1] aggregate health probes each component and degrades on fingerprint or generation mismatch", async (t) => {
   const paths = await fixture(t),
     deployment = deploymentId(paths);
-  for (const component of ["coordinator", "runner", "gateway"] as Component[])
+  for (const component of [
+    "coordinator",
+    "runner",
+    "gateway",
+    "scheduler",
+  ] as Component[])
     await writeComponentState(paths, {
       component,
       deploymentId: deployment,
-      endpoint: `http://127.0.0.1:${component === "gateway" ? 7310 : component === "coordinator" ? 7311 : 7312}`,
+      endpoint: `http://127.0.0.1:${component === "gateway" ? 7310 : component === "coordinator" ? 7311 : component === "runner" ? 7312 : 7313}`,
       pid: process.pid,
       status: "ready",
       fingerprint: component === "runner" ? "different" : "same",
@@ -70,7 +75,7 @@ test("[SERVER-3B7F90C2] [CONFIG-35D8A2F1] aggregate health probes each component
   assert.equal(status.overall, "degraded");
   assert.deepEqual(
     Object.values(status.components).map((c) => c.status),
-    ["ready", "ready", "ready"],
+    ["ready", "ready", "ready", "ready"],
   );
 });
 
@@ -119,14 +124,14 @@ test("[SERVER-6F18C2D9] stale ready files cannot make a stopped component health
   assert.equal(status.components.gateway.status, "stopped");
 });
 
-test("[SERVER-7C21D5E8] coordinator and runner component state publishes loopback endpoints", async (t) => {
+test("[SERVER-7C21D5E8] coordinator, runner, and scheduler component state publishes loopback endpoints", async (t) => {
   const paths = await fixture(t),
     deployment = deploymentId(paths);
-  for (const component of ["coordinator", "runner"] as const) {
+  for (const component of ["coordinator", "runner", "scheduler"] as const) {
     await writeComponentState(paths, {
       component,
       deploymentId: deployment,
-      endpoint: `http://127.0.0.1:${component === "coordinator" ? 7311 : 7312}`,
+      endpoint: `http://127.0.0.1:${component === "coordinator" ? 7311 : component === "runner" ? 7312 : 7313}`,
       pid: 1,
       status: "ready",
       fingerprint: "f",
@@ -165,8 +170,8 @@ test("[SERVER-F886D80C] [SERVER-0D7E29B5] combined orchestration starts every co
       events.push("ready");
       observedReady = (
         await Promise.all(
-          (["coordinator", "gateway", "runner"] as const).map((component) =>
-            readComponentState(paths, component),
+          (["coordinator", "scheduler", "gateway", "runner"] as const).map(
+            (component) => readComponentState(paths, component),
           ),
         )
       ).every((state) => state?.status === "ready");
@@ -181,6 +186,8 @@ test("[SERVER-F886D80C] [SERVER-0D7E29B5] combined orchestration starts every co
     "preflight:runner",
     "create:coordinator",
     "start:coordinator",
+    "create:scheduler",
+    "start:scheduler",
     "create:gateway",
     "start:gateway",
     "create:runner",
@@ -188,9 +195,15 @@ test("[SERVER-F886D80C] [SERVER-0D7E29B5] combined orchestration starts every co
     "ready",
     "stop:runner",
     "stop:gateway",
+    "stop:scheduler",
     "stop:coordinator",
   ]);
-  for (const component of ["coordinator", "gateway", "runner"] as const) {
+  for (const component of [
+    "coordinator",
+    "scheduler",
+    "gateway",
+    "runner",
+  ] as const) {
     assert.equal(await readComponentState(paths, component), undefined);
     const unlock = await acquireLock(join(paths.locks, `${component}.lock`));
     await unlock();
@@ -203,7 +216,7 @@ test("[SERVER-B4E20F76] [SERVER-6F18C2D9] missing sibling state is represented a
   assert.equal(status.overall, "stopped");
   assert.deepEqual(
     Object.values(status.components).map((x) => x.status),
-    ["stopped", "stopped", "stopped"],
+    ["stopped", "stopped", "stopped", "stopped"],
   );
 });
 
@@ -236,9 +249,12 @@ test("[SERVER-C6A830F4] [LOG-E5A81D23] partial startup failure cleans the failin
   assert.deepEqual(events, [
     "create:coordinator",
     "start:coordinator",
+    "create:scheduler",
+    "start:scheduler",
     "create:gateway",
     "start:gateway",
     "stop:gateway",
+    "stop:scheduler",
     "stop:coordinator",
   ]);
   for (const component of ["coordinator", "gateway"] as const) {
@@ -252,7 +268,12 @@ test("[SERVER-F886D80C] [SERVER-FE2BB5CF] [CONNECTION-20778353] runner startup p
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
     config = { ...base, logging: { ...base.logging, level: "error" as const } };
-  for (const component of ["coordinator", "gateway", "runner"] as const) {
+  for (const component of [
+    "coordinator",
+    "gateway",
+    "runner",
+    "scheduler",
+  ] as const) {
     let preflights = 0,
       created: Component | undefined;
     await startComponents(paths, config, component, {

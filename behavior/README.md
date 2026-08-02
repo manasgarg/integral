@@ -14,6 +14,7 @@ specifications for Phase 1.
 - [`container.md`](container.md) — Pi provisioning, isolation, and RPC lifecycle
 - [`chat.md`](chat.md) — terminal interaction and conversation lifecycle
 - [`queue.md`](queue.md) — durable message ordering, editing, and deletion
+- [`schedule.md`](schedule.md) — schedule management and isolated task execution
 - [`failure.md`](failure.md) — cross-cutting failure handling and cleanup
 
 Behavior formatting and ID rules are defined in [`AGENTS.md`](../AGENTS.md).

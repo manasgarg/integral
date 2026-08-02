@@ -14,18 +14,22 @@ deployments may run on one machine when they use different `$INTEGRAL_HOME` root
 non-conflicting component ports.
 
 `INTEGRAL_HOME` selects the deployment root and defaults to `$HOME/.integral`.
-`INTEGRAL_GATEWAY_PORT`, `INTEGRAL_COORDINATOR_PORT`, and `INTEGRAL_RUNNER_PORT` select distinct
-component ports and default to `7310`, `7311`, and `7312`. `INTEGRAL_LOG_LEVEL` and
+`INTEGRAL_GATEWAY_PORT`, `INTEGRAL_COORDINATOR_PORT`, `INTEGRAL_RUNNER_PORT`, and
+`INTEGRAL_SCHEDULER_PORT` select distinct component ports and default to `7310`,
+`7311`, `7312`, and `7313`. `INTEGRAL_LOG_LEVEL` and
 `INTEGRAL_LOG_FORMAT` override logging configuration. All integral-specific variables are
 resolved once when a process starts. The Pi container does not inherit them or
 the rest of the host shell environment.
 
-The server consists of three components: the coordinator owns terminal clients
-and the durable conversation queue, the runner owns Pi containers, and the
-gateway owns governed egress and credential injection. `integral server start` runs
-all three listeners in one process. `integral server start --component <name>` runs
-one component so the three can instead be operated as separate processes. The
-component boundaries and ports are the same in both modes.
+The server consists of four components: the coordinator owns terminal clients,
+the durable conversation queue, and the durable task queue; the runner owns Pi
+containers; the gateway owns governed egress, credential injection, and the
+Pi-facing scheduling control boundary; and the scheduler owns schedule
+definitions, due occurrences, and dispatch retry timing. `integral server
+start` runs all four listeners in one process. `integral server start
+--component <name>` runs one component so the four can instead be operated as
+separate processes. The component boundaries and ports are the same in both
+modes.
 
 The optional main configuration file is `<INTEGRAL_HOME>/config/integral.toml`. It uses a
 strict TOML schema for server ports, runner image and limits, restored context,
@@ -34,14 +38,18 @@ connection records live under `<INTEGRAL_HOME>/config/connections/`; credentials
 never belong in configuration files.
 
 Phase 1 excludes Discord, Slack, multiple users, rooms, channels, research
-workflows, task scheduling, recurring work, host-managed worker storage, worker
-memory, actions, approvals, trust, budgets, email, host-resource connections,
-remote access, and service installation.
+workflows, host-managed worker storage, worker memory, actions, approvals,
+trust, budgets, email, host-resource connections, remote access, and service
+installation.
 
 Host persistence is limited to configuration, connection credentials, the
-gateway CA, process locks, the conversation record, and its message queue. The
-conversation and queue are control-plane state rather than worker-managed
-storage. Queued input must survive terminal and server loss.
+gateway CA, process locks, the conversation record, its message queue, schedule
+definitions and their Git-backed history, scheduled occurrences, the task
+queue, execution history, and the completion outbox. These records are
+control-plane state rather than worker-managed storage. Queued input and
+scheduled work must survive terminal and server loss. The schedule repository
+contains definition revisions only; occurrence state, task results, attempts,
+credentials, and temporary session identity do not belong in it.
 
 External access uses the connection CLI vocabulary inherited from the source
 project. Phase 1 supports catalog model providers, generic HTTP endpoints, and
