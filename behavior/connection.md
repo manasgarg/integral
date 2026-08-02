@@ -1,8 +1,8 @@
 # Connection behaviors
 
 These behaviors preserve the source project's connection CLI ergonomics for a
-single user. Connections may describe model providers, generic HTTP endpoints,
-or remote MCP servers. Every active connection is available to Pi; integral has no
+single user. Connections may describe model providers, email accounts, generic
+HTTP endpoints, or remote MCP servers. Every active connection is available to Pi; integral has no
 grant or revoke concept.
 
 <!-- Automation note (CONNECTION-03C4E791): Guided setup validation and its explicit equivalent are automated; keystroke-level interactive selection is not driven by the non-interactive default suite. -->
@@ -24,6 +24,7 @@ Given integral is installed
 Given integral is installed
 	When the user runs `integral connection catalog`
 		Then the command lists `openai-codex` and `anthropic`
+			And lists `gmail` and `mailgun` email providers
 			And lists generic `http` and `mcp` connection types
 			And identifies the kind of each catalog entry
 			And describes supported OAuth, device-code, key, and no-auth methods
@@ -54,7 +55,7 @@ Given no connection exists for the selected provider
 
 ## CONNECTION-2F7C9A61 — Choose a supported authentication method
 
-Given the selected catalog entry supports one or more authentication methods
+Given the selected catalog entry supports more than one authentication method
 	When the user runs `integral connection add <entry>` without `--auth`
 		Then integral lists the authentication methods supported by that entry
 			And asks the user to choose one before starting authentication
@@ -64,6 +65,10 @@ Given the selected catalog entry supports one or more authentication methods
 			And identifies the supported values
 	When the user supplies a supported method with `--auth <method>`
 		Then integral uses that authentication method without asking
+Given the selected catalog entry supports exactly one authentication method
+	When the user runs `integral connection add <entry>` without `--auth`
+		Then integral selects that method without an echoed authentication prompt
+			And begins its authentication flow directly
 
 ## CONNECTION-512D9A25 — Select an authentication method explicitly
 

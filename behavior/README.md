@@ -8,6 +8,7 @@ specifications for Phase 1.
 - [`config.md`](config.md) — configuration files, validation, and options
 - [`logging.md`](logging.md) — component diagnostics, structure, and redaction
 - [`connection.md`](connection.md) — provider, HTTP, and MCP connection setup
+- [`email.md`](email.md) — Gmail and Mailgun account capabilities and policy
 - [`server.md`](server.md) — combined and separate component lifecycle
 - [`gateway.md`](gateway.md) — health, session identity, and governed egress
 - [`container.md`](container.md) — Pi provisioning, isolation, and RPC lifecycle

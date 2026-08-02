@@ -249,6 +249,10 @@ async function authorizationCode(
   authorization.searchParams.set("code_challenge_method", "S256");
   if (connection.scopes?.length)
     authorization.searchParams.set("scope", connection.scopes.join(" "));
+  if (connection.kind === "email" && connection.provider === "gmail") {
+    authorization.searchParams.set("access_type", "offline");
+    authorization.searchParams.set("prompt", "consent");
+  }
   ui.show(`Open this URL to authorize ${connection.name}:\n${authorization}`);
   const manualAbort = new AbortController();
   const never = () => new Promise<never>(() => undefined);

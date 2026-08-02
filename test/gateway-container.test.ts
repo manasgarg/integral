@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import test from "node:test";
 import {
   decideRequest,
@@ -17,7 +19,7 @@ import {
   writePiCredential,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
-import { validateConnection } from "../src/connections.ts";
+import { saveConnection, validateConnection } from "../src/connections.ts";
 import { Gateway, allowsConnect, gatewayHealth } from "../src/gateway.ts";
 import { Logger } from "../src/logging.ts";
 import { deploymentId, writeComponentState } from "../src/state.ts";
@@ -99,6 +101,179 @@ test("[SERVER-8A31D6C4] gateway lifecycle can run against controlled CA, listene
     "clear",
     "close",
   ]);
+});
+
+test("[EMAIL-89334867] [EMAIL-FB2E88EF] authenticated Pi email calls resolve and log a named account inside the gateway", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    connection = validateConnection({
+      name: "transactional",
+      kind: "email",
+      provider: "mailgun",
+      auth: "key",
+      capabilities: ["send"],
+      domain: "mg.example.com",
+      from_address: "robot@mg.example.com",
+      allowed_recipients: ["person@example.com"],
+    });
+  await saveConnection(paths, connection, "domain-key");
+  const logs: string[] = [];
+  let executed: unknown,
+    responseBody = "",
+    responseStatus = 200;
+  const gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "debug",
+        format: "json",
+        sink: (line) => logs.push(line),
+      }),
+      {
+        async executeEmail(found, credential, operation) {
+          executed = { found: found.name, credential, operation };
+          return { id: "queued-1" };
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          connection: "transactional",
+          operation: "send",
+          to: ["person@example.com"],
+          subject: "Hello",
+          text: "Body",
+        }),
+      ),
+    ]) as unknown as IncomingMessage,
+    response = {
+      setHeader() {},
+      writeHead(status: number) {
+        responseStatus = status;
+        return response;
+      },
+      end(body?: string) {
+        responseBody = body ?? "";
+        return response;
+      },
+    } as unknown as ServerResponse;
+  request.url = "/integral/email";
+  request.method = "POST";
+  request.headers = {
+    "content-type": "application/json",
+    "proxy-authorization": `Basic ${Buffer.from("integral:session-token").toString("base64")}`,
+  };
+  await gateway.reload(true);
+  gateway.sessions.set("session-token", "session-1");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  assert.equal(responseStatus, 200);
+  assert.deepEqual(JSON.parse(responseBody), { id: "queued-1" });
+  assert.deepEqual(executed, {
+    found: "transactional",
+    credential: "domain-key",
+    operation: {
+      operation: "send",
+      to: ["person@example.com"],
+      subject: "Hello",
+      text: "Body",
+    },
+  });
+  const event = logs.find((line) => line.includes("gateway.email"));
+  assert.ok(event);
+  for (const expected of [
+    "transactional",
+    "mailgun",
+    "send",
+    "session-1",
+    '"verdict":"allow"',
+  ])
+    assert.match(event, new RegExp(expected));
+  assert.doesNotMatch(event, /person@example|Hello|Body|domain-key/);
+});
+
+test("[EMAIL-FB2E88EF] email gateway failures log bounded routing context without message content", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    connection = validateConnection({
+      name: "transactional",
+      kind: "email",
+      provider: "mailgun",
+      auth: "key",
+      capabilities: ["send"],
+      domain: "mg.example.com",
+      from_address: "robot@mg.example.com",
+      allowed_recipients: ["person@example.com"],
+    });
+  await saveConnection(paths, connection, "domain-key");
+  const logs: string[] = [],
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "debug",
+        format: "json",
+        sink: (line) => logs.push(line),
+      }),
+      {
+        async executeEmail() {
+          throw new Error("provider refused safely");
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          connection: "transactional",
+          operation: "send",
+          to: ["private-recipient@example.com"],
+          subject: "private subject",
+          text: "private body",
+        }),
+      ),
+    ]) as unknown as IncomingMessage,
+    response = {
+      writeHead() {
+        return response;
+      },
+      end() {
+        return response;
+      },
+    } as unknown as ServerResponse;
+  request.url = "/integral/email";
+  request.method = "POST";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:session-token").toString("base64")}`,
+  };
+  await gateway.reload(true);
+  gateway.sessions.set("session-token", "session-1");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  const event = logs.find((line) => line.includes("gateway.email_failed"));
+  assert.ok(event);
+  for (const expected of [
+    "transactional",
+    "mailgun",
+    "send",
+    "session-1",
+    "provider refused safely",
+  ])
+    assert.match(event, new RegExp(expected));
+  assert.doesNotMatch(
+    event,
+    /private-recipient|private subject|private body|domain-key/,
+  );
 });
 
 test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only an explicit Basic session token", () => {

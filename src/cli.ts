@@ -56,12 +56,16 @@ Commands:
 const CONNECTION_HELP = `Usage: integral connection <command>
 
 Commands:
-  catalog    show model providers and generic connection types
+  catalog    show model, email, and generic connection types
   add        guided setup (or: add <entry> --auth <method> [options])
   ls         list configured connections
   rm <name>  deliberately remove a connection
 
 All active connections are available automatically. There are no grant or revoke commands.
+
+Email examples:
+  integral connection add gmail --auth oauth --account <email> --client-id <id> --capabilities read,search,send --allowed-recipients <addresses>
+  integral connection add mailgun --auth key --domain <domain> --from <email> --capabilities send --allowed-recipients <addresses>
 `;
 const SERVER_HELP = `Usage: integral server start [--component <name>]
        integral server status [--json]
@@ -376,7 +380,7 @@ async function explicitConnection(args: string[]): Promise<Connection> {
   const requestedAuth = flag(args, "--auth");
   let ask: ((message: string) => Promise<string>) | undefined;
   let rl: ReturnType<typeof createInterface> | undefined;
-  if (!requestedAuth && input.isTTY) {
+  if (!requestedAuth && entry.auth.length > 1 && input.isTTY) {
     rl = createInterface({ input, output });
     ask = (message) => rl!.question(message);
   }
@@ -387,7 +391,8 @@ async function explicitConnection(args: string[]): Promise<Connection> {
     rl?.close();
   }
   const raw: Record<string, unknown> = { name, kind: entry.kind, auth };
-  if (entry.kind === "model") raw.provider = entryName;
+  if (entry.kind === "model" || entry.kind === "email")
+    raw.provider = entryName;
   else raw.url = flag(args, "--url");
   const methods = flag(args, "--methods");
   if (methods) raw.methods = methods.split(",");
@@ -400,11 +405,80 @@ async function explicitConnection(args: string[]): Promise<Connection> {
     ["--device-authorization-url", "device_authorization_url"],
     ["--client-id", "client_id"],
     ["--transport", "transport"],
+    ["--account", "account"],
+    ["--domain", "domain"],
+    ["--from", "from_address"],
+    ["--region", "region"],
   ] as const) {
     const value = flag(args, option);
     if (value) raw[key] = value;
   }
+  for (const [option, key] of [
+    ["--capabilities", "capabilities"],
+    ["--allowed-recipients", "allowed_recipients"],
+  ] as const) {
+    const value = flag(args, option);
+    if (value) raw[key] = commaSeparated(value);
+  }
+  let details: ReturnType<typeof createInterface> | undefined;
+  try {
+    await completeEmailOptions(
+      entryName,
+      raw,
+      input.isTTY
+        ? (message) => {
+            details ??= createInterface({ input, output });
+            return details.question(message);
+          }
+        : undefined,
+    );
+  } finally {
+    details?.close();
+  }
   return validateConnection(raw);
+}
+
+function commaSeparated(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export async function completeEmailOptions(
+  provider: string,
+  raw: Record<string, unknown>,
+  ask?: (message: string) => Promise<string>,
+): Promise<void> {
+  if (provider !== "gmail" && provider !== "mailgun") return;
+  if (raw.capabilities === undefined && provider === "mailgun")
+    raw.capabilities = ["send"];
+  if (raw.capabilities === undefined && ask) {
+    const defaults = "read,search,send";
+    raw.capabilities = commaSeparated(
+      (await ask(`Capabilities [${defaults}]: `)).trim() || defaults,
+    );
+  }
+  if (provider === "gmail") {
+    if (raw.account === undefined && ask)
+      raw.account = await ask("Account email: ");
+    if (raw.client_id === undefined && ask)
+      raw.client_id = await ask("OAuth client ID: ");
+  } else {
+    if (raw.domain === undefined && ask)
+      raw.domain = await ask("Mailgun domain: ");
+    if (raw.from_address === undefined && ask)
+      raw.from_address = await ask("From address: ");
+  }
+  if (
+    Array.isArray(raw.capabilities) &&
+    raw.capabilities.includes("send") &&
+    raw.allowed_recipients === undefined &&
+    ask
+  )
+    raw.allowed_recipients = commaSeparated(
+      await ask("Allowed recipients (comma-separated): "),
+    );
 }
 
 export async function selectAuthentication(
@@ -419,6 +493,7 @@ export async function selectAuthentication(
       );
     return requested as AuthMethod;
   }
+  if (supported.length === 1) return supported[0]!;
   if (!ask)
     throw new IntegralError(
       `authentication method is required in a non-interactive terminal; use --auth with one of: ${supported.join(", ")}`,
@@ -449,21 +524,23 @@ async function guidedConnection(): Promise<Connection> {
     if (!entry) throw new IntegralError("invalid selection");
     const name =
         (await rl.question(`Name [${entry.name}]: `)).trim() || entry.name,
-      defaultAuth = "defaultAuth" in entry ? entry.defaultAuth : entry.auth[0];
-    const chosenAuth =
-      (
-        await rl.question(
-          `Authentication (${entry.auth.join("/")}) [${defaultAuth}]: `,
-        )
-      ).trim() || defaultAuth;
+      defaultAuth = "defaultAuth" in entry ? entry.defaultAuth : entry.auth[0],
+      chosenAuth =
+        entry.auth.length === 1
+          ? entry.auth[0]
+          : (
+              await rl.question(
+                `Authentication (${entry.auth.join("/")}) [${defaultAuth}]: `,
+              )
+            ).trim() || defaultAuth;
     const args = [entry.name, "--name", name, "--auth", chosenAuth];
-    if (entry.kind !== "model") {
+    if (entry.kind === "http" || entry.kind === "mcp") {
       args.push("--url", await rl.question("URL: "));
       const path = (await rl.question("Path prefix [URL path]: ")).trim();
       if (path) args.push("--path-prefix", path);
     }
     if (
-      entry.kind !== "model" &&
+      (entry.kind === "http" || entry.kind === "mcp") &&
       (chosenAuth === "oauth" || chosenAuth === "device-code")
     ) {
       args.push(
@@ -485,6 +562,34 @@ async function guidedConnection(): Promise<Connection> {
         await rl.question("Transport (streamable-http/sse) [streamable-http]: ")
       ).trim();
       if (transport) args.push("--transport", transport);
+    }
+    if (entry.kind === "email") {
+      const defaultCapabilities =
+          entry.name === "gmail" ? "read,search,send" : "send",
+        capabilities =
+          (
+            await rl.question(`Capabilities [${defaultCapabilities}]: `)
+          ).trim() || defaultCapabilities;
+      args.push("--capabilities", capabilities);
+      if (entry.name === "gmail")
+        args.push(
+          "--account",
+          await rl.question("Account email: "),
+          "--client-id",
+          await rl.question("OAuth client ID: "),
+        );
+      else
+        args.push(
+          "--domain",
+          await rl.question("Mailgun domain: "),
+          "--from",
+          await rl.question("From address: "),
+        );
+      if (capabilities.split(",").includes("send"))
+        args.push(
+          "--allowed-recipients",
+          await rl.question("Allowed recipients (comma-separated): "),
+        );
     }
     return await explicitConnection(args);
   } finally {

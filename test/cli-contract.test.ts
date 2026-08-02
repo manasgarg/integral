@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  completeEmailOptions,
   createTalkTerminal,
   main,
   queueCommand,
@@ -84,13 +85,16 @@ test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and
   assert.doesNotMatch(result.stdout, /^\s+(grant|revoke)\b/m);
 });
 
-test("[CONNECTION-75EC27E8] catalog describes model, HTTP, MCP and every supported authentication family", async () => {
+test("[CONNECTION-75EC27E8] catalog describes model, email, HTTP, MCP and every supported authentication family", async () => {
   const result = await capture(["connection", "catalog"]);
   for (const word of [
     "openai-codex",
     "anthropic",
     "http",
     "mcp",
+    "gmail",
+    "mailgun",
+    "email",
     "model",
     "oauth",
     "device-code",
@@ -164,6 +168,48 @@ test("[CONNECTION-2F7C9A61] interactive connection setup asks for a supported au
     "oauth",
   );
   assert.equal(prompts, 1, "--auth must bypass the prompt");
+});
+
+test("[CONNECTION-2F7C9A61] a singleton authentication method is selected without an echoed prompt", async () => {
+  let prompts = 0;
+  assert.equal(
+    await selectAuthentication(["key"], undefined, async () => {
+      prompts++;
+      return "secret-that-must-not-be-echoed";
+    }),
+    "key",
+  );
+  assert.equal(await selectAuthentication(["key"]), "key");
+  assert.equal(prompts, 0);
+});
+
+test("[EMAIL-B765A312] interactive Mailgun setup collects policy before hidden key authentication", async () => {
+  const answers = ["mg.example.com", "robot@mg.example.com", "*@example.com"],
+    prompts: string[] = [],
+    raw: Record<string, unknown> = {
+      name: "mailgun",
+      kind: "email",
+      provider: "mailgun",
+      auth: "key",
+    };
+  await completeEmailOptions("mailgun", raw, async (message) => {
+    prompts.push(message);
+    return answers.shift()!;
+  });
+  assert.deepEqual(raw, {
+    name: "mailgun",
+    kind: "email",
+    provider: "mailgun",
+    auth: "key",
+    capabilities: ["send"],
+    domain: "mg.example.com",
+    from_address: "robot@mg.example.com",
+    allowed_recipients: ["*@example.com"],
+  });
+  assert.doesNotMatch(
+    prompts.join("\n"),
+    /Authentication|Capabilities|API key|Credential/,
+  );
 });
 
 test("[CONNECTION-2F7C9A61] non-interactive connection setup requires --auth and names supported choices", async (t) => {

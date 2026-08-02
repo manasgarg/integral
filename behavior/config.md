@@ -244,8 +244,9 @@ Given a connection file may define `name`, `kind`, `provider`, `url`, and `auth`
 		Then `name` must contain at most 64 filesystem-safe letters, numbers, dots, underscores, or hyphens
 			And must start with a letter or number
 			And must be unique across loaded connection files
-			And `kind` accepts only `model`, `http`, or `mcp`
+			And `kind` accepts only `model`, `http`, `mcp`, or `email`
 			And `provider` is required for `model` and must name a catalog provider
+			And `provider` is required for `email` and must name an email provider
 			And `url` is required for `http` and `mcp` and must use HTTP or HTTPS
 			And `auth` accepts only `oauth`, `device-code`, `key`, or `none`
 			And generic connections must declare `auth` explicitly

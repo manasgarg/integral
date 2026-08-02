@@ -10,6 +10,7 @@ import {
   freshSessionHome,
   newSessionIdentity,
   writeMcpExtension,
+  writeEmailExtension,
   writePiCredential,
   type ContainerBackend,
   type PiRuntime,
@@ -38,6 +39,7 @@ export interface RunnerDependencies {
   freshSessionHome: typeof freshSessionHome;
   newSessionIdentity: typeof newSessionIdentity;
   writeMcpExtension: typeof writeMcpExtension;
+  writeEmailExtension: typeof writeEmailExtension;
   writePiCredential: typeof writePiCredential;
   listen(server: http.Server, port: number, address: string): Promise<void>;
   close(server: http.Server): Promise<void>;
@@ -57,6 +59,7 @@ const productionDependencies: RunnerDependencies = {
   freshSessionHome,
   newSessionIdentity,
   writeMcpExtension,
+  writeEmailExtension,
   writePiCredential,
   async listen(server, port, address) {
     await new Promise<void>((resolve, reject) => {
@@ -283,11 +286,13 @@ export class Runner {
       );
     const all = await listConnections(this.paths),
       model = selectModel(all, selection),
-      mcp = all.filter((c) => c.kind === "mcp");
+      mcp = all.filter((c) => c.kind === "mcp"),
+      email = all.filter((c) => c.kind === "email" && c.state === "active");
     const identity = this.dependencies.newSessionIdentity(),
       ca = await this.dependencies.ensureCa(this.paths),
       home = await this.dependencies.freshSessionHome();
     await this.dependencies.writeMcpExtension(home, mcp);
+    await this.dependencies.writeEmailExtension(home, email);
     await this.dependencies.writePiCredential(home, model);
     const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
     gatewayUrl.hostname = "host.integral.internal";

@@ -194,6 +194,35 @@ export async function writeMcpExtension(
   await atomicWrite(join(directory, "integral-mcp.ts"), source);
 }
 
+export async function writeEmailExtension(
+  sessionHome: string,
+  connections: Connection[],
+): Promise<void> {
+  if (!connections.length) return;
+  const directory = join(sessionHome, ".pi", "agent", "extensions");
+  await ensureDir(directory);
+  const declarations = connections.map((connection) => ({
+    name: connection.name,
+    toolName: connection.name.replace(/[^A-Za-z0-9_]/g, "_"),
+    capabilities: connection.capabilities,
+  }));
+  const source = `import { request } from "node:http";
+import { Type } from "typebox";
+const accounts = ${JSON.stringify(declarations)};
+function endpoint() { const proxy = new URL(process.env.HTTP_PROXY); const authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = "/integral/email"; return { url: proxy.toString(), authorization }; }
+function transportFailure(error, signal) { if (signal?.aborted) return new Error("email gateway request was cancelled"); const cause = error && typeof error === "object" && error.cause && typeof error.cause === "object" ? error.cause : error; const code = cause && typeof cause === "object" && typeof cause.code === "string" && /^[A-Z0-9_]{1,40}$/.test(cause.code) ? cause.code : undefined; return new Error("email gateway request failed" + (code ? ": " + code : "")); }
+function post(target, body, signal) { return new Promise((resolve, reject) => { if (signal?.aborted) { reject(transportFailure(undefined, signal)); return; } const chunks = []; let size = 0, settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }; const req = request(target.url, { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), "proxy-authorization": target.authorization } }, (res) => { res.on("data", (chunk) => { size += chunk.length; if (size > 500000) req.destroy(new Error("email gateway response exceeded limit")); else chunks.push(chunk); }); res.on("end", () => finish(() => resolve({ status: res.statusCode || 500, text: Buffer.concat(chunks).toString("utf8") }))); res.on("error", (error) => finish(() => reject(error))); }); const abort = () => req.destroy(transportFailure(undefined, signal)); signal?.addEventListener("abort", abort, { once: true }); req.on("error", (error) => finish(() => reject(error))); req.end(body); }); }
+async function call(connection, operation, params, signal) { const target = endpoint(); let response; try { response = await post(target, JSON.stringify({ connection, operation, ...params }), signal); } catch (error) { throw transportFailure(error, signal); } if (response.status < 200 || response.status >= 300) throw new Error(response.text.trim() || "email operation failed"); return JSON.parse(response.text); }
+const schemas = {
+  search: Type.Object({ query: Type.String(), maxResults: Type.Optional(Type.Number({ minimum: 1, maximum: 20 })) }),
+  read: Type.Object({ messageId: Type.String() }),
+  send: Type.Object({ to: Type.Array(Type.String()), cc: Type.Optional(Type.Array(Type.String())), bcc: Type.Optional(Type.Array(Type.String())), subject: Type.String(), text: Type.String() })
+};
+export default function (pi) { for (const account of accounts) for (const capability of account.capabilities) pi.registerTool({ name: "email_" + account.toolName + "_" + capability, label: "Email " + account.name + " " + capability, description: capability + " email using the " + account.name + " account", parameters: schemas[capability], async execute(_id, params, signal) { const result = await call(account.name, capability, params, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: { account: account.name, capability } }; } }); }
+`;
+  await atomicWrite(join(directory, "integral-email.ts"), source);
+}
+
 export async function writePiCredential(
   sessionHome: string,
   model: Connection,
