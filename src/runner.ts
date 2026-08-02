@@ -285,10 +285,15 @@ export class Runner {
     const all = await listConnections(this.paths),
       model = selectModel(all, task.profile),
       mcp = all.filter((connection) => connection.kind === "mcp"),
+      email = all.filter(
+        (connection) =>
+          connection.kind === "email" && connection.state === "active",
+      ),
       identity = this.dependencies.newSessionIdentity(),
       ca = await this.dependencies.ensureCa(this.paths),
       home = await this.dependencies.freshSessionHome();
     await this.dependencies.writeMcpExtension(home, mcp);
+    await this.dependencies.writeEmailExtension(home, email);
     await this.dependencies.writePiCredential(home, model);
     const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
     gatewayUrl.hostname = "host.integral.internal";

@@ -405,6 +405,20 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
     }),
     "secret",
   );
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "mail",
+      kind: "email",
+      provider: "mailgun",
+      auth: "key",
+      capabilities: ["send"],
+      domain: "mg.example.com",
+      from_address: "robot@mg.example.com",
+      allowed_recipients: ["person@example.com"],
+    }),
+    "mail-secret",
+  );
   for (const component of ["coordinator", "gateway"] as const)
     await writeComponentState(paths, {
       component,
@@ -413,7 +427,7 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
       pid: process.pid,
       status: "ready",
       fingerprint: config.fingerprint,
-      connectionGeneration: 1,
+      connectionGeneration: 2,
       startedAt: "now",
     });
   const spec: ContainerSpec = {
@@ -516,6 +530,14 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
         sessionToken: "task-token",
       }),
       writeMcpExtension: async () => undefined,
+      async writeEmailExtension(home, connections) {
+        assert.equal(home, "/test/task-home");
+        assert.deepEqual(
+          connections.map((connection) => connection.name),
+          ["mail"],
+        );
+        calls.push("task:email-tools");
+      },
       writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
@@ -528,6 +550,7 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
   assert.deepEqual(
     calls.filter((call) => call.startsWith("task:")),
     [
+      "task:email-tools",
       "task:create",
       "task:start",
       "task:prompt:perform scheduled work",
