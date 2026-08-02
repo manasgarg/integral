@@ -222,3 +222,8 @@ Given conversation events were acknowledged before the coordinator stopped or cr
 	When a terminal attaches after that restart
 		Then it receives the restored conversation and current queue
 			And follows subsequent events in the same logical conversation
+	When an attached terminal loses the coordinator because the server restarts
+		Then the terminal remains open and reports that it is reconnecting
+			And reconnects to the coordinator for the same `$INTEGRAL_HOME`
+			And reconciles from the restored snapshot without rendering acknowledged conversation events twice
+			And accepts new local commands and messages after reconnection

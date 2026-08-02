@@ -1233,16 +1233,19 @@ export async function talkCommand(
     );
     if (!response.ok || !response.body)
       throw new IntegralError("could not attach to coordinator");
-    follow = consumeEvents(
-      response.body,
+    follow = followCoordinatorEvents(
+      response,
+      paths,
+      dependencies,
+      abort.signal,
       rl.writeEvent?.bind(rl) ?? dependencies.writeOutput,
       terminalId,
       Boolean(rl.colors),
       (working) => rl.setWorking?.(working),
-    ).catch((error) => {
-      if (!abort.signal.aborted)
-        dependencies.writeError(`integral: ${messageOf(error)}\n`);
-    });
+      (next) => {
+        endpoint = next;
+      },
+    );
     while (true) {
       let line: string;
       try {
@@ -1253,21 +1256,21 @@ export async function talkCommand(
       const text = line.trim();
       if (!text) continue;
       if (text === "/exit") break;
-      if (text === "/help") {
-        dependencies.writeOutput(TALK_HELP);
-        continue;
-      }
-      if (text === "/status") {
-        const status = await fetchJson(
-          new URL("/integral/status", endpoint),
-          dependencies.fetch,
-        );
-        dependencies.writeOutput(`${JSON.stringify(status, null, 2)}\n`);
-        continue;
-      }
-      const model = text.match(/^\/model(?:\s+(.*))?$/);
-      if (model) {
-        try {
+      try {
+        if (text === "/help") {
+          dependencies.writeOutput(TALK_HELP);
+          continue;
+        }
+        if (text === "/status") {
+          const status = await fetchJson(
+            new URL("/integral/status", endpoint),
+            dependencies.fetch,
+          );
+          dependencies.writeOutput(`${JSON.stringify(status, null, 2)}\n`);
+          continue;
+        }
+        const model = text.match(/^\/model(?:\s+(.*))?$/);
+        if (model) {
           await chooseConversationModel(
             model[1]?.trim().split(/\s+/).filter(Boolean) ?? [],
             rl,
@@ -1275,59 +1278,59 @@ export async function talkCommand(
             dependencies.fetch,
             dependencies.writeOutput,
           );
-        } catch (error) {
-          dependencies.writeError(`integral: ${messageOf(error)}\n`);
+          continue;
         }
-        continue;
-      }
-      if (text === "/queue ls") {
-        const snap = (await fetchJson(
-          new URL("/integral/snapshot", endpoint),
-          dependencies.fetch,
-        )) as {
-          queue: { id: string; text: string; status: string }[];
-        };
-        for (const item of snap.queue)
-          dependencies.writeOutput(
-            `${item.status}\t${item.id}\t${item.text}\n`,
+        if (text === "/queue ls") {
+          const snap = (await fetchJson(
+            new URL("/integral/snapshot", endpoint),
+            dependencies.fetch,
+          )) as {
+            queue: { id: string; text: string; status: string }[];
+          };
+          for (const item of snap.queue)
+            dependencies.writeOutput(
+              `${item.status}\t${item.id}\t${item.text}\n`,
+            );
+          continue;
+        }
+        const edit = text.match(/^\/queue edit\s+(\S+)\s+(.+)$/);
+        if (edit) {
+          await requestOk(
+            new URL(`/integral/queue/${edit[1]}`, endpoint),
+            {
+              method: "PATCH",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ text: edit[2] }),
+            },
+            dependencies.fetch,
           );
-        continue;
-      }
-      const edit = text.match(/^\/queue edit\s+(\S+)\s+(.+)$/);
-      if (edit) {
+          continue;
+        }
+        const del = text.match(/^\/queue delete\s+(\S+)$/);
+        if (del) {
+          await requestOk(
+            new URL(`/integral/queue/${del[1]}`, endpoint),
+            { method: "DELETE" },
+            dependencies.fetch,
+          );
+          continue;
+        }
+        if (text.startsWith("/")) {
+          dependencies.writeError("Unknown local command. Enter /help.\n");
+          continue;
+        }
         await requestOk(
-          new URL(`/integral/queue/${edit[1]}`, endpoint),
+          new URL("/integral/messages", endpoint),
           {
-            method: "PATCH",
+            method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ text: edit[2] }),
+            body: JSON.stringify({ text, terminalId }),
           },
           dependencies.fetch,
         );
-        continue;
+      } catch (error) {
+        dependencies.writeError(`integral: ${messageOf(error)}\n`);
       }
-      const del = text.match(/^\/queue delete\s+(\S+)$/);
-      if (del) {
-        await requestOk(
-          new URL(`/integral/queue/${del[1]}`, endpoint),
-          { method: "DELETE" },
-          dependencies.fetch,
-        );
-        continue;
-      }
-      if (text.startsWith("/")) {
-        dependencies.writeError("Unknown local command. Enter /help.\n");
-        continue;
-      }
-      await requestOk(
-        new URL("/integral/messages", endpoint),
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text, terminalId }),
-        },
-        dependencies.fetch,
-      );
     }
     return 0;
   } finally {
@@ -1466,12 +1469,96 @@ function renderModelChoices(
   writeOutput(lines.join("\n"));
 }
 
+interface TalkEventState {
+  sawSnapshot: boolean;
+  lastConversationSequence: number;
+}
+
+async function followCoordinatorEvents(
+  initialResponse: Response,
+  paths: IntegralPaths,
+  dependencies: TalkDependencies,
+  signal: AbortSignal,
+  writeOutput: (text: string) => void,
+  terminalId: string,
+  colors: boolean,
+  setWorking: (working: boolean) => void,
+  connected: (endpoint: string) => void,
+): Promise<void> {
+  const state: TalkEventState = {
+    sawSnapshot: false,
+    lastConversationSequence: 0,
+  };
+  let response: Response | undefined = initialResponse,
+    reconnecting = false;
+  while (!signal.aborted) {
+    try {
+      if (!response) {
+        const endpoint = await dependencies.componentEndpoint(
+          paths,
+          "coordinator",
+        );
+        await dependencies.verifiedFetch(
+          paths,
+          "coordinator",
+          "/integral/health",
+        );
+        response = await dependencies.fetch(
+          new URL("/integral/events", endpoint),
+          { signal },
+        );
+        if (!response.ok || !response.body)
+          throw new IntegralError("could not attach to coordinator");
+        connected(endpoint);
+        if (reconnecting) writeOutput("integral: coordinator reconnected\n");
+      }
+      await consumeEvents(
+        response.body!,
+        writeOutput,
+        terminalId,
+        colors,
+        setWorking,
+        state,
+      );
+      if (signal.aborted) return;
+      throw new IntegralError("coordinator event stream ended");
+    } catch {
+      if (signal.aborted) return;
+      setWorking(false);
+      if (!reconnecting)
+        dependencies.writeError(
+          "integral: coordinator disconnected; reconnecting\n",
+        );
+      reconnecting = true;
+      response = undefined;
+      await reconnectDelay(signal);
+    }
+  }
+}
+
+async function reconnectDelay(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, 500);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
 async function consumeEvents(
   stream: ReadableStream<Uint8Array>,
   writeOutput: (text: string) => void = (text) => process.stdout.write(text),
   terminalId?: string,
   colors = false,
   setWorking: (working: boolean) => void = () => undefined,
+  state: TalkEventState = {
+    sawSnapshot: false,
+    lastConversationSequence: 0,
+  },
 ): Promise<void> {
   const reader = stream.getReader(),
     decoder = new TextDecoder();
@@ -1499,7 +1586,7 @@ async function consumeEvents(
       const value = JSON.parse(data) as Record<string, unknown>;
       if (event === "snapshot") {
         const snapshot = value as {
-          conversation: { type: string; text?: string }[];
+          conversation: { type: string; text?: string; sequence?: number }[];
           queue?: { status: string }[];
         };
         const latestSession = snapshot.conversation
@@ -1509,27 +1596,54 @@ async function consumeEvents(
         inFlight =
           snapshot.queue?.some((item) => item.status === "in-flight") ?? false;
         updateWorking();
-        for (const item of snapshot.conversation)
-          if (item.text && item.type !== "session") {
+        const firstSnapshot = !state.sawSnapshot;
+        for (const item of snapshot.conversation) {
+          const unseen =
+            firstSnapshot ||
+            (typeof item.sequence === "number" &&
+              item.sequence > state.lastConversationSequence);
+          if (typeof item.sequence === "number")
+            state.lastConversationSequence = Math.max(
+              state.lastConversationSequence,
+              item.sequence,
+            );
+          if (unseen && item.text && item.type !== "session") {
             writeOutput(
               item.type === "user"
                 ? humanMessage(item.text, colors)
                 : `∮ ${item.text}\n`,
             );
           }
+        }
+        state.sawSnapshot = true;
       } else if (event === "conversation.user") {
         const item = value as {
           type: string;
           text?: string;
           terminalId?: string;
+          sequence?: number;
         };
+        if (typeof item.sequence === "number")
+          state.lastConversationSequence = Math.max(
+            state.lastConversationSequence,
+            item.sequence,
+          );
         if (item.text && item.terminalId !== terminalId)
           writeOutput(humanMessage(item.text, colors));
       } else if (
         event === "conversation.assistant" ||
         event === "conversation.error"
       ) {
-        const item = value as { type: string; text?: string };
+        const item = value as {
+          type: string;
+          text?: string;
+          sequence?: number;
+        };
+        if (typeof item.sequence === "number")
+          state.lastConversationSequence = Math.max(
+            state.lastConversationSequence,
+            item.sequence,
+          );
         inFlight = false;
         updateWorking();
         if (item.text) writeOutput(`∮ ${item.text}\n`);
