@@ -74,6 +74,7 @@ const managed = new Set([
   "PIP_CERT",
   "PI_CODING_AGENT_DIR",
   "NODE_USE_ENV_PROXY",
+  "GH_TOKEN",
 ]);
 export function isManagedContainerVariable(name: string): boolean {
   return managed.has(name) || name.startsWith("INTEGRAL_");
@@ -92,6 +93,7 @@ export function buildContainerSpec(options: {
   selectedModel: string;
   image?: string;
   mcp: Connection[];
+  connections?: Connection[];
 }): ContainerSpec {
   const proxy = new URL(options.gatewayUrl);
   proxy.username = "integral";
@@ -123,6 +125,10 @@ export function buildContainerSpec(options: {
   environment[
     provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"
   ] = SENTINEL;
+  if (
+    options.connections?.some((connection) => connection.provider === "github")
+  )
+    environment.GH_TOKEN = SENTINEL;
   const args = [
     "--mode",
     "rpc",

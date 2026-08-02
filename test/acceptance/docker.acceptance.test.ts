@@ -162,3 +162,26 @@ test("[BOX-E1F472A1] managed Pi image exposes its model catalog through integral
     ),
   );
 });
+
+test("[CONNECTION-12C87631] managed Pi image includes Git and GitHub clients", async (t) => {
+  assert.doesNotThrow(
+    () => execFileSync("docker", ["info"], { stdio: "ignore" }),
+    "Docker acceptance requires a reachable Docker daemon",
+  );
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    image = ensureContainerImage(config, "0.80.3");
+  for (const command of [
+    ["git", "--version"],
+    ["gh", "--version"],
+  ])
+    assert.doesNotThrow(() =>
+      execFileSync(
+        "docker",
+        ["run", "--rm", "--network", "none", image, ...command],
+        {
+          stdio: "ignore",
+        },
+      ),
+    );
+});

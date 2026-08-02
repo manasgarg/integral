@@ -524,6 +524,46 @@ test("[GATEWAY-A2BBBBE8] a matching connection injects its host credential only 
   );
 });
 
+test("[CONNECTION-12C87631] GitHub API and smart HTTP receive host-specific authentication", () => {
+  const connection = validateConnection({
+      name: "github",
+      kind: "http",
+      provider: "github",
+      auth: "key",
+      hosts: ["api.github.com", "github.com"],
+    }),
+    candidates = [{ connection, credential: "real-token" }];
+  assert.equal(
+    decideRequest(
+      "GET",
+      new URL("https://api.github.com/user"),
+      { authorization: `token ${SENTINEL}` },
+      candidates,
+    ).headers.authorization,
+    "token real-token",
+  );
+  assert.equal(
+    decideRequest(
+      "POST",
+      new URL("https://github.com/acme/project.git/git-upload-pack"),
+      {},
+      candidates,
+    ).headers.authorization,
+    `Basic ${Buffer.from("x-access-token:real-token").toString("base64")}`,
+  );
+  assert.equal(allowsConnect(candidates, "github.com", 443), true);
+  assert.equal(allowsConnect(candidates, "api.github.com", 443), true);
+  assert.equal(allowsConnect(candidates, "github.com", 22), false);
+  assert.equal(
+    allowsConnect(candidates, "objects.githubusercontent.com", 443),
+    false,
+  );
+  assert.throws(
+    () => decideRequest("GET", new URL("https://evil.test/"), {}, candidates),
+    /policy denied/,
+  );
+});
+
 test("[GATEWAY-EB8D96FE] destinations, methods, paths, schemes, and ports outside active boundaries are denied", () => {
   const connection = validateConnection({
     name: "api",
@@ -652,6 +692,39 @@ test("[CONNECTION-0FB2F92A] [CONNECTION-D20F6A85] real credentials are absent fr
   const rendered = JSON.stringify(spec);
   assert.doesNotMatch(rendered, /actual-provider-secret/);
   assert.match(rendered, new RegExp(SENTINEL));
+});
+
+test("[CONNECTION-12C87631] an active GitHub connection exposes only GH_TOKEN's sentinel", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    model = validateConnection({
+      name: "m",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    github = validateConnection({
+      name: "github",
+      kind: "http",
+      provider: "github",
+      auth: "key",
+      hosts: ["api.github.com", "github.com"],
+    }),
+    spec = buildContainerSpec({
+      config,
+      selectedModel: "claude-sonnet-4-6",
+      gatewayUrl: "http://host.integral.internal:7310",
+      caCert: "/ca",
+      caBundle: "/bundle",
+      sessionHome: "/session",
+      ...newSessionIdentity(),
+      model,
+      mcp: [],
+      connections: [github],
+    });
+  assert.equal(spec.environment.GH_TOKEN, SENTINEL);
+  assert.equal(isManagedContainerVariable("GH_TOKEN"), true);
+  assert.doesNotMatch(JSON.stringify(spec), /real-github-token/);
 });
 
 test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-only, capability-free, bounded, and locked to an internal network", async (t) => {

@@ -5,7 +5,11 @@ import { readFile } from "node:fs/promises";
 import type { Duplex } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import type { Connection } from "./connections.ts";
-import { credentialFor, loadConnections } from "./connections.ts";
+import {
+  connectionBoundaries,
+  credentialFor,
+  loadConnections,
+} from "./connections.ts";
 import type { IntegralPaths } from "./paths.ts";
 import type { EffectiveConfig } from "./config.ts";
 import {
@@ -55,12 +59,11 @@ export function allowsConnect(
 ): boolean {
   if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
   return candidates.some(({ connection }) => {
-    if (!connection.url) return false;
-    const url = new URL(connection.url);
-    return (
-      url.protocol === "https:" &&
-      url.hostname.toLowerCase() === host.toLowerCase() &&
-      Number(url.port || 443) === port
+    return connectionBoundaries(connection).some(
+      (url) =>
+        url.protocol === "https:" &&
+        url.hostname.toLowerCase() === host.toLowerCase() &&
+        Number(url.port || 443) === port,
     );
   });
 }

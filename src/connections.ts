@@ -13,6 +13,7 @@ export interface Connection {
   kind: ConnectionKind;
   provider?: string;
   url?: string;
+  hosts?: string[];
   auth: AuthMethod;
   methods?: string[];
   pathPrefix?: string;
@@ -43,6 +44,13 @@ export const CATALOG = [
     defaultAuth: "oauth",
   },
   {
+    name: "github",
+    kind: "http",
+    auth: ["key"],
+    defaultAuth: "key",
+    hosts: ["api.github.com", "github.com"],
+  },
+  {
     name: "anthropic",
     kind: "model",
     auth: ["oauth", "key"],
@@ -60,6 +68,7 @@ const knownKeys = new Set([
   "kind",
   "provider",
   "url",
+  "hosts",
   "auth",
   "methods",
   "path_prefix",
@@ -162,6 +171,8 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     !CATALOG.some((e) => e.kind === "email" && e.name === provider)
   )
     throw new IntegralError("provider must be gmail or mailgun");
+  if (provider === "github" && kind !== "http")
+    throw new IntegralError("GitHub connections must use kind http");
   const catalog = CATALOG.find((e) => e.name === provider);
   const auth = (value.auth ??
     (catalog && "defaultAuth" in catalog ? catalog.defaultAuth : undefined)) as
@@ -172,8 +183,29 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     throw new IntegralError(
       "model connections do not support no authentication",
     );
+  if (provider === "github" && auth !== "key")
+    throw new IntegralError("GitHub connections require key authentication");
   const url =
-    kind === "http" || kind === "mcp" ? secureUrl(value.url, "url") : undefined;
+    (kind === "http" || kind === "mcp") && provider !== "github"
+      ? secureUrl(value.url, "url")
+      : undefined;
+  const hosts = optionalStrings(value.hosts, "hosts")?.map((host) =>
+    host.toLowerCase(),
+  );
+  if (provider === "github") {
+    if (
+      !hosts?.length ||
+      new Set(hosts).size !== hosts.length ||
+      hosts.some((host) => host !== "api.github.com" && host !== "github.com")
+    )
+      throw new IntegralError(
+        "GitHub hosts must be a non-empty unique subset of api.github.com and github.com",
+      );
+    if (value.url !== undefined)
+      throw new IntegralError("GitHub connections use hosts instead of url");
+  } else if (value.hosts !== undefined) {
+    throw new IntegralError("hosts is supported only by the GitHub preset");
+  }
   const methods =
     optionalStrings(value.methods, "methods")?.map((m) => m.toUpperCase()) ??
     (kind === "http" ? ["*"] : undefined);
@@ -197,6 +229,7 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
   const result: Connection = { name, kind, auth };
   if (provider) result.provider = provider;
   if (url) result.url = url;
+  if (hosts) result.hosts = hosts;
   if (methods) result.methods = methods;
   if (pathPrefix) result.pathPrefix = pathPrefix;
   if (auth === "key" && kind !== "email") {
@@ -344,6 +377,7 @@ export function connectionToml(c: Connection): string {
     if (value !== undefined && !rows.some((row) => row.startsWith(`${key} =`)))
       rows.push(`${key} = ${quote(value)}`);
   if (c.methods) rows.push(`methods = [${c.methods.map(quote).join(", ")}]`);
+  if (c.hosts) rows.push(`hosts = [${c.hosts.map(quote).join(", ")}]`);
   if (c.scopes) rows.push(`scopes = [${c.scopes.map(quote).join(", ")}]`);
   if (c.capabilities)
     rows.push(`capabilities = [${c.capabilities.map(quote).join(", ")}]`);
@@ -352,6 +386,12 @@ export function connectionToml(c: Connection): string {
       `allowed_recipients = [${c.allowedRecipients.map(quote).join(", ")}]`,
     );
   return `${rows.join("\n")}\n`;
+}
+
+export function connectionBoundaries(connection: Connection): URL[] {
+  if (connection.provider === "github")
+    return (connection.hosts ?? []).map((host) => new URL(`https://${host}/`));
+  return connection.url ? [new URL(connection.url)] : [];
 }
 
 export async function loadConnections(

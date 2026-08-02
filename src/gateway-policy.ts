@@ -1,5 +1,5 @@
 import type { IncomingHttpHeaders } from "node:http";
-import type { Connection } from "./connections.ts";
+import { connectionBoundaries, type Connection } from "./connections.ts";
 import { IntegralError } from "./errors.ts";
 
 export const SENTINEL = "integral-managed-credential";
@@ -34,18 +34,21 @@ export function decideRequest(
   headers: IncomingHttpHeaders,
   candidates: readonly CredentialedConnection[],
 ): GatewayDecision {
-  const match = candidates.find(({ connection }) => {
-    if (!connection.url) return false;
-    const boundary = new URL(connection.url);
-    const methods = connection.methods ?? ["*"];
-    return (
-      boundary.protocol === target.protocol &&
-      boundary.hostname.toLowerCase() === target.hostname.toLowerCase() &&
-      normalizePort(boundary) === normalizePort(target) &&
-      methods.some((m) => m === "*" || m === method.toUpperCase()) &&
-      prefixMatches(target.pathname, connection.pathPrefix ?? boundary.pathname)
-    );
-  });
+  const match = candidates.find(({ connection }) =>
+    connectionBoundaries(connection).some((boundary) => {
+      const methods = connection.methods ?? ["*"];
+      return (
+        boundary.protocol === target.protocol &&
+        boundary.hostname.toLowerCase() === target.hostname.toLowerCase() &&
+        normalizePort(boundary) === normalizePort(target) &&
+        methods.some((m) => m === "*" || m === method.toUpperCase()) &&
+        prefixMatches(
+          target.pathname,
+          connection.pathPrefix ?? boundary.pathname,
+        )
+      );
+    }),
+  );
   if (!match)
     throw new IntegralError("policy denied the requested destination", 403);
   const clean: Record<string, string | string[]> = {};
@@ -70,7 +73,11 @@ export function decideRequest(
     )
       throw new IntegralError("gateway refused an unmanaged credential", 403);
     clean[header] =
-      `${match.connection.scheme ?? "Bearer"} ${match.credential}`.trim();
+      match.connection.provider === "github"
+        ? target.hostname.toLowerCase() === "github.com"
+          ? `Basic ${Buffer.from(`x-access-token:${match.credential}`).toString("base64")}`
+          : `token ${match.credential}`
+        : `${match.connection.scheme ?? "Bearer"} ${match.credential}`.trim();
     for (const [name, value] of Object.entries(match.injectedHeaders ?? {}))
       clean[name.toLowerCase()] = value;
   }

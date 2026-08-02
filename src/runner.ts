@@ -542,12 +542,10 @@ export class Runner {
   }
   private async preparePiEnvironment(selection: ModelSelection, image: string) {
     const all = await listConnections(this.paths),
+      active = all.filter((connection) => connection.state === "active"),
       model = selectModel(all, selection),
-      mcp = all.filter((connection) => connection.kind === "mcp"),
-      email = all.filter(
-        (connection) =>
-          connection.kind === "email" && connection.state === "active",
-      ),
+      mcp = active.filter((connection) => connection.kind === "mcp"),
+      email = active.filter((connection) => connection.kind === "email"),
       identity = this.dependencies.newSessionIdentity(),
       ca = await this.dependencies.ensureCa(this.paths),
       home = await this.dependencies.freshSessionHome();
@@ -570,6 +568,7 @@ export class Runner {
         selectedModel: selection.model,
         image,
         mcp,
+        connections: active,
       }),
     };
   }
