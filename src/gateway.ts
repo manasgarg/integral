@@ -341,6 +341,19 @@ export class Gateway {
       }
       return;
     }
+    if (req.url?.startsWith("/integral/control/schedules")) {
+      try {
+        await this.control(
+          req,
+          res,
+          new URL(req.url, "http://integral.control"),
+          sessionId,
+        );
+      } catch (error) {
+        respondError(res, error);
+      }
+      return;
+    }
     let target: URL | undefined;
     try {
       target = new URL(req.url!);

@@ -352,6 +352,58 @@ test("[SCHEDULE-55BD779F] gateway attributes Pi schedule mutations and injects t
   );
 });
 
+test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the scheduler", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    forwarded: string[] = [],
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path) {
+          assert.equal(target, "scheduler");
+          forwarded.push(path);
+          return Response.json([]);
+        },
+      },
+    ),
+    request = Readable.from([]) as unknown as IncomingMessage;
+  let status = 0,
+    responseBody = "";
+  const response = {
+    writeHead(value: number) {
+      status = value;
+      return response;
+    },
+    end(value?: string) {
+      responseBody = value ?? "";
+      return response;
+    },
+  } as unknown as ServerResponse;
+  request.url = "/integral/control/schedules";
+  request.method = "GET";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:session-token").toString("base64")}`,
+  };
+  gateway.sessions.set("session-token", "session-1");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+
+  assert.equal(status, 200);
+  assert.equal(responseBody, "[]");
+  assert.deepEqual(forwarded, ["/integral/schedules"]);
+});
+
 test("[GATEWAY-EB8D96FE] CONNECT admits only the exact configured HTTPS host and port, including non-default ports", () => {
   const connection = validateConnection({
     name: "local-tls",
@@ -620,7 +672,9 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose r
   assert.match(source, /integral-managed-credential/);
   assert.match(source, /schedule_create/);
   assert.match(source, /schedule_update/);
-  assert.match(source, /http:\/\/integral\.control/);
+  assert.match(source, /proxy-authorization/);
+  assert.match(source, /request\(target\.url/);
+  assert.doesNotMatch(source, /fetch\("http:\/\/integral\.control/);
   assert.doesNotMatch(source, /actual-secret/);
 });
 
