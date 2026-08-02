@@ -14,6 +14,7 @@ Given the connection catalog contains Gmail and Mailgun email providers
 	When the user configures a Mailgun email connection
 		Then the connection enables only `send`
 			And requires a sending domain, fixed From address, region, and API key
+			And interactive setup selects `send` without a capability prompt
 	When the user interactively adds Gmail or Mailgun without required email options
 		Then integral prompts for the missing non-secret account and policy options
 			And requests the credential only after those options are valid

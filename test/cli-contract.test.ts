@@ -184,12 +184,7 @@ test("[CONNECTION-2F7C9A61] a singleton authentication method is selected withou
 });
 
 test("[EMAIL-B765A312] interactive Mailgun setup collects policy before hidden key authentication", async () => {
-  const answers = [
-      "",
-      "mg.example.com",
-      "robot@mg.example.com",
-      "*@example.com",
-    ],
+  const answers = ["mg.example.com", "robot@mg.example.com", "*@example.com"],
     prompts: string[] = [],
     raw: Record<string, unknown> = {
       name: "mailgun",
@@ -211,7 +206,10 @@ test("[EMAIL-B765A312] interactive Mailgun setup collects policy before hidden k
     from_address: "robot@mg.example.com",
     allowed_recipients: ["*@example.com"],
   });
-  assert.doesNotMatch(prompts.join("\n"), /Authentication|API key|Credential/);
+  assert.doesNotMatch(
+    prompts.join("\n"),
+    /Authentication|Capabilities|API key|Credential/,
+  );
 });
 
 test("[CONNECTION-2F7C9A61] non-interactive connection setup requires --auth and names supported choices", async (t) => {

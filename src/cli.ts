@@ -451,8 +451,10 @@ export async function completeEmailOptions(
   ask?: (message: string) => Promise<string>,
 ): Promise<void> {
   if (provider !== "gmail" && provider !== "mailgun") return;
+  if (raw.capabilities === undefined && provider === "mailgun")
+    raw.capabilities = ["send"];
   if (raw.capabilities === undefined && ask) {
-    const defaults = provider === "gmail" ? "read,search,send" : "send";
+    const defaults = "read,search,send";
     raw.capabilities = commaSeparated(
       (await ask(`Capabilities [${defaults}]: `)).trim() || defaults,
     );
