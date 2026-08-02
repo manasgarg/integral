@@ -282,34 +282,10 @@ export class Runner {
       throw new IntegralError(
         `scheduled Pi image ${task.profile.piImage} is unavailable`,
       );
-    const all = await listConnections(this.paths),
-      model = selectModel(all, task.profile),
-      mcp = all.filter((connection) => connection.kind === "mcp"),
-      email = all.filter(
-        (connection) =>
-          connection.kind === "email" && connection.state === "active",
-      ),
-      identity = this.dependencies.newSessionIdentity(),
-      ca = await this.dependencies.ensureCa(this.paths),
-      home = await this.dependencies.freshSessionHome();
-    await this.dependencies.writeMcpExtension(home, mcp);
-    await this.dependencies.writeEmailExtension(home, email);
-    await this.dependencies.writePiCredential(home, model);
-    const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
-    gatewayUrl.hostname = "host.integral.internal";
-    const spec = buildContainerSpec({
-      config: this.config,
-      gatewayUrl: gatewayUrl.toString(),
-      gatewayAddress: this.dockerGateway,
-      caCert: ca.cert,
-      caBundle: ca.bundle,
-      sessionHome: home,
-      ...identity,
-      model,
-      selectedModel: task.profile.model,
-      image: task.profile.piImage,
-      mcp,
-    });
+    const { spec, identity } = await this.preparePiEnvironment(
+      task.profile,
+      task.profile.piImage,
+    );
     spec.args.push("--append-system-prompt", renderTaskContext(task));
     const registered = await this.dependencies.internalFetch(
       this.paths,
@@ -491,31 +467,10 @@ export class Runner {
       throw new IntegralError(
         `selected Pi image ${selection.piImage} is unavailable; run /model to refresh the runtime selection`,
       );
-    const all = await listConnections(this.paths),
-      model = selectModel(all, selection),
-      mcp = all.filter((c) => c.kind === "mcp"),
-      email = all.filter((c) => c.kind === "email" && c.state === "active");
-    const identity = this.dependencies.newSessionIdentity(),
-      ca = await this.dependencies.ensureCa(this.paths),
-      home = await this.dependencies.freshSessionHome();
-    await this.dependencies.writeMcpExtension(home, mcp);
-    await this.dependencies.writeEmailExtension(home, email);
-    await this.dependencies.writePiCredential(home, model);
-    const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
-    gatewayUrl.hostname = "host.integral.internal";
-    const spec = buildContainerSpec({
-      config: this.config,
-      gatewayUrl: gatewayUrl.toString(),
-      gatewayAddress: this.dockerGateway,
-      caCert: ca.cert,
-      caBundle: ca.bundle,
-      sessionHome: home,
-      ...identity,
-      model,
-      selectedModel: selection.model,
-      image: selection.piImage,
-      mcp,
-    });
+    const { spec, identity } = await this.preparePiEnvironment(
+      selection,
+      selection.piImage,
+    );
     if (context.length)
       spec.args.push("--append-system-prompt", renderContext(context));
     await this.dependencies.internalFetch(
@@ -562,6 +517,39 @@ export class Runner {
       await pi.stop();
       throw error;
     }
+  }
+  private async preparePiEnvironment(selection: ModelSelection, image: string) {
+    const all = await listConnections(this.paths),
+      model = selectModel(all, selection),
+      mcp = all.filter((connection) => connection.kind === "mcp"),
+      email = all.filter(
+        (connection) =>
+          connection.kind === "email" && connection.state === "active",
+      ),
+      identity = this.dependencies.newSessionIdentity(),
+      ca = await this.dependencies.ensureCa(this.paths),
+      home = await this.dependencies.freshSessionHome();
+    await this.dependencies.writeMcpExtension(home, mcp);
+    await this.dependencies.writeEmailExtension(home, email);
+    await this.dependencies.writePiCredential(home, model);
+    const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
+    gatewayUrl.hostname = "host.integral.internal";
+    return {
+      identity,
+      spec: buildContainerSpec({
+        config: this.config,
+        gatewayUrl: gatewayUrl.toString(),
+        gatewayAddress: this.dockerGateway,
+        caCert: ca.cert,
+        caBundle: ca.bundle,
+        sessionHome: home,
+        ...identity,
+        model,
+        selectedModel: selection.model,
+        image,
+        mcp,
+      }),
+    };
   }
   private armIdle(): void {
     if (!this.pi || this.idle) return;

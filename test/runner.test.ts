@@ -60,6 +60,20 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
     }),
     "secret",
   );
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "mail",
+      kind: "email",
+      provider: "mailgun",
+      auth: "key",
+      capabilities: ["send"],
+      domain: "mg.example.com",
+      from_address: "robot@mg.example.com",
+      allowed_recipients: ["person@example.com"],
+    }),
+    "mail-secret",
+  );
   const deployment = deploymentId(paths);
   for (const component of ["coordinator", "gateway", "runner"] as const)
     await writeComponentState(paths, {
@@ -69,7 +83,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
       pid: process.pid,
       status: "ready",
       fingerprint: config.fingerprint,
-      connectionGeneration: 1,
+      connectionGeneration: 2,
       startedAt: "now",
     });
 
@@ -164,6 +178,14 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
         sessionToken: "token-1",
       }),
       writeMcpExtension: async () => undefined,
+      async writeEmailExtension(home, connections) {
+        assert.equal(home, "/test/session");
+        assert.deepEqual(
+          connections.map((connection) => connection.name),
+          ["mail"],
+        );
+        calls.push("talk:email-tools");
+      },
       writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
@@ -174,6 +196,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
   await runner.runOnce();
 
   assert.equal(calls.filter((call) => call === "pi:create").length, 1);
+  assert.equal(calls.filter((call) => call === "talk:email-tools").length, 1);
   assert.ok(calls.includes("pi:prompt:hello"));
   assert.equal(spec?.image, "sha256:test-pi");
   assert.deepEqual(spec?.args.slice(-2), ["--model", "claude-sonnet-4-6"]);

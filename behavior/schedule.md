@@ -66,6 +66,7 @@ Given the coordinator task queue contains an occurrence ready to run
 			And creates a fresh temporary home, gateway session identity, and Pi container for the attempt
 			And does not restore the interactive conversation transcript into the task
 			And supplies only the self-contained task prompt and trusted schedule, execution, and attempt metadata
+			And provisions governed connection capabilities through the same environment preparation path used by interactive talk
 			And permits the interactive container to remain separate from the task container
 
 ## SCHEDULE-930581F7 — Require a clean one-shot exit for task success
