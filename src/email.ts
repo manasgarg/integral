@@ -45,11 +45,30 @@ function record(value: unknown): Record<string, unknown> {
 async function responseJson(
   response: Response,
 ): Promise<Record<string, unknown>> {
-  if (!response.ok)
+  const text = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    parsed = {};
+  }
+  if (!response.ok) {
+    const value = record(parsed),
+      nested = record(value.error),
+      reason =
+        (typeof value.message === "string" && value.message) ||
+        (typeof nested.message === "string" && nested.message) ||
+        (typeof value.error === "string" && value.error) ||
+        "";
+    const detail = reason
+      .replace(/[\r\n\t]+/g, " ")
+      .trim()
+      .slice(0, 300);
     throw new IntegralError(
-      `email provider request failed: HTTP ${response.status}`,
+      `email provider request failed: HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
     );
-  return record(await response.json());
+  }
+  return record(parsed);
 }
 
 function requireCapability(connection: Connection, capability: string): void {

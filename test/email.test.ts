@@ -214,6 +214,47 @@ test("[EMAIL-19BA105D] Mailgun sends through its configured region with fixed Fr
   assert.deepEqual(result, { id: "mailgun-1", message: "Queued" });
 });
 
+test("[EMAIL-19BA105D] provider rejection reports a bounded reason without copying secret response fields", async () => {
+  const connection = validateConnection({
+    name: "transactional",
+    kind: "email",
+    provider: "mailgun",
+    auth: "key",
+    capabilities: ["send"],
+    domain: "mg.example.com",
+    from_address: "robot@mg.example.com",
+    allowed_recipients: ["person@example.com"],
+  });
+  await assert.rejects(
+    executeEmail(
+      connection,
+      "domain-key",
+      {
+        operation: "send",
+        to: ["person@example.com"],
+        subject: "Hello",
+        text: "Body",
+      },
+      async () =>
+        json(
+          {
+            message: "Domain is not permitted\ncontact support",
+            api_key: "must-not-appear",
+          },
+          403,
+        ),
+    ),
+    (error: Error) => {
+      assert.match(
+        error.message,
+        /HTTP 403: Domain is not permitted contact support/,
+      );
+      assert.doesNotMatch(error.message, /must-not-appear|domain-key/);
+      return true;
+    },
+  );
+});
+
 test("[EMAIL-89334867] email extension contains only enabled semantic tools and session authentication", async (t) => {
   const paths = await fixture(t),
     home = join(paths.root, "session");

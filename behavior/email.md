@@ -47,6 +47,9 @@ Given an active Gmail or Mailgun connection enables `send`
 		Then the host refuses the entire message without contacting the provider
 	When a message contains an invalid address, header injection, or exceeds a bounded field limit
 		Then the host refuses the entire message without contacting the provider
+	When the provider rejects a valid constrained message
+		Then the host reports its HTTP status and bounded provider reason
+			And does not expose credentials or an unbounded response body
 
 ## EMAIL-89334867 — Expose only semantic email tools to Pi
 
