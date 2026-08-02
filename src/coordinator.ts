@@ -66,6 +66,9 @@ export class Coordinator {
   private token = "";
   private refreshTimer: unknown;
   private workChain: Promise<unknown> = Promise.resolve();
+  private connectionGeneration: number | undefined;
+  private readonly modelCatalogs = new Map<string, ModelCatalog>();
+  private readonly modelCatalogLoads = new Map<string, Promise<ModelCatalog>>();
   private readonly dependencies: CoordinatorDependencies;
   constructor(
     private readonly paths: IntegralPaths,
@@ -86,6 +89,7 @@ export class Coordinator {
     await this.modelSelection.load();
     await this.tasks.load();
     this.token = await componentIdentity(this.paths);
+    await this.modelCatalog().catch(() => undefined);
     const server = http.createServer((req, res) => void this.route(req, res));
     this.server = server;
     await this.dependencies.servers.listen(
@@ -123,10 +127,13 @@ export class Coordinator {
         await readText(join(this.paths.state, "connection-generation"))
       )?.trim() || "0",
     );
+    const changed = this.connectionGeneration !== generation;
+    this.connectionGeneration = generation;
     await updateComponentState(this.paths, "coordinator", {
       connectionGeneration: generation,
       status: "ready",
     });
+    if (changed) void this.modelCatalog(generation).catch(() => undefined);
   }
   private broadcast(type: string, data: unknown): ClientEvent {
     const event = { sequence: ++this.eventSequence, type, data };
@@ -161,10 +168,7 @@ export class Coordinator {
     piVersion?: string;
     warning?: string;
   }> {
-    const catalog = await this.dependencies.listModelChoices(
-      this.paths,
-      this.config,
-    );
+    const catalog = await this.modelCatalog();
     return {
       choices: catalog.choices,
       current: this.modelSelection.get() ?? null,
@@ -182,10 +186,7 @@ export class Coordinator {
           "cannot change model selection while a Pi turn is in flight",
           409,
         );
-      const catalog = await this.dependencies.listModelChoices(
-          this.paths,
-          this.config,
-        ),
+      const catalog = await this.modelCatalog(),
         choice = catalog.choices.find(
           (candidate) =>
             candidate.connection === connection && candidate.model === model,
@@ -202,6 +203,33 @@ export class Coordinator {
       }
       return choice;
     });
+  }
+  private async modelCatalog(generation?: number): Promise<ModelCatalog> {
+    const currentGeneration = generation ?? (await this.readGeneration()),
+      key = `${this.config.fingerprint}:${currentGeneration}`,
+      cached = this.modelCatalogs.get(key);
+    this.connectionGeneration = currentGeneration;
+    if (cached) return cached;
+    const existing = this.modelCatalogLoads.get(key);
+    if (existing) return existing;
+    const loading = this.dependencies
+      .listModelChoices(this.paths, this.config)
+      .then((catalog) => {
+        this.modelCatalogs.set(key, catalog);
+        while (this.modelCatalogs.size > 4)
+          this.modelCatalogs.delete(this.modelCatalogs.keys().next().value!);
+        return catalog;
+      })
+      .finally(() => this.modelCatalogLoads.delete(key));
+    this.modelCatalogLoads.set(key, loading);
+    return loading;
+  }
+  private async readGeneration(): Promise<number> {
+    return Number(
+      (
+        await readText(join(this.paths.state, "connection-generation"))
+      )?.trim() || "0",
+    );
   }
   private async route(
     req: IncomingMessage,

@@ -3,6 +3,7 @@ import test from "node:test";
 import { Coordinator, type ClientEvent } from "../src/coordinator.ts";
 import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
+import { saveConnection, validateConnection } from "../src/connections.ts";
 
 async function coordinatorFixture(
   t: test.TestContext,
@@ -78,8 +79,10 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] model choices are validated, persisted, br
         piImage: "sha256:new",
       },
     ],
+    discoveries = { count: 0 },
     coordinator = new Coordinator(paths, config, {
       async listModelChoices() {
+        discoveries.count++;
         return { choices, piVersion: "1.2.3" };
       },
     }),
@@ -106,6 +109,20 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] model choices are validated, persisted, br
   );
   assert.deepEqual(internals.snapshot().modelSelection, selected);
   assert.equal(events.at(-1)?.type, "conversation.selection");
+  assert.equal(discoveries.count, 1);
+
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "new-model-connection",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    "secret",
+  );
+  await coordinator.modelMenu();
+  assert.equal(discoveries.count, 2);
 
   await coordinator.queue.enqueue("busy");
   await coordinator.queue.claim();
@@ -183,10 +200,15 @@ test("[SERVER-8A31D6C4] coordinator lifecycle can run against controlled listene
         calls.push("clear");
       },
     },
+    async listModelChoices() {
+      calls.push("catalog");
+      return { choices: [] };
+    },
   });
   await coordinator.start();
   await coordinator.stop();
   assert.deepEqual(calls, [
+    "catalog",
     `listen:127.0.0.1:${config.server.coordinatorPort}`,
     "interval:500",
     "clear",

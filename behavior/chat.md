@@ -108,6 +108,9 @@ Given the terminal is interactive
 ## CHAT-C53A90D2 — Choose a provider and model with friendly matching
 
 Given integral opens the model chooser for `integral talk` or `/model`
+	When the coordinator has already discovered models for the current connection generation and configuration
+		Then it serves the cached catalog without repeating Pi version, image, or model discovery
+			And invalidates that catalog after the connection generation changes
 	When it displays the available choices
 		And at least one active model connection exists
 		Then it groups models under each active model connection
