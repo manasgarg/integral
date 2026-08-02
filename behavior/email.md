@@ -57,6 +57,18 @@ Given one or more active email connections exist when a Pi session starts
 	When the runner prepares the session home
 		Then it registers tools only for capabilities enabled by those connections
 			And each tool calls the authenticated host email boundary
+			And the host-boundary call bypasses environment proxy dispatch
 			And no real email credential is written to the session home
 	When no active email connection exists
 		Then the runner does not install the email extension
+	When the semantic tool cannot reach the authenticated host email boundary
+		Then it reports whether the request was cancelled or a bounded transport error code
+			And does not expose the session credential
+
+## EMAIL-FB2E88EF — Log semantic email gateway decisions
+
+Given an authenticated Pi session requests an email operation
+	When the gateway completes or refuses the operation
+		Then it emits a structured event with the connection, provider, operation, session, request, and verdict
+			And a failure includes its bounded sanitized reason
+			And the event excludes recipients, subject, body, and credentials

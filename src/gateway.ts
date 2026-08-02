@@ -287,23 +287,55 @@ export class Gateway {
       return;
     }
     if (req.url === "/integral/email" && req.method === "POST") {
+      const requestId = randomUUID();
+      let name = "",
+        operation = "unknown",
+        provider = "unknown";
       try {
-        const body = await bodyJson(req, 500_000),
-          name = stringValue(body.connection),
-          candidate = this.candidates.find(
-            ({ connection }) =>
-              connection.kind === "email" && connection.name === name,
-          );
+        const body = await bodyJson(req, 500_000);
+        name = stringValue(body.connection);
+        operation = stringValue(body.operation, "unknown");
+        const candidate = this.candidates.find(
+          ({ connection }) =>
+            connection.kind === "email" && connection.name === name,
+        );
         if (!candidate)
           throw new IntegralError(`email connection not found: ${name}`, 404);
+        provider = candidate.connection.provider ?? "unknown";
         const result = await this.dependencies.executeEmail(
           candidate.connection,
           candidate.credential,
           parseEmailOperation(body),
         );
+        this.logger.event(
+          "info",
+          "gateway.email",
+          "email operation completed",
+          {
+            verdict: "allow",
+            operation,
+            connection: name,
+            provider,
+            session_id: sessionId,
+            request_id: requestId,
+          },
+        );
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(result));
       } catch (error) {
+        this.logger.event(
+          "warn",
+          "gateway.email_failed",
+          error instanceof Error ? error.message : String(error),
+          {
+            verdict: "deny",
+            operation,
+            connection: name || "unknown",
+            provider,
+            session_id: sessionId,
+            request_id: requestId,
+          },
+        );
         respondError(res, error);
       }
       return;

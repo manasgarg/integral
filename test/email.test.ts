@@ -264,8 +264,12 @@ test("[EMAIL-89334867] email extension contains only enabled semantic tools and 
     "utf8",
   );
   assert.match(source, /integral\/email/);
+  assert.match(source, /from "node:http"/);
   assert.match(source, /proxy-authorization/);
   assert.match(source, /"capabilities":\["read","send"\]/);
+  assert.match(source, /email gateway request was cancelled/);
+  assert.match(source, /email gateway request failed/);
+  assert.doesNotMatch(source, /await fetch/);
   assert.doesNotMatch(source, /access-token|domain-key/);
 });
 

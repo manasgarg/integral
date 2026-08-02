@@ -103,7 +103,7 @@ test("[SERVER-8A31D6C4] gateway lifecycle can run against controlled CA, listene
   ]);
 });
 
-test("[EMAIL-89334867] authenticated Pi email calls resolve a named account inside the gateway", async (t) => {
+test("[EMAIL-89334867] [EMAIL-FB2E88EF] authenticated Pi email calls resolve and log a named account inside the gateway", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     connection = validateConnection({
@@ -117,6 +117,7 @@ test("[EMAIL-89334867] authenticated Pi email calls resolve a named account insi
       allowed_recipients: ["person@example.com"],
     });
   await saveConnection(paths, connection, "domain-key");
+  const logs: string[] = [];
   let executed: unknown,
     responseBody = "",
     responseStatus = 200;
@@ -126,9 +127,9 @@ test("[EMAIL-89334867] authenticated Pi email calls resolve a named account insi
       new Logger({
         component: "gateway",
         deploymentId: deploymentId(paths),
-        level: "error",
+        level: "debug",
         format: "json",
-        sink: () => undefined,
+        sink: (line) => logs.push(line),
       }),
       {
         async executeEmail(found, credential, operation) {
@@ -184,6 +185,95 @@ test("[EMAIL-89334867] authenticated Pi email calls resolve a named account insi
       text: "Body",
     },
   });
+  const event = logs.find((line) => line.includes("gateway.email"));
+  assert.ok(event);
+  for (const expected of [
+    "transactional",
+    "mailgun",
+    "send",
+    "session-1",
+    '"verdict":"allow"',
+  ])
+    assert.match(event, new RegExp(expected));
+  assert.doesNotMatch(event, /person@example|Hello|Body|domain-key/);
+});
+
+test("[EMAIL-FB2E88EF] email gateway failures log bounded routing context without message content", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    connection = validateConnection({
+      name: "transactional",
+      kind: "email",
+      provider: "mailgun",
+      auth: "key",
+      capabilities: ["send"],
+      domain: "mg.example.com",
+      from_address: "robot@mg.example.com",
+      allowed_recipients: ["person@example.com"],
+    });
+  await saveConnection(paths, connection, "domain-key");
+  const logs: string[] = [],
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "debug",
+        format: "json",
+        sink: (line) => logs.push(line),
+      }),
+      {
+        async executeEmail() {
+          throw new Error("provider refused safely");
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          connection: "transactional",
+          operation: "send",
+          to: ["private-recipient@example.com"],
+          subject: "private subject",
+          text: "private body",
+        }),
+      ),
+    ]) as unknown as IncomingMessage,
+    response = {
+      writeHead() {
+        return response;
+      },
+      end() {
+        return response;
+      },
+    } as unknown as ServerResponse;
+  request.url = "/integral/email";
+  request.method = "POST";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:session-token").toString("base64")}`,
+  };
+  await gateway.reload(true);
+  gateway.sessions.set("session-token", "session-1");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  const event = logs.find((line) => line.includes("gateway.email_failed"));
+  assert.ok(event);
+  for (const expected of [
+    "transactional",
+    "mailgun",
+    "send",
+    "session-1",
+    "provider refused safely",
+  ])
+    assert.match(event, new RegExp(expected));
+  assert.doesNotMatch(
+    event,
+    /private-recipient|private subject|private body|domain-key/,
+  );
 });
 
 test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only an explicit Basic session token", () => {
