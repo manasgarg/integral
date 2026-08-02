@@ -380,7 +380,7 @@ async function explicitConnection(args: string[]): Promise<Connection> {
   const requestedAuth = flag(args, "--auth");
   let ask: ((message: string) => Promise<string>) | undefined;
   let rl: ReturnType<typeof createInterface> | undefined;
-  if (!requestedAuth && input.isTTY) {
+  if (!requestedAuth && entry.auth.length > 1 && input.isTTY) {
     rl = createInterface({ input, output });
     ask = (message) => rl!.question(message);
   }
@@ -418,13 +418,65 @@ async function explicitConnection(args: string[]): Promise<Connection> {
     ["--allowed-recipients", "allowed_recipients"],
   ] as const) {
     const value = flag(args, option);
-    if (value)
-      raw[key] = value
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean);
+    if (value) raw[key] = commaSeparated(value);
+  }
+  let details: ReturnType<typeof createInterface> | undefined;
+  try {
+    await completeEmailOptions(
+      entryName,
+      raw,
+      input.isTTY
+        ? (message) => {
+            details ??= createInterface({ input, output });
+            return details.question(message);
+          }
+        : undefined,
+    );
+  } finally {
+    details?.close();
   }
   return validateConnection(raw);
+}
+
+function commaSeparated(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export async function completeEmailOptions(
+  provider: string,
+  raw: Record<string, unknown>,
+  ask?: (message: string) => Promise<string>,
+): Promise<void> {
+  if (provider !== "gmail" && provider !== "mailgun") return;
+  if (raw.capabilities === undefined && ask) {
+    const defaults = provider === "gmail" ? "read,search,send" : "send";
+    raw.capabilities = commaSeparated(
+      (await ask(`Capabilities [${defaults}]: `)).trim() || defaults,
+    );
+  }
+  if (provider === "gmail") {
+    if (raw.account === undefined && ask)
+      raw.account = await ask("Account email: ");
+    if (raw.client_id === undefined && ask)
+      raw.client_id = await ask("OAuth client ID: ");
+  } else {
+    if (raw.domain === undefined && ask)
+      raw.domain = await ask("Mailgun domain: ");
+    if (raw.from_address === undefined && ask)
+      raw.from_address = await ask("From address: ");
+  }
+  if (
+    Array.isArray(raw.capabilities) &&
+    raw.capabilities.includes("send") &&
+    raw.allowed_recipients === undefined &&
+    ask
+  )
+    raw.allowed_recipients = commaSeparated(
+      await ask("Allowed recipients (comma-separated): "),
+    );
 }
 
 export async function selectAuthentication(
@@ -439,6 +491,7 @@ export async function selectAuthentication(
       );
     return requested as AuthMethod;
   }
+  if (supported.length === 1) return supported[0]!;
   if (!ask)
     throw new IntegralError(
       `authentication method is required in a non-interactive terminal; use --auth with one of: ${supported.join(", ")}`,
@@ -469,13 +522,15 @@ async function guidedConnection(): Promise<Connection> {
     if (!entry) throw new IntegralError("invalid selection");
     const name =
         (await rl.question(`Name [${entry.name}]: `)).trim() || entry.name,
-      defaultAuth = "defaultAuth" in entry ? entry.defaultAuth : entry.auth[0];
-    const chosenAuth =
-      (
-        await rl.question(
-          `Authentication (${entry.auth.join("/")}) [${defaultAuth}]: `,
-        )
-      ).trim() || defaultAuth;
+      defaultAuth = "defaultAuth" in entry ? entry.defaultAuth : entry.auth[0],
+      chosenAuth =
+        entry.auth.length === 1
+          ? entry.auth[0]
+          : (
+              await rl.question(
+                `Authentication (${entry.auth.join("/")}) [${defaultAuth}]: `,
+              )
+            ).trim() || defaultAuth;
     const args = [entry.name, "--name", name, "--auth", chosenAuth];
     if (entry.kind === "http" || entry.kind === "mcp") {
       args.push("--url", await rl.question("URL: "));

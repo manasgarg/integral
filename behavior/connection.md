@@ -55,7 +55,7 @@ Given no connection exists for the selected provider
 
 ## CONNECTION-2F7C9A61 — Choose a supported authentication method
 
-Given the selected catalog entry supports one or more authentication methods
+Given the selected catalog entry supports more than one authentication method
 	When the user runs `integral connection add <entry>` without `--auth`
 		Then integral lists the authentication methods supported by that entry
 			And asks the user to choose one before starting authentication
@@ -65,6 +65,10 @@ Given the selected catalog entry supports one or more authentication methods
 			And identifies the supported values
 	When the user supplies a supported method with `--auth <method>`
 		Then integral uses that authentication method without asking
+Given the selected catalog entry supports exactly one authentication method
+	When the user runs `integral connection add <entry>` without `--auth`
+		Then integral selects that method without an echoed authentication prompt
+			And begins its authentication flow directly
 
 ## CONNECTION-512D9A25 — Select an authentication method explicitly
 
