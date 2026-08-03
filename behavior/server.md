@@ -6,7 +6,7 @@ combined and separate-process modes.
 <!-- Automation note (SERVER-F886D80C): Combined orchestration and cleanup run in the default suite; `npm run test:acceptance` launches the real foreground CLI with a controlled Docker boundary. -->
 <!-- Automation note (SERVER-A74F29C1): Deployment identity, locks, credentials, and state isolation are automated; two live Docker deployments require a Docker-enabled acceptance host. -->
 <!-- Automation note (SERVER-FE2BB5CF): Docker dependency placement is automated by component contract tests; daemon failure is not induced against a live daemon. -->
-<!-- Automation note (SERVER-33E00BBA): Lifecycle cleanup runs in the default suite; `npm run test:acceptance` delivers SIGTERM to the real foreground CLI and verifies owned deployment-state cleanup. -->
+<!-- Automation note (SERVER-33E00BBA): Lifecycle cleanup runs in the default suite; `npm run test:acceptance` holds a live SSE attachment, delivers one SIGINT to the real foreground CLI, and verifies prompt exit plus owned deployment-state cleanup. -->
 <!-- Automation note (SERVER-8A31D6C4): Separate component construction and network boundaries are automated in-process; four foreground OS processes are not spawned by the restricted default test runner. -->
 <!-- Automation note (SERVER-E3A74B10): Per-component ownership and cleanup are automated; live process signaling is reserved for an acceptance environment. -->
 
