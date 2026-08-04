@@ -16,6 +16,7 @@ import {
   dockerRunArgs,
   isManagedContainerVariable,
   interpretPiProtocol,
+  managedPiImage,
   newSessionIdentity,
   parsePiModelList,
   writeMcpExtension,
@@ -28,6 +29,14 @@ import { Gateway, allowsConnect, gatewayHealth } from "../src/gateway.ts";
 import { Logger } from "../src/logging.ts";
 import { deploymentId, writeComponentState } from "../src/state.ts";
 import { fixture } from "./helpers.ts";
+
+test("[BOX-E1F472A1] managed Pi image identity changes with its build recipe", () => {
+  const first = managedPiImage("1.2.3", [Buffer.from("first recipe")]),
+    second = managedPiImage("1.2.3", [Buffer.from("second recipe")]);
+
+  assert.notEqual(first, second);
+  assert.match(first, /^integral-pi:0\.1\.0-recipe-[a-f0-9]{12}-pi-1\.2\.3$/);
+});
 
 test("[GATEWAY-3F299566] gateway health identifies deployment and publishes the current component state", async (t) => {
   const paths = await fixture(t),

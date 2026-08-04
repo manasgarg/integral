@@ -93,6 +93,7 @@ export class Runner {
     { id: string; claimId: string; attemptId?: string } | undefined;
   private activeTaskRuntime: TaskRuntime | undefined;
   private piSelection: ModelSelection | undefined;
+  private piConnectionGeneration: number | undefined;
   private readonly dependencies: RunnerDependencies;
   constructor(
     private readonly paths: IntegralPaths,
@@ -370,6 +371,8 @@ export class Runner {
         throw new IntegralError(
           "component configuration or connection generations disagree",
         );
+      if (this.pi && this.piConnectionGeneration !== generation)
+        await this.destroyPi();
       await this.ensureGatewayListener();
       const gateway = await this.dependencies.fetch(
         new URL(
@@ -406,7 +409,7 @@ export class Runner {
           "conversation has no selected model connection and model",
         );
       this.dependencies.clock.clearTimeout(this.idle);
-      await this.ensurePi(body.context, selection);
+      await this.ensurePi(body.context, selection, generation);
       const answer = await this.pi!.prompt(item.text);
       const completed = await this.dependencies.internalFetch(
         this.paths,
@@ -479,6 +482,7 @@ export class Runner {
   private async ensurePi(
     context: ConversationEvent[],
     selection: ModelSelection,
+    connectionGeneration: number,
   ): Promise<void> {
     if (this.pi) return;
     const resolvedImage = await this.dependencies.containers.ensureImage(
@@ -521,6 +525,7 @@ export class Runner {
       await pi.start();
       this.pi = pi;
       this.piSelection = { ...selection };
+      this.piConnectionGeneration = connectionGeneration;
       await this.dependencies.internalFetch(
         this.paths,
         "runner",
@@ -599,6 +604,7 @@ export class Runner {
     const pi = this.pi;
     this.pi = undefined;
     this.piSelection = undefined;
+    this.piConnectionGeneration = undefined;
     if (pi) {
       await this.revoke(pi.spec.sessionToken);
       await pi.stop();

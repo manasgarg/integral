@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -304,8 +305,25 @@ function inspectImage(image: string): string | undefined {
     : undefined;
 }
 
-export function managedPiImage(version: string): string {
-  return `integral-pi:${INTEGRAL_VERSION}-pi-${version.replace(/[^0-9A-Za-z_.-]/g, "-")}`;
+export function managedPiImage(
+  version: string,
+  recipeInputs?: readonly Uint8Array[],
+): string {
+  const dockerfile = fileURLToPath(
+      new URL("../../Dockerfile.pi", import.meta.url),
+    ),
+    modelBridge = fileURLToPath(
+      new URL("../../bin/integral-pi-models.mjs", import.meta.url),
+    ),
+    inputs = recipeInputs ?? [
+      readFileSync(dockerfile),
+      readFileSync(modelBridge),
+    ],
+    hash = createHash("sha256");
+  for (const input of inputs)
+    hash.update(String(input.byteLength)).update("\0").update(input);
+  const recipe = hash.digest("hex").slice(0, 12);
+  return `integral-pi:${INTEGRAL_VERSION}-recipe-${recipe}-pi-${version.replace(/[^0-9A-Za-z_.-]/g, "-")}`;
 }
 
 export function ensureContainerImage(

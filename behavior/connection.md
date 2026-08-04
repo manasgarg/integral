@@ -246,6 +246,11 @@ Given no GitHub connection exists
 			And stores the token only in the host credential area
 			And identifies GitHub as an HTTP connection in the catalog and connection list
 Given an active GitHub connection exists
+	And a Pi session provisioned before that connection is still active
+	When integral observes the new connection generation
+		Then integral ends the stale Pi session before the next turn
+			And provisions the replacement with GitHub access
+Given an active GitHub connection exists
 	When integral provisions a Pi container
 		Then the container includes `git` and `gh`
 			And receives `GH_TOKEN` set to the integral credential sentinel

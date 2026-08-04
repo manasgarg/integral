@@ -409,6 +409,158 @@ test("[CHAT-C53A90D2] runner recycles an idle Pi container after the conversatio
   assert.equal((runner as any).pi, undefined);
 });
 
+test("[CONNECTION-12C87631] runner recycles a Pi session after GitHub is connected", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = {
+      ...base,
+      logging: { ...base.logging, level: "error" as const },
+    },
+    deployment = deploymentId(paths),
+    calls: string[] = [];
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "model",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    "model-secret",
+  );
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "github",
+      kind: "http",
+      provider: "github",
+      auth: "key",
+      hosts: ["api.github.com", "github.com"],
+    }),
+    "github-secret",
+  );
+  for (const component of ["coordinator", "gateway"] as const)
+    await writeComponentState(paths, {
+      component,
+      deploymentId: deployment,
+      endpoint: "http://127.0.0.1:1",
+      pid: process.pid,
+      status: "ready",
+      fingerprint: config.fingerprint,
+      connectionGeneration: 2,
+      startedAt: "now",
+    });
+  const stale: PiRuntime = {
+      spec: {
+        image: "sha256:test-pi",
+        args: [],
+        environment: {},
+        mounts: [],
+        sessionId: "stale-session",
+        sessionToken: "stale-token",
+        home: "/test/stale-session",
+        gatewayAddress: "127.0.0.1",
+      },
+      async start() {},
+      async prompt() {
+        return "unused";
+      },
+      async stop() {
+        calls.push("stale:stop");
+      },
+    },
+    runner = new Runner(
+      paths,
+      config,
+      new Logger({
+        component: "runner",
+        deploymentId: deployment,
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        containers: {
+          ensureImage: () => "sha256:test-pi",
+          async ensureNetwork() {},
+          networkGateway: () => "127.0.0.1",
+          createPi(spec) {
+            assert.equal(
+              spec.environment.GH_TOKEN,
+              "integral-managed-credential",
+            );
+            return {
+              spec,
+              async start() {
+                calls.push("replacement:start");
+              },
+              async prompt() {
+                calls.push("replacement:prompt");
+                return "GitHub is available";
+              },
+              async stop() {},
+            };
+          },
+          createTaskPi() {
+            throw new Error("unexpected task runtime");
+          },
+        },
+        clock: new ManualClock(),
+        fetch: async () => new Response("ok"),
+        async internalFetch(_paths, _caller, _target, path) {
+          if (path === "/integral/internal/claim")
+            return Response.json({
+              message: {
+                id: "message-github",
+                text: "check again",
+                order: 1,
+                status: "in-flight",
+                attempts: 1,
+                createdAt: "now",
+              },
+              selection: {
+                connection: "model",
+                provider: "anthropic",
+                model: "claude-sonnet-4-6",
+                piVersion: "1.2.3",
+                piImage: "sha256:test-pi",
+              },
+              context: [],
+            });
+          return new Response(null, { status: 204 });
+        },
+        ensureCa: async () => ({ key: "key", cert: "cert", bundle: "bundle" }),
+        freshSessionHome: async () => "/test/replacement-session",
+        newSessionIdentity: () => ({
+          sessionId: "replacement-session",
+          sessionToken: "replacement-token",
+        }),
+        writeMcpExtension: async () => undefined,
+        writeEmailExtension: async () => undefined,
+        writePiCredential: async () => undefined,
+        listen: async () => undefined,
+        close: async () => undefined,
+      },
+    );
+  (runner as any).pi = stale;
+  (runner as any).piSelection = {
+    connection: "model",
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    piVersion: "1.2.3",
+    piImage: "sha256:test-pi",
+  };
+  (runner as any).piConnectionGeneration = 1;
+
+  await runner.runOnce();
+
+  assert.deepEqual(calls, [
+    "stale:stop",
+    "replacement:start",
+    "replacement:prompt",
+  ]);
+});
+
 test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution uses a fresh one-shot runtime and completes only after exit zero", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),

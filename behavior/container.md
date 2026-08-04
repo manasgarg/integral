@@ -37,6 +37,7 @@ Given integral begins Pi-specific OAuth or opens the model chooser
 	When the npm registry reports the same version as the installed runtime
 		Then integral reuses the installed host runtime
 			And the model chooser reuses the matching image when it is available
+			And distinguishes managed images built from different Integral image recipes
 			And does not reinstall Pi
 	When the npm registry cannot be reached
 		And the previously installed Pi runtime and any image required by the operation are valid
