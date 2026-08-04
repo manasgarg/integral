@@ -48,7 +48,10 @@ directory. When it prepares a later agent environment, it projects all earlier
 finalized records into a stable, curated, read-only view at `$HOME/history`.
 That view is execution evidence, not writable worker storage: it excludes
 credentials and host control-plane state, does not change during the run, and
-does not include the current run until a later environment is prepared.
+does not include the current run until a later environment is prepared. Each
+record includes ordered activity, objective failure and correction signals,
+provider-reported token and cache usage, timing, and outcome evidence so a later
+agent can inspect what worked, what did not, and what it cost.
 
 Host persistence is limited to configuration, connection credentials, the
 gateway CA, process locks, the conversation record, its message queue, schedule
