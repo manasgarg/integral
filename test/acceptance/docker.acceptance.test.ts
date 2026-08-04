@@ -16,7 +16,7 @@ import { validateConnection } from "../../src/connections.ts";
 import { deploymentId } from "../../src/state.ts";
 import { fixture } from "../helpers.ts";
 
-test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared identity, mounts, resources, and internal network", async (t) => {
+test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi container enforces the declared identity, mounts, resources, and internal network", async (t) => {
   assert.doesNotThrow(
     () => execFileSync("docker", ["info"], { stdio: "ignore" }),
     "Docker acceptance requires a reachable Docker daemon",
@@ -25,9 +25,12 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
     config = await loadConfig(paths, {}),
     network = `integral-acceptance-${deploymentId(paths)}`,
     sessionHome = join(paths.root, "session"),
+    historyView = join(paths.root, "history"),
     caCert = join(paths.root, "ca.pem"),
     caBundle = join(paths.root, "bundle.pem");
   await mkdir(sessionHome, { recursive: true });
+  await mkdir(historyView, { recursive: true });
+  await writeFile(join(historyView, "index.json"), '{"runs":[]}\n');
   await writeFile(caCert, "acceptance CA fixture\n");
   await writeFile(caBundle, "acceptance CA fixture\n");
   const image = ensureContainerImage(config, "0.80.3");
@@ -42,6 +45,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
       caCert,
       caBundle,
       sessionHome,
+      historyView,
       ...identity,
       model: validateConnection({
         name: "acceptance-model",
@@ -110,6 +114,24 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] live Pi container enforces the declared 
   assert.equal(
     inspection.Mounts.some((mount) => mount.Source === process.cwd()),
     false,
+  );
+  assert.equal(
+    inspection.Mounts.find((mount) => mount.Destination === "/home/pi/history")
+      ?.RW,
+    false,
+  );
+  assert.doesNotThrow(() =>
+    execFileSync(
+      "docker",
+      [
+        "exec",
+        name,
+        "node",
+        "-e",
+        `require("node:fs").readFileSync("/home/pi/history/index.json"); try { require("node:fs").writeFileSync("/home/pi/history/change", "bad"); process.exit(1); } catch (error) { process.exit(error.code === "EROFS" || error.code === "EACCES" ? 0 : 2); }`,
+      ],
+      { stdio: "ignore" },
+    ),
   );
   assert.doesNotThrow(
     () =>

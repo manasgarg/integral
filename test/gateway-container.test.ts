@@ -736,7 +736,7 @@ test("[CONNECTION-12C87631] an active GitHub connection exposes only GH_TOKEN's 
   assert.doesNotMatch(JSON.stringify(spec), /real-github-token/);
 });
 
-test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-only, capability-free, bounded, and locked to an internal network", async (t) => {
+test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] Docker specification is non-root, read-only, capability-free, bounded, and locked to an internal network", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     model = validateConnection({
@@ -752,6 +752,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-o
       caCert: "/ca",
       caBundle: "/bundle",
       sessionHome: "/fresh",
+      historyView: "/host/projected-history",
       ...newSessionIdentity(),
       model,
       mcp: [],
@@ -774,6 +775,11 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] Docker specification is non-root, read-o
     assert.ok(args.includes(expected));
   assert.equal(args.includes("/var/run/docker.sock"), false);
   assert.equal(args.includes(process.cwd()), false);
+  assert.ok(
+    args.includes(
+      "type=bind,source=/host/projected-history,target=/home/pi/history,readonly",
+    ),
+  );
 });
 
 test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the selected image and prompt-capable Pi mode", async (t) => {

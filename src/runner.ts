@@ -27,9 +27,19 @@ import { IntegralError } from "./errors.ts";
 import type { ConversationEvent, QueuedMessage } from "./queue.ts";
 import { sameSelection, type ModelSelection } from "./model-selection.ts";
 import type { ScheduledTask } from "./task-queue.ts";
+import { rm } from "node:fs/promises";
+import {
+  RunStore,
+  type FinalizeRunOptions,
+  type RunRecorder,
+  type RunTermination,
+} from "./run-store.ts";
 
 export interface RunnerClock {
-  setTimeout(callback: () => void, milliseconds: number): unknown;
+  setTimeout(
+    callback: () => void | Promise<void>,
+    milliseconds: number,
+  ): unknown;
   clearTimeout(handle: unknown): void;
 }
 
@@ -45,12 +55,14 @@ export interface RunnerDependencies {
   writeEmailExtension: typeof writeEmailExtension;
   writeTaskExtension: typeof writeTaskExtension;
   writePiCredential: typeof writePiCredential;
+  now(): number;
   listen(server: http.Server, port: number, address: string): Promise<void>;
   close(server: http.Server): Promise<void>;
 }
 
 const systemClock: RunnerClock = {
-  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+  setTimeout: (callback, milliseconds) =>
+    setTimeout(() => void callback(), milliseconds),
   clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout | undefined),
 };
 
@@ -66,6 +78,7 @@ const productionDependencies: RunnerDependencies = {
   writeEmailExtension,
   writeTaskExtension,
   writePiCredential,
+  now: Date.now,
   async listen(server, port, address) {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -92,8 +105,14 @@ export class Runner {
   private currentTask:
     { id: string; claimId: string; attemptId?: string } | undefined;
   private activeTaskRuntime: TaskRuntime | undefined;
+  private taskRun: RunRecorder | undefined;
+  private taskHistoryView: string | undefined;
   private piSelection: ModelSelection | undefined;
   private piConnectionGeneration: number | undefined;
+  private piRun: RunRecorder | undefined;
+  private piHistoryView: string | undefined;
+  private piTurnCount = 0;
+  private readonly runs: RunStore;
   private readonly dependencies: RunnerDependencies;
   constructor(
     private readonly paths: IntegralPaths,
@@ -102,8 +121,10 @@ export class Runner {
     overrides: Partial<RunnerDependencies> = {},
   ) {
     this.dependencies = { ...productionDependencies, ...overrides };
+    this.runs = new RunStore(paths, () => this.dependencies.now());
   }
   async start(): Promise<http.Server> {
+    await this.runs.initialize();
     const network = `integral-${deploymentId(this.paths)}`;
     await this.dependencies.containers.ensureNetwork(network);
     this.dockerGateway =
@@ -151,7 +172,8 @@ export class Runner {
     this.taskBusy = true;
     let task: ScheduledTask | undefined,
       runtime: TaskRuntime | undefined,
-      exitCode: number | undefined;
+      exitCode: number | undefined,
+      turnStarted: number | undefined;
     try {
       const [coordinatorState, gatewayState, generationRaw] = await Promise.all(
         [
@@ -206,6 +228,11 @@ export class Runner {
         attempt = running.attempts.at(-1);
       if (!attempt) throw new IntegralError("started task has no attempt");
       this.currentTask.attemptId = attempt.attemptId;
+      await this.taskRun?.annotate({
+        attemptId: attempt.attemptId,
+        attemptNumber: attempt.number,
+        retryNumber: Math.max(0, attempt.number - 1),
+      });
       const taskSession = await this.dependencies.internalFetch(
         this.paths,
         "runner",
@@ -225,7 +252,14 @@ export class Runner {
         throw new IntegralError(
           `task gateway identity update failed: ${taskSession.status}`,
         );
-      await runtime.prompt(task.prompt);
+      await this.taskRun?.input(
+        task.prompt,
+        task.attempts.length > 0 ? "retry-instruction" : "original-request",
+        { executionId: task.executionId },
+      );
+      turnStarted = this.dependencies.now();
+      const answer = await runtime.prompt(task.prompt);
+      await this.taskRun?.output(answer, this.dependencies.now() - turnStarted);
       exitCode = await runtime.finish();
       const finalized = await this.dependencies.internalFetch(
         this.paths,
@@ -244,8 +278,50 @@ export class Runner {
         throw new IntegralError(
           `task finalization failed: ${finalized.status}`,
         );
+      const finalizedText = await finalized.text(),
+        finalizedTask = finalizedText
+          ? (JSON.parse(finalizedText) as ScheduledTask)
+          : undefined,
+        finalizedAttempt = finalizedTask?.attempts.find(
+          (candidate) => candidate.attemptId === attempt.attemptId,
+        ),
+        taskSucceeded = finalizedTask
+          ? finalizedTask.state === "completed"
+          : exitCode === 0,
+        termination: RunTermination = taskSucceeded
+          ? "completed"
+          : finalizedTask?.state === "cancelled"
+            ? "cancelled"
+            : "failed";
+      await this.finalizeRun(this.taskRun, {
+        termination,
+        ...(taskSucceeded
+          ? {}
+          : {
+              error:
+                finalizedTask?.lastError ??
+                `Pi task exited non-zero (${exitCode})`,
+            }),
+        ...(finalizedAttempt?.declaration
+          ? { declaration: finalizedAttempt.declaration }
+          : {}),
+      });
       this.currentTask = undefined;
     } catch (error) {
+      await this.taskRun?.failure("task-failure", error, {
+        ...(turnStarted !== undefined
+          ? { turnElapsedMs: this.dependencies.now() - turnStarted }
+          : {}),
+      });
+      const message = error instanceof Error ? error.message : String(error);
+      await this.finalizeRun(this.taskRun, {
+        termination: /timed out|timeout/i.test(message)
+          ? "timed-out"
+          : /cancel/i.test(message)
+            ? "cancelled"
+            : "failed",
+        error: message,
+      });
       if (task && this.currentTask) {
         const attemptId = this.currentTask.attemptId,
           action = attemptId ? "fail" : "defer",
@@ -285,10 +361,17 @@ export class Runner {
       );
       this.currentTask = undefined;
     } finally {
+      await this.finalizeRun(this.taskRun, {
+        termination: this.stopped ? "stopped" : "failed",
+        ...(this.stopped ? {} : { error: "task execution did not complete" }),
+      });
       if (runtime) {
         await this.revoke(runtime.spec.sessionToken);
         await runtime.stop().catch(() => undefined);
       }
+      await this.removeHistoryView(this.taskHistoryView);
+      this.taskRun = undefined;
+      this.taskHistoryView = undefined;
       if (this.activeTaskRuntime === runtime)
         this.activeTaskRuntime = undefined;
       this.taskBusy = false;
@@ -310,41 +393,94 @@ export class Runner {
     );
     await this.dependencies.writeTaskExtension(spec.home);
     spec.args.push("--append-system-prompt", renderTaskContext(task));
-    const registered = await this.dependencies.internalFetch(
-      this.paths,
-      "runner",
-      "gateway",
-      "/integral/internal/session",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          token: identity.sessionToken,
-          sessionId: identity.sessionId,
-        }),
-      },
-    );
-    if (!registered.ok) {
-      await this.revoke(identity.sessionToken);
-      throw new IntegralError(
-        `task gateway session unavailable: ${registered.status}`,
+    const previous = await this.runs.finalizedForExecution(task.executionId),
+      recorder = await this.runs.begin({
+        kind: "scheduled",
+        sessionId: identity.sessionId,
+        model: task.profile,
+        config: this.config,
+        scheduleId: task.scheduleId,
+        executionId: task.executionId,
+        attemptNumber: task.attempts.length + 1,
+        retryNumber: task.attempts.length,
+        ...(previous.at(-1)?.runId
+          ? { priorAttemptRunId: previous.at(-1)!.runId }
+          : {}),
+        sensitiveValues: [identity.sessionToken],
+      });
+    await recorder.event("host", "runtime-context", {
+      text: renderTaskContext(task),
+    });
+    this.taskRun = recorder;
+    let historyView: string | undefined, runtime: TaskRuntime | undefined;
+    try {
+      historyView = await this.runs.createHistoryView(recorder.runId);
+      this.taskHistoryView = historyView;
+      spec.mounts.push({
+        source: historyView,
+        target: "/home/pi/history",
+        readonly: true,
+      });
+      runtime = this.dependencies.containers.createTaskPi(
+        spec,
+        this.config,
+        `integral-${deploymentId(this.paths)}`,
+        (line) => {
+          this.logger.event("debug", "pi.stderr", line, {
+            schedule_id: task.scheduleId,
+            execution_id: task.executionId,
+            session_id: identity.sessionId,
+          });
+          void recorder
+            .event("pi", "stderr", { line })
+            .catch((error) =>
+              this.logger.event(
+                "error",
+                "runner.run_event_failed",
+                error instanceof Error ? error.message : String(error),
+                { run_id: recorder.runId },
+              ),
+            );
+        },
+        (event) => recorder.protocol(event),
       );
+      const registered = await this.dependencies.internalFetch(
+        this.paths,
+        "runner",
+        "gateway",
+        "/integral/internal/session",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            token: identity.sessionToken,
+            sessionId: identity.sessionId,
+          }),
+        },
+      );
+      if (!registered.ok)
+        throw new IntegralError(
+          `task gateway session unavailable: ${registered.status}`,
+        );
+      return runtime;
+    } catch (error) {
+      await recorder.failure("provisioning-failure", error);
+      await this.finalizeRun(recorder, {
+        termination: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await this.revoke(identity.sessionToken);
+      if (runtime) await runtime.stop().catch(() => undefined);
+      else await rm(spec.home, { recursive: true, force: true });
+      await this.removeHistoryView(historyView);
+      this.taskRun = undefined;
+      this.taskHistoryView = undefined;
+      throw error;
     }
-    return this.dependencies.containers.createTaskPi(
-      spec,
-      this.config,
-      `integral-${deploymentId(this.paths)}`,
-      (line) =>
-        this.logger.event("debug", "pi.stderr", line, {
-          schedule_id: task.scheduleId,
-          execution_id: task.executionId,
-          session_id: identity.sessionId,
-        }),
-    );
   }
   async runOnce(): Promise<void> {
     if (this.busy || this.stopped) return;
     this.busy = true;
-    let item: QueuedMessage | undefined;
+    let item: QueuedMessage | undefined, turnStarted: number | undefined;
     try {
       const [coordinatorState, gatewayState, generationRaw] = await Promise.all(
         [
@@ -397,7 +533,7 @@ export class Runner {
       };
       const selection = body.selection ?? undefined;
       if (this.pi && !sameSelection(this.piSelection, selection))
-        await this.destroyPi();
+        await this.destroyPi("selection-changed");
       item = body.message;
       if (!item) {
         this.armIdle();
@@ -410,7 +546,23 @@ export class Runner {
         );
       this.dependencies.clock.clearTimeout(this.idle);
       await this.ensurePi(body.context, selection, generation);
+      const activeRun = this.piRun;
+      await activeRun?.input(
+        item.text,
+        item.attempts > 1
+          ? "retry-instruction"
+          : this.piTurnCount === 0
+            ? "original-request"
+            : "follow-up",
+        {
+          messageId: item.id,
+          ...(activeRun ? { runId: activeRun.runId } : {}),
+        },
+      );
+      turnStarted = this.dependencies.now();
       const answer = await this.pi!.prompt(item.text);
+      await this.piRun?.output(answer, this.dependencies.now() - turnStarted);
+      this.piTurnCount++;
       const completed = await this.dependencies.internalFetch(
         this.paths,
         "runner",
@@ -422,6 +574,11 @@ export class Runner {
         throw new IntegralError(`completion failed: ${completed.status}`);
       this.currentMessageId = undefined;
     } catch (error) {
+      await this.piRun?.failure("turn-failure", error, {
+        ...(turnStarted !== undefined
+          ? { turnElapsedMs: this.dependencies.now() - turnStarted }
+          : {}),
+      });
       await updateComponentState(this.paths, "runner", {
         status: "degraded",
         error: error instanceof Error ? error.message : String(error),
@@ -449,7 +606,14 @@ export class Runner {
           error instanceof Error ? error.message : String(error),
         )
       )
-        await this.destroyPi();
+        await this.destroyPi(
+          /timed out/i.test(
+            error instanceof Error ? error.message : String(error),
+          )
+            ? "timed-out"
+            : "failed",
+          error instanceof Error ? error.message : String(error),
+        );
       const context = item
         ? {
             message_id: item.id,
@@ -499,33 +663,72 @@ export class Runner {
     );
     if (context.length)
       spec.args.push("--append-system-prompt", renderContext(context));
-    await this.dependencies.internalFetch(
-      this.paths,
-      "runner",
-      "gateway",
-      "/integral/internal/session",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          token: identity.sessionToken,
-          sessionId: identity.sessionId,
-        }),
-      },
-    );
-    const pi = this.dependencies.containers.createPi(
-      spec,
-      this.config,
-      `integral-${deploymentId(this.paths)}`,
-      (line) =>
-        this.logger.event("debug", "pi.stderr", line, {
-          session_id: identity.sessionId,
-        }),
-    );
+    const parent = await this.runs.latestFinalized("interactive"),
+      recorder = await this.runs.begin({
+        kind: "interactive",
+        sessionId: identity.sessionId,
+        model: selection,
+        config: this.config,
+        ...(parent ? { parentRunId: parent.runId } : {}),
+        sensitiveValues: [identity.sessionToken],
+      });
+    if (context.length)
+      await recorder.event("host", "runtime-context", {
+        text: renderContext(context),
+      });
+    let historyView: string | undefined, pi: PiRuntime | undefined;
     try {
+      historyView = await this.runs.createHistoryView(recorder.runId);
+      spec.mounts.push({
+        source: historyView,
+        target: "/home/pi/history",
+        readonly: true,
+      });
+      pi = this.dependencies.containers.createPi(
+        spec,
+        this.config,
+        `integral-${deploymentId(this.paths)}`,
+        (line) => {
+          this.logger.event("debug", "pi.stderr", line, {
+            session_id: identity.sessionId,
+          });
+          void recorder
+            .event("pi", "stderr", { line })
+            .catch((error) =>
+              this.logger.event(
+                "error",
+                "runner.run_event_failed",
+                error instanceof Error ? error.message : String(error),
+                { run_id: recorder.runId },
+              ),
+            );
+        },
+        (event) => recorder.protocol(event),
+      );
+      const registered = await this.dependencies.internalFetch(
+        this.paths,
+        "runner",
+        "gateway",
+        "/integral/internal/session",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            token: identity.sessionToken,
+            sessionId: identity.sessionId,
+          }),
+        },
+      );
+      if (!registered.ok)
+        throw new IntegralError(
+          `gateway session unavailable: ${registered.status}`,
+        );
       await pi.start();
       this.pi = pi;
       this.piSelection = { ...selection };
       this.piConnectionGeneration = connectionGeneration;
+      this.piRun = recorder;
+      this.piHistoryView = historyView;
+      this.piTurnCount = 0;
       await this.dependencies.internalFetch(
         this.paths,
         "runner",
@@ -540,8 +743,15 @@ export class Runner {
         },
       );
     } catch (error) {
+      await recorder.failure("provisioning-failure", error);
+      await this.finalizeRun(recorder, {
+        termination: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
       await this.revoke(identity.sessionToken);
-      await pi.stop();
+      if (pi) await pi.stop();
+      else await rm(spec.home, { recursive: true, force: true });
+      await this.removeHistoryView(historyView);
       throw error;
     }
   }
@@ -580,7 +790,7 @@ export class Runner {
   private armIdle(): void {
     if (!this.pi || this.idle) return;
     this.idle = this.dependencies.clock.setTimeout(
-      () => void this.destroyPi(),
+      () => this.destroyPi("idle"),
       this.config.runner.idleTimeoutSeconds * 1000,
     );
   }
@@ -598,16 +808,29 @@ export class Runner {
       )
       .catch(() => undefined);
   }
-  private async destroyPi(): Promise<void> {
+  private async destroyPi(
+    termination: RunTermination = "stopped",
+    error?: string,
+  ): Promise<void> {
     this.dependencies.clock.clearTimeout(this.idle);
     this.idle = undefined;
     const pi = this.pi;
+    const recorder = this.piRun,
+      historyView = this.piHistoryView;
     this.pi = undefined;
     this.piSelection = undefined;
     this.piConnectionGeneration = undefined;
+    this.piRun = undefined;
+    this.piHistoryView = undefined;
+    this.piTurnCount = 0;
     if (pi) {
+      await this.finalizeRun(recorder, {
+        termination,
+        ...(error ? { error } : {}),
+      });
       await this.revoke(pi.spec.sessionToken);
       await pi.stop();
+      await this.removeHistoryView(historyView);
       await this.dependencies
         .internalFetch(
           this.paths,
@@ -665,12 +888,48 @@ export class Runner {
     const taskRuntime = this.activeTaskRuntime;
     this.activeTaskRuntime = undefined;
     if (taskRuntime) {
+      await this.finalizeRun(this.taskRun, {
+        termination: "stopped",
+        error: "runner stopped",
+      });
       await this.revoke(taskRuntime.spec.sessionToken);
       await taskRuntime.stop().catch(() => undefined);
+      await this.removeHistoryView(this.taskHistoryView);
+      this.taskRun = undefined;
+      this.taskHistoryView = undefined;
     }
-    await this.destroyPi();
+    await this.destroyPi("stopped");
     const server = this.server;
     if (server) await this.dependencies.close(server);
+  }
+
+  private async finalizeRun(
+    recorder: RunRecorder | undefined,
+    options: FinalizeRunOptions,
+  ): Promise<void> {
+    if (!recorder) return;
+    try {
+      await recorder.finalize(options);
+    } catch (error) {
+      this.logger.event(
+        "error",
+        "runner.run_finalize_failed",
+        error instanceof Error ? error.message : String(error),
+        { run_id: recorder.runId },
+      );
+    }
+  }
+
+  private async removeHistoryView(path: string | undefined): Promise<void> {
+    try {
+      await this.runs.removeHistoryView(path);
+    } catch (error) {
+      this.logger.event(
+        "warn",
+        "runner.history_cleanup_failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 }
 

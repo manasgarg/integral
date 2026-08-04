@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   ContainerBackend,
   ContainerSpec,
@@ -14,9 +16,15 @@ import { deploymentId, writeComponentState } from "../src/state.ts";
 import { fixture } from "./helpers.ts";
 
 class ManualClock implements RunnerClock {
-  readonly timers: { callback: () => void; milliseconds: number }[] = [];
+  readonly timers: {
+    callback: () => void | Promise<void>;
+    milliseconds: number;
+  }[] = [];
 
-  setTimeout(callback: () => void, milliseconds: number): unknown {
+  setTimeout(
+    callback: () => void | Promise<void>,
+    milliseconds: number,
+  ): unknown {
     const timer = { callback, milliseconds };
     this.timers.push(timer);
     return timer;
@@ -24,7 +32,10 @@ class ManualClock implements RunnerClock {
 
   clearTimeout(handle: unknown): void {
     const index = this.timers.indexOf(
-      handle as { callback: () => void; milliseconds: number },
+      handle as {
+        callback: () => void | Promise<void>;
+        milliseconds: number;
+      },
     );
     if (index >= 0) this.timers.splice(index, 1);
   }
@@ -35,12 +46,12 @@ class ManualClock implements RunnerClock {
     );
     assert.notEqual(index, -1, `no timer scheduled for ${milliseconds}ms`);
     const [timer] = this.timers.splice(index, 1);
-    timer!.callback();
+    await timer!.callback();
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 
-test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it after the configured idle deadline", async (t) => {
+test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D] runner reuses one recorded Pi runtime and destroys it after the configured idle deadline", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
     config = {
@@ -87,7 +98,8 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
       startedAt: "now",
     });
 
-  let spec: ContainerSpec | undefined;
+  let spec: ContainerSpec | undefined,
+    observe: ((event: Record<string, unknown>) => void) | undefined;
   const pi: PiRuntime = {
       get spec() {
         assert.ok(spec);
@@ -98,6 +110,17 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
       },
       async prompt(text) {
         calls.push(`pi:prompt:${text}`);
+        observe?.({
+          type: "message_end",
+          message: {
+            usage: {
+              input: 12,
+              output: 4,
+              cacheRead: 8,
+              cacheWrite: 2,
+            },
+          },
+        });
         return "answer";
       },
       async stop() {
@@ -115,9 +138,10 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
       networkGateway() {
         return "127.0.0.1";
       },
-      createPi(value) {
+      createPi(value, _config, _network, _stderr, onEvent) {
         calls.push("pi:create");
         spec = value;
+        observe = onEvent;
         return pi;
       },
       createTaskPi() {
@@ -200,9 +224,48 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
   assert.ok(calls.includes("pi:prompt:hello"));
   assert.equal(spec?.image, "sha256:test-pi");
   assert.deepEqual(spec?.args.slice(-2), ["--model", "claude-sonnet-4-6"]);
+  const historyMount = spec?.mounts.find(
+    (mount) => mount.target === "/home/pi/history",
+  );
+  assert.equal(historyMount?.readonly, true);
+  assert.ok(historyMount);
+  assert.ok(historyMount.source.startsWith(`${paths.runViews}/`));
+  assert.equal(historyMount.source.startsWith(`${paths.runs}/`), false);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(historyMount.source, "index.json"), "utf8")),
+    { schemaVersion: 1, runs: [] },
+  );
   await clock.fire(config.runner.idleTimeoutSeconds * 1000);
   assert.ok(calls.includes("pi:stop"));
   assert.ok(calls.includes("DELETE:/integral/internal/session"));
+  const runDirectories = await readdir(paths.runs);
+  assert.equal(runDirectories.length, 1);
+  const runDirectory = join(paths.runs, runDirectories[0]!);
+  const metadata = JSON.parse(
+      await readFile(join(runDirectory, "run.json"), "utf8"),
+    ) as { status: string; termination: string },
+    signals = JSON.parse(
+      await readFile(join(runDirectory, "signals.json"), "utf8"),
+    ) as {
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+        unavailable: string[];
+      };
+    };
+  assert.equal(metadata.status, "finalized");
+  assert.equal(metadata.termination, "idle");
+  assert.equal(signals.usage.inputTokens, 12);
+  assert.equal(signals.usage.outputTokens, 4);
+  assert.equal(signals.usage.cacheReadTokens, 8);
+  assert.equal(signals.usage.cacheWriteTokens, 2);
+  assert.deepEqual(signals.usage.unavailable.sort(), [
+    "cost",
+    "reasoningTokens",
+    "totalTokens",
+  ]);
   await runner.stop();
 });
 
@@ -559,9 +622,10 @@ test("[CONNECTION-12C87631] runner recycles a Pi session after GitHub is connect
     "replacement:start",
     "replacement:prompt",
   ]);
+  await runner.stop();
 });
 
-test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution uses a fresh one-shot runtime and completes only after exit zero", async (t) => {
+test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] [RUN-B1D837E0] [RUN-88706C0D] task execution uses a fresh recorded one-shot runtime and completes only after exit zero", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
     config = {
@@ -761,4 +825,44 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution
     attemptId: "attempt-1",
   });
   assert.ok(calls.includes("DELETE:gateway:/integral/internal/session"));
+  const runIds = await readdir(paths.runs);
+  assert.equal(runIds.length, 1);
+  const runDirectory = join(paths.runs, runIds[0]!),
+    runMetadata = JSON.parse(
+      await readFile(join(runDirectory, "run.json"), "utf8"),
+    ) as {
+      kind: string;
+      status: string;
+      termination: string;
+      scheduleId: string;
+      executionId: string;
+      attemptId: string;
+      attemptNumber: number;
+      retryNumber: number;
+    },
+    activity = await readFile(join(runDirectory, "activity.jsonl"), "utf8");
+  assert.deepEqual(
+    {
+      kind: runMetadata.kind,
+      status: runMetadata.status,
+      termination: runMetadata.termination,
+      scheduleId: runMetadata.scheduleId,
+      executionId: runMetadata.executionId,
+      attemptId: runMetadata.attemptId,
+      attemptNumber: runMetadata.attemptNumber,
+      retryNumber: runMetadata.retryNumber,
+    },
+    {
+      kind: "scheduled",
+      status: "finalized",
+      termination: "completed",
+      scheduleId: "schedule-1",
+      executionId: "execution-1",
+      attemptId: "attempt-1",
+      attemptNumber: 1,
+      retryNumber: 0,
+    },
+  );
+  assert.match(activity, /perform scheduled work/);
+  assert.match(activity, /task result/);
 });
