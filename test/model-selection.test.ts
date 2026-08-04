@@ -43,7 +43,7 @@ test("[CHAT-C53A90D2] model search matches case-insensitive terms across connect
   assert.deepEqual(matchModelChoices(choices, ["missing"]), []);
 });
 
-test("[BOX-E1F472A1] [CHAT-C53A90D2] active model connections expose choices discovered from the resolved Pi image without credentials", async (t) => {
+test("[BOX-E1F472A1] [CHAT-C53A90D2] [LOG-28BE37DE] active model connections expose choices and report discovery progress without credentials", async (t) => {
   const paths = await fixture(t);
   await saveConnection(
     paths,
@@ -56,17 +56,31 @@ test("[BOX-E1F472A1] [CHAT-C53A90D2] active model connections expose choices dis
     "secret",
   );
   const config = await loadConfig(paths, {}),
-    catalog = await listModelChoices(paths, config, {
-      ensureRuntime: async () => ({
-        version: "1.2.3",
-        packageRoot: "/unused",
-      }),
-      ensureImage: () => "sha256:catalog",
-      discoverModels: async () => [
-        { provider: "anthropic", model: "claude-sonnet-4-6" },
-      ],
-    }),
+    progress: string[] = [],
+    catalog = await listModelChoices(
+      paths,
+      config,
+      {
+        ensureRuntime: async () => ({
+          version: "1.2.3",
+          packageRoot: "/unused",
+        }),
+        ensureImage: () => "sha256:catalog",
+        discoverModels: async () => [
+          { provider: "anthropic", model: "claude-sonnet-4-6" },
+        ],
+      },
+      (stage) => progress.push(stage),
+    ),
     available = catalog.choices;
+  assert.deepEqual(progress, [
+    "runtime.resolve",
+    "runtime.ready",
+    "image.resolve",
+    "image.ready",
+    "models.discover",
+    "models.ready",
+  ]);
   assert.equal(catalog.piVersion, "1.2.3");
   assert.equal(catalog.piImage, "sha256:catalog");
   assert.ok(available.length > 0);

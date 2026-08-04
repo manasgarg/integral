@@ -392,7 +392,7 @@ async function connectionCommand(args: string[]): Promise<number> {
   throw new IntegralError(`unknown connection command: ${command}`);
 }
 
-async function explicitConnection(args: string[]): Promise<Connection> {
+export async function explicitConnection(args: string[]): Promise<Connection> {
   const entryName = args[0]!,
     entry = CATALOG.find((e) => e.name === entryName);
   if (!entry) throw new IntegralError(`unknown catalog entry: ${entryName}`);
@@ -411,9 +411,12 @@ async function explicitConnection(args: string[]): Promise<Connection> {
     rl?.close();
   }
   const raw: Record<string, unknown> = { name, kind: entry.kind, auth };
-  if (entry.kind === "model" || entry.kind === "email")
+  if (entry.name === "github") {
+    raw.provider = entry.name;
+    raw.hosts = [...entry.hosts];
+  } else if (entry.kind === "model" || entry.kind === "email") {
     raw.provider = entryName;
-  else raw.url = flag(args, "--url");
+  } else raw.url = flag(args, "--url");
   const methods = flag(args, "--methods");
   if (methods) raw.methods = methods.split(",");
   for (const [option, key] of [
@@ -554,7 +557,10 @@ async function guidedConnection(): Promise<Connection> {
               )
             ).trim() || defaultAuth;
     const args = [entry.name, "--name", name, "--auth", chosenAuth];
-    if (entry.kind === "http" || entry.kind === "mcp") {
+    if (
+      (entry.kind === "http" || entry.kind === "mcp") &&
+      entry.name !== "github"
+    ) {
       args.push("--url", await rl.question("URL: "));
       const path = (await rl.question("Path prefix [URL path]: ")).trim();
       if (path) args.push("--path-prefix", path);
@@ -692,15 +698,24 @@ async function verifySetup(
   connection: Connection,
   credential?: string,
 ): Promise<void> {
-  if (!connection.url) return;
+  const url =
+    connection.provider === "github"
+      ? "https://api.github.com/user"
+      : connection.url;
+  if (!url) return;
   const headers: Record<string, string> = {},
     effective = credential
       ? (oauthAccess(credential) ?? credential)
       : undefined;
-  if (connection.auth !== "none")
+  if (connection.provider === "github" && effective)
+    headers.Authorization = `token ${effective}`;
+  else if (connection.auth !== "none")
     headers[connection.header ?? "Authorization"] =
       `${connection.scheme ?? "Bearer"} ${effective}`;
-  const response = await fetch(connection.url, { method: "HEAD", headers });
+  const response = await fetch(url, {
+    method: connection.provider === "github" ? "GET" : "HEAD",
+    headers,
+  });
   if (!response.ok)
     throw new IntegralError(
       `connection verification failed: HTTP ${response.status}`,

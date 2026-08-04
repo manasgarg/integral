@@ -1,7 +1,10 @@
 FROM node:24.15.0-slim
 
 ARG PI_VERSION=latest
-RUN npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates gh git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && npm cache clean --force \
     && groupmod --new-name pi node \
     && usermod --login pi --home /home/pi --move-home --shell /usr/sbin/nologin node

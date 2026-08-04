@@ -25,7 +25,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
-    "package:check": "npm run build && publint",
+    "package:check": "npm run build && node scripts/package-check.ts",
     "pack:check": "npm pack --dry-run",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",

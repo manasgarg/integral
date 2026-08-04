@@ -82,6 +82,38 @@ test("[CONFIG-82E6A3F5] [CONFIG-D17B4C90] [CONNECTION-A61E2C9D] HTTP boundaries 
   );
 });
 
+test("[CONNECTION-12C87631] GitHub uses one protected connection with its exact API and Git hosts", async (t) => {
+  const paths = await fixture(t),
+    github = validateConnection({
+      name: "github",
+      kind: "http",
+      provider: "github",
+      auth: "key",
+      hosts: ["api.github.com", "github.com"],
+    });
+  assert.deepEqual(github.hosts, ["api.github.com", "github.com"]);
+  await saveConnection(paths, github, "github-secret");
+  const declaration = await readFile(
+    join(paths.connections, "github.toml"),
+    "utf8",
+  );
+  assert.match(declaration, /provider = "github"/);
+  assert.match(declaration, /hosts = \["api\.github\.com", "github\.com"\]/);
+  assert.doesNotMatch(declaration, /github-secret/);
+  assert.equal(await credentialFor(paths, "github"), "github-secret");
+  assert.throws(
+    () =>
+      validateConnection({
+        name: "github",
+        kind: "http",
+        provider: "github",
+        auth: "key",
+        hosts: ["evil.test"],
+      }),
+    /GitHub hosts/,
+  );
+});
+
 test("[CONFIG-6A90E2D4] OAuth and device-code metadata is complete, HTTPS-only except loopback, and contains no tokens", () => {
   const raw = {
     name: "remote",

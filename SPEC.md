@@ -52,8 +52,9 @@ contains definition revisions only; occurrence state, task results, attempts,
 credentials, and temporary session identity do not belong in it.
 
 External access uses the connection CLI vocabulary inherited from the source
-project. Phase 1 supports catalog model providers, generic HTTP endpoints, and
-remote MCP servers with OAuth, device-code, key, or no authentication. It
+project. Phase 1 supports catalog model providers, GitHub API and Git smart HTTP
+access, generic HTTP endpoints, and remote MCP servers with OAuth, device-code,
+key, or no authentication. It
 supports `connection catalog`, guided and explicit `connection add`,
 `connection ls`, and `connection rm`. It does not expose a separate credential
 or auth CLI.

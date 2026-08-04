@@ -3,12 +3,14 @@ import test from "node:test";
 import {
   completeEmailOptions,
   createTalkTerminal,
+  explicitConnection,
   main,
   queueCommand,
   selectAuthentication,
   talkCommand,
 } from "../src/cli.ts";
 import { fixture } from "./helpers.ts";
+import { saveConnection } from "../src/connections.ts";
 
 async function capture(
   args: string[],
@@ -90,6 +92,7 @@ test("[CONNECTION-75EC27E8] catalog describes model, email, HTTP, MCP and every 
   for (const word of [
     "openai-codex",
     "anthropic",
+    "github",
     "http",
     "mcp",
     "gmail",
@@ -131,6 +134,26 @@ test("[CONNECTION-A61E2C9D] [CONNECTION-E73B40C6] explicit no-auth HTTP setup an
       kind: "http",
       provider: null,
       auth: "none",
+      state: "active",
+    },
+  ]);
+});
+
+test("[CONNECTION-12C87631] explicit GitHub setup stores one automatically bounded connection", async (t) => {
+  const paths = await fixture(t),
+    connection = await explicitConnection(["github", "--auth", "key"]);
+  assert.equal(connection.provider, "github");
+  assert.deepEqual(connection.hosts, ["api.github.com", "github.com"]);
+  await saveConnection(paths, connection, "github-secret");
+  const listed = await capture(["connection", "ls", "--json"], {
+    INTEGRAL_HOME: paths.root,
+  });
+  assert.deepEqual(JSON.parse(listed.stdout), [
+    {
+      name: "github",
+      kind: "http",
+      provider: "github",
+      auth: "key",
       state: "active",
     },
   ]);

@@ -11,6 +11,7 @@ import {
   listModelChoices,
   sameSelection,
   type ModelCatalog,
+  type ModelCatalogProgress,
   type ModelChoice,
 } from "./model-selection.ts";
 import {
@@ -33,6 +34,7 @@ import { internalFetch } from "./http-client.ts";
 import { DurableTaskQueue } from "./task-queue.ts";
 import type { ScheduledOccurrence } from "./occurrence-store.ts";
 import type { Component } from "./constants.ts";
+import type { Logger } from "./logging.ts";
 
 export interface ClientEvent {
   sequence: number;
@@ -43,16 +45,23 @@ export interface CoordinatorDependencies {
   servers: HttpServerRuntime;
   intervals: IntervalRuntime;
   internalFetch: typeof internalFetch;
+  defer(callback: () => void): unknown;
+  cancelDeferred(handle: unknown): void;
   listModelChoices(
     paths: IntegralPaths,
     config: EffectiveConfig,
+    progress?: ModelCatalogProgress,
   ): Promise<ModelCatalog>;
 }
 const productionDependencies: CoordinatorDependencies = {
   servers: nodeHttpServerRuntime,
   intervals: nodeIntervalRuntime,
   internalFetch,
-  listModelChoices,
+  defer: (callback) => setTimeout(callback, 0),
+  cancelDeferred: (handle) =>
+    clearTimeout(handle as NodeJS.Timeout | undefined),
+  listModelChoices: (paths, config, progress) =>
+    listModelChoices(paths, config, {}, progress),
 };
 export class Coordinator {
   readonly queue: DurableQueue;
@@ -65,6 +74,7 @@ export class Coordinator {
   private attached = 0;
   private token = "";
   private refreshTimer: unknown;
+  private catalogRefresh: unknown;
   private workChain: Promise<unknown> = Promise.resolve();
   private connectionGeneration: number | undefined;
   private readonly modelCatalogs = new Map<string, ModelCatalog>();
@@ -74,6 +84,7 @@ export class Coordinator {
     private readonly paths: IntegralPaths,
     private readonly config: EffectiveConfig,
     overrides: Partial<CoordinatorDependencies> = {},
+    private readonly logger?: Logger,
   ) {
     this.dependencies = { ...productionDependencies, ...overrides };
     this.queue = new DurableQueue(paths.queue, (event) =>
@@ -89,7 +100,6 @@ export class Coordinator {
     await this.modelSelection.load();
     await this.tasks.load();
     this.token = await componentIdentity(this.paths);
-    await this.modelCatalog().catch(() => undefined);
     const server = http.createServer((req, res) => void this.route(req, res));
     this.server = server;
     await this.dependencies.servers.listen(
@@ -101,6 +111,10 @@ export class Coordinator {
       () => void this.refresh(),
       500,
     );
+    this.catalogRefresh = this.dependencies.defer(() => {
+      this.catalogRefresh = undefined;
+      void this.modelCatalog().catch(() => undefined);
+    });
     return server;
   }
   private async refresh(): Promise<void> {
@@ -212,13 +226,43 @@ export class Coordinator {
     if (cached) return cached;
     const existing = this.modelCatalogLoads.get(key);
     if (existing) return existing;
+    this.logger?.event(
+      "info",
+      "model_catalog.refresh",
+      "refreshing the model catalog",
+      { connection_generation: currentGeneration },
+    );
     const loading = this.dependencies
-      .listModelChoices(this.paths, this.config)
+      .listModelChoices(this.paths, this.config, (stage, message, context) =>
+        this.logger?.event("info", "model_catalog.progress", message, {
+          stage,
+          ...context,
+        }),
+      )
       .then((catalog) => {
         this.modelCatalogs.set(key, catalog);
         while (this.modelCatalogs.size > 4)
           this.modelCatalogs.delete(this.modelCatalogs.keys().next().value!);
+        this.logger?.event(
+          "info",
+          "model_catalog.ready",
+          "model catalog is ready",
+          {
+            connection_generation: currentGeneration,
+            model_count: catalog.choices.length,
+            ...(catalog.piVersion ? { pi_version: catalog.piVersion } : {}),
+          },
+        );
         return catalog;
+      })
+      .catch((error: unknown) => {
+        this.logger?.event(
+          "warn",
+          "model_catalog.failed",
+          error instanceof Error ? error.message : String(error),
+          { connection_generation: currentGeneration },
+        );
+        throw error;
       })
       .finally(() => this.modelCatalogLoads.delete(key));
     this.modelCatalogLoads.set(key, loading);
@@ -542,6 +586,10 @@ export class Coordinator {
     });
   }
   async stop(): Promise<void> {
+    if (this.catalogRefresh !== undefined) {
+      this.dependencies.cancelDeferred(this.catalogRefresh);
+      this.catalogRefresh = undefined;
+    }
     this.dependencies.intervals.clearInterval(this.refreshTimer);
     const server = this.server;
     this.server = undefined;

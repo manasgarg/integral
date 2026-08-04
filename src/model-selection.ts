@@ -26,6 +26,12 @@ export interface ModelCatalog {
   warning?: string;
 }
 
+export type ModelCatalogProgress = (
+  stage: string,
+  message: string,
+  context?: Record<string, unknown>,
+) => void;
+
 export interface ModelCatalogDependencies {
   ensureRuntime(paths: IntegralPaths): Promise<PiRuntimeResolution>;
   ensureImage(
@@ -50,6 +56,7 @@ export async function listModelChoices(
   paths: IntegralPaths,
   config: EffectiveConfig,
   overrides: Partial<ModelCatalogDependencies> = {},
+  progress?: ModelCatalogProgress,
 ): Promise<ModelCatalog> {
   const connections = (await listConnections(paths))
     .filter(
@@ -58,18 +65,37 @@ export async function listModelChoices(
     )
     .sort((a, b) => a.name.localeCompare(b.name));
   if (!connections.length) return { choices: [] };
-  const dependencies = { ...productionDependencies, ...overrides },
-    runtime = await dependencies.ensureRuntime(paths),
-    image = await dependencies.ensureImage(config, runtime.version),
-    piVersion =
+  const dependencies = { ...productionDependencies, ...overrides };
+  progress?.("runtime.resolve", "checking and preparing the Pi runtime");
+  const runtime = await dependencies.ensureRuntime(paths);
+  progress?.("runtime.ready", "Pi runtime is ready", {
+    pi_version: runtime.version,
+    cached: Boolean(runtime.warning),
+  });
+  progress?.(
+    "image.resolve",
+    "resolving the managed Pi image; this may build or pull an image",
+    { pi_version: runtime.version },
+  );
+  const image = await dependencies.ensureImage(config, runtime.version);
+  progress?.("image.ready", "managed Pi image is ready", {
+    pi_version: runtime.version,
+  });
+  const piVersion =
       config.runner.image === DEFAULT_PI_IMAGE
         ? runtime.version
         : await dependencies.discoverVersion(image),
     providers = [
       ...new Set(connections.map((connection) => connection.provider!)),
-    ],
-    models = await dependencies.discoverModels(image, providers),
+    ];
+  progress?.("models.discover", "discovering models from the Pi image", {
+    provider_count: providers.length,
+  });
+  const models = await dependencies.discoverModels(image, providers),
     byProvider = new Map<string, string[]>();
+  progress?.("models.ready", "Pi model discovery is complete", {
+    model_count: models.length,
+  });
   for (const { provider, model } of models) {
     const group = byProvider.get(provider) ?? [];
     group.push(model);

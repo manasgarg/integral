@@ -237,6 +237,33 @@ Given a connection is valid and active
 			And injects the stored OpenAI account ID as `chatgpt-account-id` when present
 			And does not expose another connection's credential on its requests
 
+## CONNECTION-12C87631 — Connect GitHub without exposing its token
+
+Given no GitHub connection exists
+	When the user runs `integral connection add github --auth key`
+		And supplies a non-empty personal access token
+		Then integral stores one connection for `api.github.com` and `github.com`
+			And stores the token only in the host credential area
+			And identifies GitHub as an HTTP connection in the catalog and connection list
+Given an active GitHub connection exists
+	And a Pi session provisioned before that connection is still active
+	When integral observes the new connection generation
+		Then integral ends the stale Pi session before the next turn
+			And provisions the replacement with GitHub access
+Given an active GitHub connection exists
+	When integral provisions a Pi container
+		Then the container includes `git` and `gh`
+			And receives `GH_TOKEN` set to the integral credential sentinel
+			And does not receive the real GitHub token
+	When Pi calls the GitHub API over HTTPS
+		Then the gateway allows the request only on `api.github.com`
+			And injects the stored token using GitHub API authentication
+	When Pi uses Git smart HTTP over HTTPS
+		Then the gateway allows the request only on `github.com`
+			And injects the stored token using GitHub Basic authentication
+	When Pi attempts GitHub access through SSH or another host
+		Then the gateway denies the request
+
 ## CONNECTION-8F14C3B7 — Reject an invalid generic connection declaration
 
 Given the user is adding a generic HTTP or MCP connection
