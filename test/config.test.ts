@@ -12,6 +12,7 @@ test("[CONFIG-8A31F6C2] [CONFIG-2D7C49E1] [CONFIG-A16F73C8] [CONFIG-E82C4A19] [C
     gatewayPort: 7310,
     coordinatorPort: 7311,
     runnerPort: 7312,
+    schedulerPort: 7313,
   });
   assert.deepEqual(config.runner, {
     image: DEFAULT_PI_IMAGE,
@@ -45,7 +46,7 @@ test("[CONFIG-39B8E2F6] [ENV-5F2C7E06] [ENV-C8A14D73] [ENV-BC39A7D2] [ENV-2E7A94
   await mkdir(paths.config, { recursive: true });
   await writeFile(
     paths.mainConfig,
-    "[server]\ngateway_port=8000\ncoordinator_port=8001\nrunner_port=8002\n[logging]\nlevel='warn'\nformat='text'\n",
+    "[server]\ngateway_port=8000\ncoordinator_port=8001\nrunner_port=8002\nscheduler_port=8003\n[logging]\nlevel='warn'\nformat='text'\n",
   );
   const config = await loadConfig(paths, {
     INTEGRAL_GATEWAY_PORT: "9000",
@@ -55,6 +56,7 @@ test("[CONFIG-39B8E2F6] [ENV-5F2C7E06] [ENV-C8A14D73] [ENV-BC39A7D2] [ENV-2E7A94
     gatewayPort: 9000,
     coordinatorPort: 8001,
     runnerPort: 8002,
+    schedulerPort: 8003,
   });
   assert.deepEqual(config.logging, { level: "warn", format: "json" });
   assert.equal(config.sources["server.gateway_port"], "environment");

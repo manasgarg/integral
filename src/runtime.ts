@@ -18,7 +18,7 @@ export const nodeHttpServerRuntime: HttpServerRuntime = {
     });
   },
   async close(server) {
-    await new Promise<void>((resolve, reject) =>
+    await new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (
           !error ||
@@ -26,8 +26,9 @@ export const nodeHttpServerRuntime: HttpServerRuntime = {
         )
           resolve();
         else reject(error);
-      }),
-    );
+      });
+      server.closeAllConnections();
+    });
   },
 };
 

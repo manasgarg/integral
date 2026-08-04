@@ -266,6 +266,7 @@ test("[EMAIL-89334867] email extension contains only enabled semantic tools and 
   assert.match(source, /integral\/email/);
   assert.match(source, /from "node:http"/);
   assert.match(source, /proxy-authorization/);
+  assert.match(source, /request\(target\.url, \{ agent: false/);
   assert.match(source, /"capabilities":\["read","send"\]/);
   assert.match(source, /email gateway request was cancelled/);
   assert.match(source, /email gateway request failed/);

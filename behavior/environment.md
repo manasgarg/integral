@@ -58,23 +58,25 @@ Given an integral process has resolved its deployment root and component setting
 
 ## ENV-5F2C7E06 — Override component ports from the environment
 
-Given `INTEGRAL_GATEWAY_PORT`, `INTEGRAL_COORDINATOR_PORT`, and `INTEGRAL_RUNNER_PORT` contain distinct free decimal ports from `1` through `65535`
+Given `INTEGRAL_GATEWAY_PORT`, `INTEGRAL_COORDINATOR_PORT`, `INTEGRAL_RUNNER_PORT`, and `INTEGRAL_SCHEDULER_PORT` contain distinct free decimal ports from `1` through `65535`
 	And the main config may contain different component ports
 	When the user runs `integral server start`
 		Then the gateway binds to `INTEGRAL_GATEWAY_PORT`
 			And the coordinator binds to `INTEGRAL_COORDINATOR_PORT`
 			And the runner binds to `INTEGRAL_RUNNER_PORT`
+			And the scheduler binds to `INTEGRAL_SCHEDULER_PORT`
 			And environment values take precedence over main-config values
 			And integral records all bound component endpoints under the resolved `INTEGRAL_HOME`
 
 ## ENV-C8A14D73 — Use default component ports
 
-Given all three component port variables are unset or empty
+Given all four component port variables are unset or empty
 	And the main config does not define component ports
 	When the user runs `integral server start`
 		Then the gateway uses port `7310`
 			And the coordinator uses port `7311`
 			And the runner uses port `7312`
+			And the scheduler uses port `7313`
 			And integral records all bound component endpoints under the resolved `INTEGRAL_HOME`
 
 ## ENV-17B6E9C2 — Reject invalid component ports
@@ -162,7 +164,7 @@ Given one or more component port variables are explicitly configured
 		Then integral uses environment values where present
 			And otherwise uses that component's main-config value where present
 			And otherwise uses that component's built-in default port
-			And validates that the resulting three ports are distinct
+			And validates that the resulting four ports are distinct
 
 ## ENV-2E7A94C1 — Override one separately running component port
 

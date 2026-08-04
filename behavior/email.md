@@ -59,6 +59,9 @@ Given one or more active email connections exist when a Pi session starts
 			And each tool calls the authenticated host email boundary
 			And the host-boundary call bypasses environment proxy dispatch
 			And no real email credential is written to the session home
+	When the runner prepares a fresh isolated scheduled-task session
+		Then it installs the same governed email capabilities in that task home
+			And keeps the interactive and scheduled-task session identities separate
 	When no active email connection exists
 		Then the runner does not install the email extension
 	When the semantic tool cannot reach the authenticated host email boundary

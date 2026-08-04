@@ -310,7 +310,7 @@ test("[CONFIG-D4A70C31] human config output uses readable sourced sections inste
   assert.doesNotMatch(shown.stdout, /^server: \{/m);
 });
 
-test("[SERVER-2C8F41A7] component startup help documents combined and three separate modes", async () => {
+test("[SERVER-2C8F41A7] component startup help documents combined and four separate modes", async () => {
   const result = await capture(["server", "start", "--help"]);
   for (const word of [
     "Combined mode",
@@ -318,6 +318,7 @@ test("[SERVER-2C8F41A7] component startup help documents combined and three sepa
     "coordinator",
     "runner",
     "gateway",
+    "scheduler",
   ])
     assert.match(result.stdout, new RegExp(word));
 });
@@ -665,7 +666,7 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
     stdout.includes(`[event]${userLabel}from another terminal \u001b[0m`),
   );
   assert.match(stdout, /\[event\]∮ response/);
-  assert.deepEqual(workingStates, [true, false, false]);
+  assert.deepEqual(workingStates, [true, false, false, false]);
   assert.doesNotMatch(stdout, /hidden/);
   assert.match(stdout, /gateway.*healthy/s);
   assert.match(stdout, /queued\tmessage-1\tqueued/);
@@ -693,6 +694,107 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
       ],
     ],
   );
+});
+
+test("[CHAT-4F29A6D8] an attached talk terminal reconnects after coordinator restart without replaying conversation", async (t) => {
+  const paths = await fixture(t),
+    encoder = new TextEncoder(),
+    firstEvents = encoder.encode(
+      'event: snapshot\ndata: {"conversation":[{"type":"user","text":"persisted","sequence":1}],"queue":[]}\n\n',
+    );
+  let endpointCalls = 0,
+    eventCalls = 0,
+    stdout = "",
+    stderr = "",
+    postedHost = "";
+  let reconnected: (() => void) | undefined;
+  const reconnectedPromise = new Promise<void>((resolve) => {
+    reconnected = resolve;
+  });
+  let questions = 0;
+
+  const code = await talkCommand([], {
+    resolvePaths: () => paths,
+    componentEndpoint: async () =>
+      endpointCalls++ === 0
+        ? "http://coordinator-before.test"
+        : "http://coordinator-after.test",
+    verifiedFetch: async () => new Response("ok"),
+    createTerminalId: () => "terminal-reconnect",
+    createTerminal: () => ({
+      async question() {
+        if (questions++ === 0) {
+          await reconnectedPromise;
+          return "after restart";
+        }
+        return "/exit";
+      },
+      close() {},
+    }),
+    writeOutput(text) {
+      stdout += text;
+      if (text.includes("coordinator reconnected")) reconnected?.();
+    },
+    writeError(text) {
+      stderr += text;
+    },
+    async fetch(input, init) {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input
+            : input.url,
+      );
+      if (url.pathname === "/integral/models")
+        return Response.json({
+          choices: [
+            {
+              connection: "work",
+              provider: "openai-codex",
+              model: "gpt-5.5",
+              piVersion: "1.2.3",
+              piImage: "sha256:current",
+            },
+          ],
+          current: {
+            connection: "work",
+            provider: "openai-codex",
+            model: "gpt-5.5",
+            piVersion: "1.2.3",
+            piImage: "sha256:current",
+          },
+        });
+      if (url.pathname === "/integral/events") {
+        if (eventCalls++ === 0) return new Response(firstEvents);
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'event: snapshot\ndata: {"conversation":[{"type":"user","text":"persisted","sequence":1},{"type":"assistant","text":"restored","sequence":2}],"queue":[]}\n\n',
+              ),
+            );
+            init?.signal?.addEventListener("abort", () => controller.close(), {
+              once: true,
+            });
+          },
+        });
+        return new Response(stream);
+      }
+      if (url.pathname === "/integral/messages") {
+        postedHost = url.hostname;
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.match(/persisted/g)?.length, 1);
+  assert.equal(stdout.match(/restored/g)?.length, 1);
+  assert.match(stdout, /coordinator reconnected/);
+  assert.match(stderr, /coordinator disconnected; reconnecting/);
+  assert.equal(postedHost, "coordinator-after.test");
 });
 
 test("[CHAT-6E91B4C7] [CHAT-C53A90D2] integral talk patterns and /model use one provider-and-model chooser", async (t) => {

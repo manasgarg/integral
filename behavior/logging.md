@@ -1,7 +1,7 @@
 # Logging behaviors
 
 These behaviors define diagnostic logging for CLI commands and the coordinator,
-runner, and gateway in combined or separate-process operation.
+runner, gateway, and scheduler in combined or separate-process operation.
 
 ## LOG-0A6F3D92 — Configure component logging
 
@@ -59,6 +59,11 @@ Given integral emits a diagnostic event
 Given a user message causes coordinator, runner, gateway, and Pi activity
 	When those components emit related events
 		Then logs include the applicable `message_id`, `session_id`, and `request_id`
+			And preserve correlation identifiers across component network calls
+			And omit an identifier only when it does not apply
+Given a scheduled occurrence causes scheduler, coordinator, runner, gateway, and Pi activity
+	When those components emit related events
+		Then logs include the applicable `schedule_id`, `execution_id`, `attempt_id`, `session_id`, and `request_id`
 			And preserve correlation identifiers across component network calls
 			And omit an identifier only when it does not apply
 
@@ -147,7 +152,7 @@ Given logging configuration is invalid
 ## LOG-AD90C4E2 — Preserve logging behavior across deployment modes
 
 Given the same effective logging configuration
-	When components run together in one process or separately in three processes
+	When components run together in one process or separately in four processes
 		Then each component emits the same event fields and level decisions
 			And combined mode does not merge distinct component events into one event
 			And separate mode does not require different parsing rules

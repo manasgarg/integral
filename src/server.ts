@@ -13,6 +13,7 @@ import {
 } from "./state.ts";
 import { Coordinator } from "./coordinator.ts";
 import { Gateway } from "./gateway.ts";
+import { Scheduler } from "./scheduler.ts";
 import { Runner, validateRunnerHost } from "./runner.ts";
 import { Logger } from "./logging.ts";
 import { IntegralError } from "./errors.ts";
@@ -52,7 +53,9 @@ function createProductionRuntime(
       ? new Coordinator(paths, config)
       : component === "gateway"
         ? new Gateway(paths, config, logger)
-        : new Runner(paths, config, logger);
+        : component === "scheduler"
+          ? new Scheduler(paths, config)
+          : new Runner(paths, config, logger);
   return {
     async start() {
       const server = await runtime.start(),
@@ -116,7 +119,7 @@ export async function startComponents(
   const dependencies = { ...productionDependencies, ...overrides };
   const components = selected
     ? [selected]
-    : (["coordinator", "gateway", "runner"] satisfies Component[]);
+    : (["coordinator", "scheduler", "gateway", "runner"] satisfies Component[]);
   const started: Started[] = [],
     secrets = await credentialSecretValues(paths);
   if (components.includes("runner"))
@@ -281,7 +284,7 @@ export async function serverStatus(
   const overall =
     running.length === 0
       ? "stopped"
-      : running.length === 3 &&
+      : running.length === COMPONENTS.length &&
           fingerprints.size === 1 &&
           generations.size === 1 &&
           running.every((s) => s!.status === "ready")

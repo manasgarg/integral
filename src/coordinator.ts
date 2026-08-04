@@ -29,6 +29,10 @@ import {
   type HttpServerRuntime,
   type IntervalRuntime,
 } from "./runtime.ts";
+import { internalFetch } from "./http-client.ts";
+import { DurableTaskQueue } from "./task-queue.ts";
+import type { ScheduledOccurrence } from "./occurrence-store.ts";
+import type { Component } from "./constants.ts";
 
 export interface ClientEvent {
   sequence: number;
@@ -38,6 +42,7 @@ export interface ClientEvent {
 export interface CoordinatorDependencies {
   servers: HttpServerRuntime;
   intervals: IntervalRuntime;
+  internalFetch: typeof internalFetch;
   listModelChoices(
     paths: IntegralPaths,
     config: EffectiveConfig,
@@ -46,12 +51,14 @@ export interface CoordinatorDependencies {
 const productionDependencies: CoordinatorDependencies = {
   servers: nodeHttpServerRuntime,
   intervals: nodeIntervalRuntime,
+  internalFetch,
   listModelChoices,
 };
 export class Coordinator {
   readonly queue: DurableQueue;
   readonly conversation: ConversationStore;
   readonly modelSelection: ModelSelectionStore;
+  readonly tasks: DurableTaskQueue;
   private readonly events = new EventEmitter();
   private server: http.Server | undefined;
   private eventSequence = 0;
@@ -59,6 +66,9 @@ export class Coordinator {
   private token = "";
   private refreshTimer: unknown;
   private workChain: Promise<unknown> = Promise.resolve();
+  private connectionGeneration: number | undefined;
+  private readonly modelCatalogs = new Map<string, ModelCatalog>();
+  private readonly modelCatalogLoads = new Map<string, Promise<ModelCatalog>>();
   private readonly dependencies: CoordinatorDependencies;
   constructor(
     private readonly paths: IntegralPaths,
@@ -71,12 +81,15 @@ export class Coordinator {
     );
     this.conversation = new ConversationStore(paths.conversation);
     this.modelSelection = new ModelSelectionStore(paths.modelSelection);
+    this.tasks = new DurableTaskQueue(paths);
   }
   async start(): Promise<http.Server> {
     await this.queue.load();
     await this.conversation.load();
     await this.modelSelection.load();
+    await this.tasks.load();
     this.token = await componentIdentity(this.paths);
+    await this.modelCatalog().catch(() => undefined);
     const server = http.createServer((req, res) => void this.route(req, res));
     this.server = server;
     await this.dependencies.servers.listen(
@@ -85,10 +98,28 @@ export class Coordinator {
       "127.0.0.1",
     );
     this.refreshTimer = this.dependencies.intervals.setInterval(
-      () => void this.adoptGeneration(),
+      () => void this.refresh(),
       500,
     );
     return server;
+  }
+  private async refresh(): Promise<void> {
+    await Promise.all([this.adoptGeneration(), this.flushTaskOutbox()]);
+  }
+
+  async flushTaskOutbox(): Promise<void> {
+    for (const entry of this.tasks.outbox()) {
+      const response = await this.dependencies
+        .internalFetch(
+          this.paths,
+          "coordinator",
+          "scheduler",
+          `/integral/internal/occurrences/${entry.executionId}/ack`,
+          { method: "POST", body: JSON.stringify(entry) },
+        )
+        .catch(() => undefined);
+      if (response?.ok) await this.tasks.acknowledgeOutbox(entry.executionId);
+    }
   }
   private async adoptGeneration(): Promise<void> {
     const generation = Number(
@@ -96,10 +127,13 @@ export class Coordinator {
         await readText(join(this.paths.state, "connection-generation"))
       )?.trim() || "0",
     );
+    const changed = this.connectionGeneration !== generation;
+    this.connectionGeneration = generation;
     await updateComponentState(this.paths, "coordinator", {
       connectionGeneration: generation,
       status: "ready",
     });
+    if (changed) void this.modelCatalog(generation).catch(() => undefined);
   }
   private broadcast(type: string, data: unknown): ClientEvent {
     const event = { sequence: ++this.eventSequence, type, data };
@@ -111,15 +145,19 @@ export class Coordinator {
       deploymentId: deploymentId(this.paths),
       conversation: this.conversation.snapshot(),
       queue: this.queue.snapshot(),
+      tasks: this.tasks.snapshot(),
       modelSelection: this.modelSelection.get() ?? null,
       eventSequence: this.eventSequence,
       attached: this.attached,
     };
   }
-  private internal(req: IncomingMessage): boolean {
+  private internal(
+    req: IncomingMessage,
+    expected: Component | Component[] = "runner",
+  ): boolean {
     return verifyInternal(
       req.headers,
-      "runner",
+      expected,
       this.token,
       deploymentId(this.paths),
     );
@@ -130,10 +168,7 @@ export class Coordinator {
     piVersion?: string;
     warning?: string;
   }> {
-    const catalog = await this.dependencies.listModelChoices(
-      this.paths,
-      this.config,
-    );
+    const catalog = await this.modelCatalog();
     return {
       choices: catalog.choices,
       current: this.modelSelection.get() ?? null,
@@ -151,10 +186,7 @@ export class Coordinator {
           "cannot change model selection while a Pi turn is in flight",
           409,
         );
-      const catalog = await this.dependencies.listModelChoices(
-          this.paths,
-          this.config,
-        ),
+      const catalog = await this.modelCatalog(),
         choice = catalog.choices.find(
           (candidate) =>
             candidate.connection === connection && candidate.model === model,
@@ -172,6 +204,33 @@ export class Coordinator {
       return choice;
     });
   }
+  private async modelCatalog(generation?: number): Promise<ModelCatalog> {
+    const currentGeneration = generation ?? (await this.readGeneration()),
+      key = `${this.config.fingerprint}:${currentGeneration}`,
+      cached = this.modelCatalogs.get(key);
+    this.connectionGeneration = currentGeneration;
+    if (cached) return cached;
+    const existing = this.modelCatalogLoads.get(key);
+    if (existing) return existing;
+    const loading = this.dependencies
+      .listModelChoices(this.paths, this.config)
+      .then((catalog) => {
+        this.modelCatalogs.set(key, catalog);
+        while (this.modelCatalogs.size > 4)
+          this.modelCatalogs.delete(this.modelCatalogs.keys().next().value!);
+        return catalog;
+      })
+      .finally(() => this.modelCatalogLoads.delete(key));
+    this.modelCatalogLoads.set(key, loading);
+    return loading;
+  }
+  private async readGeneration(): Promise<number> {
+    return Number(
+      (
+        await readText(join(this.paths.state, "connection-generation"))
+      )?.trim() || "0",
+    );
+  }
   private async route(
     req: IncomingMessage,
     res: ServerResponse,
@@ -179,20 +238,24 @@ export class Coordinator {
     try {
       const url = new URL(req.url ?? "/", "http://coordinator");
       if (url.pathname === "/integral/health" && req.method === "GET") {
-        const [gateway, runner] = await Promise.all([
+        const [gateway, runner, scheduler] = await Promise.all([
           readComponentState(this.paths, "gateway"),
           readComponentState(this.paths, "runner"),
+          readComponentState(this.paths, "scheduler"),
         ]);
         json(res, 200, {
           component: "coordinator",
           deploymentId: deploymentId(this.paths),
           status:
-            gateway?.status === "ready" && runner?.status === "ready"
+            gateway?.status === "ready" &&
+            runner?.status === "ready" &&
+            scheduler?.status === "ready"
               ? "ready"
               : "degraded",
           dependencies: {
             gateway: gateway?.status ?? "unavailable",
             runner: runner?.status ?? "unavailable",
+            scheduler: scheduler?.status ?? "unavailable",
           },
         });
         return;
@@ -242,6 +305,94 @@ export class Coordinator {
         await this.queue.delete(queueMatch[1]!);
         await this.conversation.deleteUser(queueMatch[1]!);
         res.writeHead(204).end();
+        return;
+      }
+      const taskIngress = url.pathname.match(
+        /^\/integral\/internal\/tasks\/([^/]+)$/,
+      );
+      if (taskIngress && req.method === "PUT") {
+        if (!this.internal(req, "scheduler")) return unauthorized(res);
+        const body = (await bodyJson(req)) as unknown as ScheduledOccurrence;
+        if (body.executionId !== taskIngress[1])
+          throw new IntegralError("task execution ID does not match path", 400);
+        const task = await this.tasks.accept(body);
+        json(res, 200, task);
+        return;
+      }
+      if (
+        url.pathname === "/integral/internal/tasks/claim" &&
+        req.method === "POST"
+      ) {
+        if (!this.internal(req)) return unauthorized(res);
+        json(res, 200, { task: await this.tasks.claim() });
+        return;
+      }
+      const taskDeclaration = url.pathname.match(
+        /^\/integral\/internal\/tasks\/([^/]+)\/declare$/,
+      );
+      if (taskDeclaration && req.method === "POST") {
+        if (!this.internal(req, "gateway")) return unauthorized(res);
+        const body = await bodyJson(req),
+          outcome = stringValue(body.outcome);
+        if (outcome !== "complete" && outcome !== "failed")
+          throw new IntegralError("invalid task outcome declaration", 400);
+        json(
+          res,
+          200,
+          await this.tasks.declareOutcome(
+            taskDeclaration[1]!,
+            stringValue(body.attemptId),
+            outcome,
+            stringValue(body.message),
+          ),
+        );
+        return;
+      }
+      const taskOutcome = url.pathname.match(
+        /^\/integral\/internal\/tasks\/([^/]+)\/(start|defer|complete|fail|finalize)$/,
+      );
+      if (taskOutcome && req.method === "POST") {
+        if (!this.internal(req)) return unauthorized(res);
+        const body = await bodyJson(req),
+          task =
+            taskOutcome[2] === "start"
+              ? await this.tasks.start(
+                  taskOutcome[1]!,
+                  stringValue(body.claimId),
+                )
+              : taskOutcome[2] === "defer"
+                ? await this.tasks.releaseClaim(
+                    taskOutcome[1]!,
+                    stringValue(body.claimId),
+                    stringValue(body.error, "task provisioning failed"),
+                  )
+                : taskOutcome[2] === "complete"
+                  ? await this.tasks.complete(
+                      taskOutcome[1]!,
+                      stringValue(body.attemptId),
+                      stringValue(body.result),
+                      numberValue(body.exitCode),
+                    )
+                  : taskOutcome[2] === "finalize"
+                    ? await this.tasks.finalize(
+                        taskOutcome[1]!,
+                        stringValue(body.attemptId),
+                        numberValue(body.exitCode),
+                      )
+                    : await this.tasks.fail(
+                        taskOutcome[1]!,
+                        stringValue(body.attemptId),
+                        stringValue(body.error, "task failed"),
+                        optionalNumber(body.exitCode),
+                      );
+        json(res, 200, task);
+        return;
+      }
+      const taskCancel = url.pathname.match(
+        /^\/integral\/tasks\/([^/]+)\/cancel$/,
+      );
+      if (taskCancel && req.method === "POST") {
+        json(res, 200, await this.tasks.cancel(taskCancel[1]!));
         return;
       }
       if (
@@ -315,9 +466,10 @@ export class Coordinator {
         return;
       }
       if (url.pathname === "/integral/status" && req.method === "GET") {
-        const [gateway, runner] = await Promise.all([
+        const [gateway, runner, scheduler] = await Promise.all([
           readComponentState(this.paths, "gateway"),
           readComponentState(this.paths, "runner"),
+          readComponentState(this.paths, "scheduler"),
         ]);
         const queue = this.queue.snapshot();
         const sessionEvent = this.conversation
@@ -327,6 +479,7 @@ export class Coordinator {
         json(res, 200, {
           gateway: gateway?.status ?? "unavailable",
           runner: runner?.status ?? "unavailable",
+          scheduler: scheduler?.status ?? "unavailable",
           container: sessionEvent?.text === "started" ? "healthy" : "stopped",
           session:
             sessionEvent?.text === "started" ? sessionEvent.sessionId : null,
@@ -334,6 +487,13 @@ export class Coordinator {
           queueDepth: queue.filter((m) => m.status === "queued").length,
           inFlight: queue.find((m) => m.status === "in-flight")?.id ?? null,
           attached: this.attached,
+          taskQueueDepth: this.tasks
+            .snapshot()
+            .filter((task) => ["queued", "retry-wait"].includes(task.state))
+            .length,
+          taskInFlight:
+            this.tasks.snapshot().find((task) => task.state === "running")
+              ?.id ?? null,
         });
         return;
       }
@@ -405,6 +565,14 @@ async function bodyJson(
 }
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+function numberValue(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value))
+    throw new IntegralError("expected an integer", 400);
+  return value;
+}
+function optionalNumber(value: unknown): number | undefined {
+  return value === undefined ? undefined : numberValue(value);
 }
 function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });

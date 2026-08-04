@@ -34,6 +34,7 @@ const defaults = {
   "server.gateway_port": DEFAULT_PORTS.gateway,
   "server.coordinator_port": DEFAULT_PORTS.coordinator,
   "server.runner_port": DEFAULT_PORTS.runner,
+  "server.scheduler_port": DEFAULT_PORTS.scheduler,
   "runner.image": DEFAULT_PI_IMAGE,
   "runner.pull_policy": "if-not-present",
   "runner.turn_timeout_seconds": 1800,
@@ -47,7 +48,7 @@ const defaults = {
 } as const;
 
 const allowed: Record<string, readonly string[]> = {
-  server: ["gateway_port", "coordinator_port", "runner_port"],
+  server: ["gateway_port", "coordinator_port", "runner_port", "scheduler_port"],
   runner: [
     "image",
     "pull_policy",
@@ -167,8 +168,14 @@ export async function loadConfig(
       gateway: undefined,
       coordinator: undefined,
       runner: undefined,
+      scheduler: undefined,
     };
-  for (const component of ["gateway", "coordinator", "runner"] as const) {
+  for (const component of [
+    "gateway",
+    "coordinator",
+    "runner",
+    "scheduler",
+  ] as const) {
     const name = `INTEGRAL_${component.toUpperCase()}_PORT`;
     try {
       envPorts[component] = parseEnvPort(env, name);
@@ -189,8 +196,11 @@ export async function loadConfig(
     runnerPort:
       envPorts.runner ??
       port(val("server", "runner_port"), "server.runner_port"),
+    schedulerPort:
+      envPorts.scheduler ??
+      port(val("server", "scheduler_port"), "server.scheduler_port"),
   };
-  if (new Set(Object.values(server)).size !== 3) {
+  if (new Set(Object.values(server)).size !== 4) {
     const conflicts = Object.entries(server)
       .filter(([, value], index, all) =>
         all.some(
@@ -199,7 +209,7 @@ export async function loadConfig(
       )
       .map(([name, value]) => `${name}=${value}`);
     throw new IntegralError(
-      `gateway, coordinator, and runner ports must be distinct; conflicts: ${conflicts.join(", ")}`,
+      `gateway, coordinator, runner, and scheduler ports must be distinct; conflicts: ${conflicts.join(", ")}`,
     );
   }
   const fileLogging = object(root.logging);
@@ -278,6 +288,10 @@ export async function loadConfig(
         "server.coordinator_port",
       ),
       runnerPort: port(val("server", "runner_port"), "server.runner_port"),
+      schedulerPort: port(
+        val("server", "scheduler_port"),
+        "server.scheduler_port",
+      ),
     },
   };
   return {
@@ -289,7 +303,7 @@ export async function loadConfig(
   };
 }
 
-export const STARTER_CONFIG = `# integral Phase 1 configuration\n\n[server]\ngateway_port = 7310\ncoordinator_port = 7311\nrunner_port = 7312\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[logging]\nlevel = "info"\nformat = "text"\n`;
+export const STARTER_CONFIG = `# integral Phase 1 configuration\n\n[server]\ngateway_port = 7310\ncoordinator_port = 7311\nrunner_port = 7312\nscheduler_port = 7313\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[logging]\nlevel = "info"\nformat = "text"\n`;
 
 export async function initConfig(paths: IntegralPaths): Promise<void> {
   if ((await readText(paths.mainConfig)) !== undefined)

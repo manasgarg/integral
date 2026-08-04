@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { get, type ClientRequest, type IncomingMessage } from "node:http";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
@@ -39,7 +40,7 @@ test("[SERVER-F886D80C] [SERVER-33E00BBA] [QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUE
   if (process.platform === "win32") t.skip("POSIX signal acceptance test");
   const paths = await fixture(t),
     fakeBin = join(paths.root, "test-bin"),
-    ports = await Promise.all([freePort(), freePort(), freePort()]);
+    ports = await Promise.all([freePort(), freePort(), freePort(), freePort()]);
   await mkdir(fakeBin, { recursive: true });
   const docker = join(fakeBin, "docker");
   await writeFile(
@@ -59,6 +60,7 @@ exit 0
 gateway_port = ${ports[0]}
 coordinator_port = ${ports[1]}
 runner_port = ${ports[2]}
+scheduler_port = ${ports[3]}
 
 [logging]
 level = "error"
@@ -105,8 +107,8 @@ level = "error"
     async () =>
       (
         await Promise.all(
-          (["coordinator", "gateway", "runner"] as const).map((component) =>
-            readComponentState(paths, component),
+          (["coordinator", "scheduler", "gateway", "runner"] as const).map(
+            (component) => readComponentState(paths, component),
           ),
         )
       ).every((state) => state?.status === "ready"),
@@ -131,15 +133,46 @@ level = "error"
   ]);
   assert.equal(runQueue(["delete", queued.id]), `Deleted ${queued.id}.\n`);
   assert.deepEqual(JSON.parse(runQueue(["ls", "--json"])), []);
-  child.kill("SIGTERM");
-  const exit = await new Promise<{
+  const stream = await new Promise<{
+    request: ClientRequest;
+    response: IncomingMessage;
+  }>((resolve, reject) => {
+    const request = get(
+      `http://127.0.0.1:${ports[1]}/integral/events`,
+      (response) => {
+        response.once("data", () => resolve({ request, response }));
+        response.once("error", reject);
+      },
+    );
+    request.once("error", reject);
+  });
+  t.after(() => {
+    stream.request.destroy();
+    stream.response.destroy();
+  });
+  const exited = new Promise<{
     code: number | null;
     signal: NodeJS.Signals | null;
   }>((resolve) =>
     child.once("exit", (code, signal) => resolve({ code, signal })),
   );
+  child.kill("SIGINT");
+  let timeout: NodeJS.Timeout | undefined;
+  const exit = await Promise.race([
+    exited,
+    new Promise<"timeout">(
+      (resolve) => (timeout = setTimeout(() => resolve("timeout"), 5_000)),
+    ),
+  ]);
+  clearTimeout(timeout);
+  assert.notEqual(exit, "timeout", `${stdout}\n${stderr}`);
   assert.deepEqual(exit, { code: 0, signal: null }, stderr);
-  for (const component of ["coordinator", "gateway", "runner"] as const)
+  for (const component of [
+    "coordinator",
+    "scheduler",
+    "gateway",
+    "runner",
+  ] as const)
     await assert.rejects(readFile(componentStatePath(paths, component)), {
       code: "ENOENT",
     });

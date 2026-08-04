@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   decideRequest,
@@ -17,6 +20,7 @@ import {
   parsePiModelList,
   writeMcpExtension,
   writePiCredential,
+  writeTaskExtension,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
 import { saveConnection, validateConnection } from "../src/connections.ts";
@@ -287,6 +291,196 @@ test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only a
   );
 });
 
+test("[SCHEDULE-55BD779F] gateway attributes Pi schedule mutations and injects the selected execution profile", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = { ...base, server: { ...base.server, gatewayPort: 0 } },
+    forwarded: Array<{ path: string; body?: string }> = [],
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        ensureCa: async () => ({ key: "key", cert: "cert", bundle: "bundle" }),
+        async internalFetch(_paths, _caller, target, path, init) {
+          if (target === "coordinator")
+            return Response.json({
+              modelSelection: {
+                connection: "model",
+                provider: "anthropic",
+                model: "claude-sonnet-4-6",
+                piVersion: "1.2.3",
+                piImage: "sha256:test",
+              },
+            });
+          forwarded.push({
+            path,
+            ...(typeof init?.body === "string" ? { body: init.body } : {}),
+          });
+          return Response.json(
+            { id: "schedule-1", revision: 1 },
+            { status: 201 },
+          );
+        },
+      },
+    );
+  const body = {
+    prompt: "work",
+    trigger: { type: "once", runAt: "2026-08-03T12:00:00Z" },
+    profile: { provider: "forged" },
+  };
+  const result = await gateway.scheduleControl(
+    "session-1",
+    "POST",
+    "/integral/schedules",
+    body,
+  );
+  assert.equal(result.status, 201);
+  const forwardedRequest = forwarded[0];
+  assert.equal(forwardedRequest?.path, "/integral/schedules");
+  assert.ok(forwardedRequest?.body);
+  const forwardedBody = JSON.parse(forwardedRequest.body) as Record<
+    string,
+    unknown
+  >;
+  assert.equal(forwardedBody.actor, "pi:session-1");
+  assert.equal(
+    (forwardedBody.profile as Record<string, unknown>).provider,
+    "anthropic",
+  );
+});
+
+test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the scheduler", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    forwarded: string[] = [],
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path) {
+          assert.equal(target, "scheduler");
+          forwarded.push(path);
+          return Response.json([]);
+        },
+      },
+    ),
+    request = Readable.from([]) as unknown as IncomingMessage;
+  let status = 0,
+    responseBody = "";
+  const response = {
+    writeHead(value: number) {
+      status = value;
+      return response;
+    },
+    end(value?: string) {
+      responseBody = value ?? "";
+      return response;
+    },
+  } as unknown as ServerResponse;
+  request.url = "/integral/control/schedules";
+  request.method = "GET";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:session-token").toString("base64")}`,
+  };
+  gateway.sessions.set("session-token", "session-1");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+
+  assert.equal(status, 200);
+  assert.equal(responseBody, "[]");
+  assert.deepEqual(forwarded, ["/integral/schedules"]);
+});
+
+test("[SCHEDULE-930581F7] task outcome declarations derive execution identity from the authenticated gateway session", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  let forwarded:
+    { target: string; path: string; body: Record<string, unknown> } | undefined;
+  const gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path, init) {
+          const body = init?.body;
+          if (typeof body !== "string")
+            throw new Error("expected serialized task declaration");
+          forwarded = {
+            target,
+            path,
+            body: JSON.parse(body) as Record<string, unknown>,
+          };
+          return Response.json({ state: "running" });
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({ outcome: "complete", message: "sent the report" }),
+      ),
+    ]) as unknown as IncomingMessage;
+  let status = 0;
+  const response = {
+    writeHead(value: number) {
+      status = value;
+      return response;
+    },
+    end() {
+      return response;
+    },
+  } as unknown as ServerResponse;
+  request.url = "/integral/task-outcome";
+  request.method = "POST";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:task-token").toString("base64")}`,
+  };
+  gateway.sessions.set("task-token", "task-session");
+  gateway.taskSessions.set("task-session", {
+    executionId: "execution/one",
+    attemptId: "attempt-1",
+  });
+
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+
+  assert.equal(status, 200);
+  assert.deepEqual(forwarded, {
+    target: "coordinator",
+    path: "/integral/internal/tasks/execution%2Fone/declare",
+    body: {
+      attemptId: "attempt-1",
+      outcome: "complete",
+      message: "sent the report",
+    },
+  });
+});
+
 test("[GATEWAY-EB8D96FE] CONNECT admits only the exact configured HTTPS host and port, including non-default ports", () => {
   const connection = validateConnection({
     name: "local-tls",
@@ -416,6 +610,7 @@ test("[ENV-D20B7A48] [ENV-3E85C1F9] [ENV-F19A64B2] [ENV-6C3F91E5] container envi
   );
   assert.equal(spec.environment.SSL_CERT_FILE, "/integral-ca/ca-bundle.pem");
   assert.equal(spec.environment.PI_CODING_AGENT_DIR, "/home/pi/.pi/agent");
+  assert.equal(spec.environment.NODE_USE_ENV_PROXY, "1");
   assert.equal("INTEGRAL_HOME" in spec.environment, false);
   assert.equal("AWS_SECRET_ACCESS_KEY" in spec.environment, false);
 });
@@ -537,7 +732,7 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
   assert.equal(spec.sessionId, identity.sessionId);
 });
 
-test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools containing only sentinel authentication", async (t) => {
+test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose remote MCP and authenticated schedule tools", async (t) => {
   const paths = await fixture(t),
     mcp = validateConnection({
       name: "work-docs",
@@ -552,7 +747,80 @@ test("[CONNECTION-4B8D73F1] remote MCP connections become temporary Pi tools con
   assert.match(source, /"mcp_" \+ server\.name/);
   assert.match(source, /"name":"work_docs"/);
   assert.match(source, /integral-managed-credential/);
+  assert.match(source, /schedule_create/);
+  assert.match(source, /schedule_update/);
+  assert.match(source, /proxy-authorization/);
+  assert.match(source, /request\(target\.url, \{ agent: false/);
+  assert.doesNotMatch(source, /fetch\("http:\/\/integral\.control/);
   assert.doesNotMatch(source, /actual-secret/);
+});
+
+test("[SCHEDULE-930581F7] task extension steers a tool-free final turn until Pi declares an outcome", async (t) => {
+  const paths = await fixture(t);
+  await writeTaskExtension(paths.root);
+  const extensionDirectory = join(paths.root, ".pi", "agent", "extensions"),
+    typeboxDirectory = join(paths.root, "node_modules", "typebox");
+  await mkdir(typeboxDirectory, { recursive: true });
+  await writeFile(
+    join(typeboxDirectory, "package.json"),
+    JSON.stringify({ type: "module", exports: "./index.js" }),
+  );
+  await writeFile(
+    join(typeboxDirectory, "index.js"),
+    "export const Type = { String: (value = {}) => value, Object: (value) => value };\n",
+  );
+  const source = await readFile(
+    join(extensionDirectory, "integral-task.ts"),
+    "utf8",
+  );
+  await writeFile(join(extensionDirectory, "integral-task.mjs"), source);
+
+  type Tool = {
+    name: string;
+    execute(
+      id: string,
+      params: Record<string, string>,
+      signal: AbortSignal,
+    ): Promise<{ terminate?: boolean }>;
+  };
+  type TurnEndHandler = (event: { toolResults?: unknown[] }) => Promise<void>;
+  const tools: Tool[] = [],
+    messages: Array<{ options: Record<string, unknown> }> = [];
+  let turnEnd: TurnEndHandler | undefined;
+  const loaded = (await import(
+    `${pathToFileURL(join(extensionDirectory, "integral-task.mjs")).href}?test=${Date.now()}`
+  )) as {
+    default(pi: {
+      registerTool(tool: Tool): void;
+      on(name: string, handler: TurnEndHandler): void;
+      sendMessage(
+        message: Record<string, unknown>,
+        options: Record<string, unknown>,
+      ): void;
+    }): void;
+  };
+  loaded.default({
+    registerTool(tool) {
+      tools.push(tool);
+    },
+    on(name, handler) {
+      if (name === "turn_end") turnEnd = handler;
+    },
+    sendMessage(_message, options) {
+      messages.push({ options });
+    },
+  });
+  assert.ok(turnEnd);
+  await turnEnd({ toolResults: [] });
+  assert.deepEqual(messages, [
+    { options: { deliverAs: "steer", triggerTurn: true } },
+  ]);
+  await turnEnd({ toolResults: [{}] });
+  assert.equal(messages.length, 1);
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    ["task_complete", "task_fail"],
+  );
 });
 
 test("[BOX-AB639757] OAuth model connections receive only a temporary sentinel OAuth credential", async (t) => {

@@ -4,6 +4,7 @@ import type {
   ContainerBackend,
   ContainerSpec,
   PiRuntime,
+  TaskRuntime,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
 import { saveConnection, validateConnection } from "../src/connections.ts";
@@ -59,6 +60,20 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
     }),
     "secret",
   );
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "mail",
+      kind: "email",
+      provider: "mailgun",
+      auth: "key",
+      capabilities: ["send"],
+      domain: "mg.example.com",
+      from_address: "robot@mg.example.com",
+      allowed_recipients: ["person@example.com"],
+    }),
+    "mail-secret",
+  );
   const deployment = deploymentId(paths);
   for (const component of ["coordinator", "gateway", "runner"] as const)
     await writeComponentState(paths, {
@@ -68,7 +83,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
       pid: process.pid,
       status: "ready",
       fingerprint: config.fingerprint,
-      connectionGeneration: 1,
+      connectionGeneration: 2,
       startedAt: "now",
     });
 
@@ -104,6 +119,9 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
         calls.push("pi:create");
         spec = value;
         return pi;
+      },
+      createTaskPi() {
+        throw new Error("unexpected task runtime");
       },
     };
   let claims = 0;
@@ -160,6 +178,14 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
         sessionToken: "token-1",
       }),
       writeMcpExtension: async () => undefined,
+      async writeEmailExtension(home, connections) {
+        assert.equal(home, "/test/session");
+        assert.deepEqual(
+          connections.map((connection) => connection.name),
+          ["mail"],
+        );
+        calls.push("talk:email-tools");
+      },
       writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
@@ -170,6 +196,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] runner reuses one Pi runtime and destroys it
   await runner.runOnce();
 
   assert.equal(calls.filter((call) => call === "pi:create").length, 1);
+  assert.equal(calls.filter((call) => call === "talk:email-tools").length, 1);
   assert.ok(calls.includes("pi:prompt:hello"));
   assert.equal(spec?.image, "sha256:test-pi");
   assert.deepEqual(spec?.args.slice(-2), ["--model", "claude-sonnet-4-6"]);
@@ -247,6 +274,9 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-A4C19E72] runner
         async ensureNetwork() {},
         networkGateway: () => "127.0.0.1",
         createPi: () => pi,
+        createTaskPi() {
+          throw new Error("unexpected task runtime");
+        },
       },
       clock: new ManualClock(),
       fetch: async () => new Response("ok"),
@@ -377,4 +407,206 @@ test("[CHAT-C53A90D2] runner recycles an idle Pi container after the conversatio
   assert.ok(calls.includes("pi:stop"));
   assert.ok(calls.includes("DELETE:/integral/internal/session"));
   assert.equal((runner as any).pi, undefined);
+});
+
+test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] task execution uses a fresh one-shot runtime and completes only after exit zero", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = {
+      ...base,
+      logging: { ...base.logging, level: "error" as const },
+    },
+    deployment = deploymentId(paths),
+    calls: string[] = [];
+  let taskRegistration: Record<string, unknown> | undefined;
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "model",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    "secret",
+  );
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "mail",
+      kind: "email",
+      provider: "mailgun",
+      auth: "key",
+      capabilities: ["send"],
+      domain: "mg.example.com",
+      from_address: "robot@mg.example.com",
+      allowed_recipients: ["person@example.com"],
+    }),
+    "mail-secret",
+  );
+  for (const component of ["coordinator", "gateway"] as const)
+    await writeComponentState(paths, {
+      component,
+      deploymentId: deployment,
+      endpoint: "http://127.0.0.1:1",
+      pid: process.pid,
+      status: "ready",
+      fingerprint: config.fingerprint,
+      connectionGeneration: 2,
+      startedAt: "now",
+    });
+  const spec: ContainerSpec = {
+      image: "sha256:test-pi",
+      args: [],
+      environment: {},
+      mounts: [],
+      sessionId: "task-session",
+      sessionToken: "task-token",
+      home: "/test/task-home",
+      gatewayAddress: "127.0.0.1",
+    },
+    taskRuntime: TaskRuntime = {
+      spec,
+      async start() {
+        calls.push("task:start");
+      },
+      async prompt(text) {
+        calls.push(`task:prompt:${text}`);
+        return "task result";
+      },
+      async finish() {
+        calls.push("task:exit:0");
+        return 0;
+      },
+      async stop() {
+        calls.push("task:cleanup");
+      },
+    },
+    task = {
+      id: "execution-1",
+      executionId: "execution-1",
+      scheduleId: "schedule-1",
+      scheduleRevision: 1,
+      triggerType: "once" as const,
+      scheduledFor: "2026-08-02T12:00:00.000Z",
+      prompt: "perform scheduled work",
+      profile: {
+        connection: "model",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        piVersion: "1.2.3",
+        piImage: "sha256:test-pi",
+      },
+      state: "claimed" as const,
+      claimId: "claim-1",
+      attempts: [],
+      createdAt: "now",
+    };
+  const runner = new Runner(
+    paths,
+    config,
+    new Logger({
+      component: "runner",
+      deploymentId: deployment,
+      level: "error",
+      format: "json",
+      sink: () => undefined,
+    }),
+    {
+      containers: {
+        ensureImage: () => "sha256:test-pi",
+        async ensureNetwork() {},
+        networkGateway: () => "127.0.0.1",
+        createPi() {
+          throw new Error("task must not use the talk runtime factory");
+        },
+        createTaskPi(value) {
+          calls.push("task:create");
+          assert.match(value.args.at(-1)!, /Schedule ID: schedule-1/);
+          assert.match(value.args.at(-1)!, /Execution ID: execution-1/);
+          assert.match(value.args.at(-1)!, /Attempt: 1/);
+          assert.match(
+            value.args.at(-1)!,
+            /Scheduled time: 2026-08-02T12:00:00.000Z/,
+          );
+          assert.match(value.args.at(-1)!, /task_complete or task_fail/);
+          return taskRuntime;
+        },
+      },
+      clock: new ManualClock(),
+      fetch: async () => new Response("ok"),
+      async internalFetch(_paths, _caller, target, path, init) {
+        calls.push(`${init?.method ?? "GET"}:${target}:${path}`);
+        if (
+          target === "gateway" &&
+          path === "/integral/internal/session" &&
+          typeof init?.body === "string" &&
+          init.body.includes("executionId")
+        )
+          taskRegistration = JSON.parse(init.body) as Record<string, unknown>;
+        if (path === "/integral/internal/tasks/claim")
+          return Response.json({ task });
+        if (path.endsWith("/start"))
+          return Response.json({
+            ...task,
+            state: "running",
+            claimId: undefined,
+            attempts: [{ attemptId: "attempt-1", number: 1, startedAt: "now" }],
+          });
+        if (path.endsWith("/complete")) return Response.json({ ok: true });
+        return new Response(null, { status: 204 });
+      },
+      ensureCa: async () => ({ key: "key", cert: "cert", bundle: "bundle" }),
+      freshSessionHome: async () => "/test/task-home",
+      newSessionIdentity: () => ({
+        sessionId: "task-session",
+        sessionToken: "task-token",
+      }),
+      writeMcpExtension: async () => undefined,
+      async writeEmailExtension(home, connections) {
+        assert.equal(home, "/test/task-home");
+        assert.deepEqual(
+          connections.map((connection) => connection.name),
+          ["mail"],
+        );
+        calls.push("task:email-tools");
+      },
+      async writeTaskExtension(home) {
+        assert.equal(home, "/test/task-home");
+        calls.push("task:outcome-tools");
+      },
+      writePiCredential: async () => undefined,
+      listen: async () => undefined,
+      close: async () => undefined,
+    },
+  );
+  (runner as any).dockerGateway = "127.0.0.1";
+
+  await runner.runTaskOnce();
+
+  assert.deepEqual(
+    calls.filter((call) => call.startsWith("task:")),
+    [
+      "task:email-tools",
+      "task:outcome-tools",
+      "task:create",
+      "task:start",
+      "task:prompt:perform scheduled work",
+      "task:exit:0",
+      "task:cleanup",
+    ],
+  );
+  const finalizeIndex = calls.findIndex((call) => call.endsWith("/finalize"));
+  assert.ok(finalizeIndex > calls.indexOf("task:exit:0"));
+  assert.equal(
+    calls.filter((call) => call === "POST:gateway:/integral/internal/session")
+      .length,
+    2,
+  );
+  assert.deepEqual(taskRegistration, {
+    token: "task-token",
+    sessionId: "task-session",
+    executionId: "execution-1",
+    attemptId: "attempt-1",
+  });
+  assert.ok(calls.includes("DELETE:gateway:/integral/internal/session"));
 });

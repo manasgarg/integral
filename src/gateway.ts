@@ -34,6 +34,7 @@ import {
   type IntervalRuntime,
 } from "./runtime.ts";
 import { executeEmail, parseEmailOperation } from "./email.ts";
+import { internalFetch } from "./http-client.ts";
 
 function modelBoundary(connection: Connection): Connection {
   if (connection.kind !== "model") return connection;
@@ -66,6 +67,10 @@ export function allowsConnect(
 
 export class Gateway {
   readonly sessions = new Map<string, string>();
+  readonly taskSessions = new Map<
+    string,
+    { executionId: string; attemptId: string }
+  >();
   private servers: http.Server[] = [];
   private ca?: CaFiles;
   private token = "";
@@ -215,12 +220,20 @@ export class Gateway {
       }
       const body = await bodyJson(req);
       const token = stringValue(body.token),
-        sessionId = stringValue(body.sessionId);
+        sessionId = stringValue(body.sessionId),
+        executionId = stringValue(body.executionId),
+        attemptId = stringValue(body.attemptId);
       if (!token || !sessionId) {
         res.writeHead(400).end("invalid session\n");
         return;
       }
+      if (Boolean(executionId) !== Boolean(attemptId)) {
+        res.writeHead(400).end("incomplete task session identity\n");
+        return;
+      }
       this.sessions.set(token, sessionId);
+      if (executionId && attemptId)
+        this.taskSessions.set(sessionId, { executionId, attemptId });
       res.writeHead(204).end();
       return;
     }
@@ -275,7 +288,10 @@ export class Gateway {
         return;
       }
       const body = await bodyJson(req);
-      this.sessions.delete(stringValue(body.token));
+      const token = stringValue(body.token),
+        sessionId = this.sessions.get(token);
+      this.sessions.delete(token);
+      if (sessionId) this.taskSessions.delete(sessionId);
       res.writeHead(204).end();
       return;
     }
@@ -284,6 +300,44 @@ export class Gateway {
       res
         .writeHead(407, { "proxy-authenticate": "Basic realm=integral" })
         .end("proxy authentication required\n");
+      return;
+    }
+    if (req.url === "/integral/task-outcome" && req.method === "POST") {
+      try {
+        const task = this.taskSessions.get(sessionId);
+        if (!task)
+          throw new IntegralError(
+            "task outcome is unavailable outside an active task attempt",
+            403,
+          );
+        const body = await bodyJson(req, 110_000),
+          outcome = stringValue(body.outcome),
+          message = stringValue(body.message);
+        if (outcome !== "complete" && outcome !== "failed")
+          throw new IntegralError("invalid task outcome declaration", 400);
+        const upstream = await this.dependencies.internalFetch(
+          this.paths,
+          "gateway",
+          "coordinator",
+          `/integral/internal/tasks/${encodeURIComponent(task.executionId)}/declare`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              attemptId: task.attemptId,
+              outcome,
+              message,
+            }),
+          },
+        );
+        const responseBody = await upstream.text();
+        res.writeHead(upstream.status, {
+          "content-type":
+            upstream.headers.get("content-type") ?? "application/json",
+        });
+        res.end(responseBody);
+      } catch (error) {
+        respondError(res, error);
+      }
       return;
     }
     if (req.url === "/integral/email" && req.method === "POST") {
@@ -340,10 +394,29 @@ export class Gateway {
       }
       return;
     }
+    if (req.url?.startsWith("/integral/control/schedules")) {
+      try {
+        await this.control(
+          req,
+          res,
+          new URL(req.url, "http://integral.control"),
+          sessionId,
+        );
+      } catch (error) {
+        respondError(res, error);
+      }
+      return;
+    }
     let target: URL | undefined;
     try {
       target = new URL(req.url!);
-      await this.forward(req, res, target, sessionId);
+      if (
+        target.protocol === "http:" &&
+        target.hostname === "integral.control" &&
+        !target.port
+      )
+        await this.control(req, res, target, sessionId);
+      else await this.forward(req, res, target, sessionId);
     } catch (error) {
       this.logger.event("info", "gateway.decision", "gateway denied request", {
         verdict:
@@ -358,6 +431,70 @@ export class Gateway {
       });
       respondError(res, error);
     }
+  }
+  private async control(
+    req: IncomingMessage,
+    res: ServerResponse,
+    target: URL,
+    sessionId: string,
+  ): Promise<void> {
+    if (!target.pathname.startsWith("/integral/control/schedules"))
+      throw new IntegralError("unknown integral control endpoint", 404);
+    const schedulerPath = target.pathname.replace(
+        "/integral/control",
+        "/integral",
+      ),
+      body = await bodyJson(req);
+    const upstream = await this.scheduleControl(
+      sessionId,
+      req.method ?? "GET",
+      `${schedulerPath}${target.search}`,
+      body,
+    );
+    const responseBody = await upstream.text();
+    res.writeHead(upstream.status, {
+      "content-type":
+        upstream.headers.get("content-type") ?? "application/json",
+    });
+    res.end(responseBody);
+  }
+  async scheduleControl(
+    sessionId: string,
+    method: string,
+    schedulerPath: string,
+    body: Record<string, unknown>,
+  ): Promise<Response> {
+    if (method !== "GET") {
+      body.actor = `pi:${sessionId}`;
+      delete body.profile;
+    }
+    if (method === "POST" && schedulerPath === "/integral/schedules") {
+      const snapshot = await this.dependencies.internalFetch(
+        this.paths,
+        "gateway",
+        "coordinator",
+        "/integral/snapshot",
+      );
+      if (!snapshot.ok)
+        throw new IntegralError("conversation model is unavailable", 409);
+      const data = (await snapshot.json()) as { modelSelection?: unknown };
+      if (!data.modelSelection)
+        throw new IntegralError(
+          "select a model before creating a schedule",
+          409,
+        );
+      body.profile = data.modelSelection;
+    }
+    return this.dependencies.internalFetch(
+      this.paths,
+      "gateway",
+      "scheduler",
+      schedulerPath,
+      {
+        method,
+        ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
+      },
+    );
   }
   private async forward(
     req: IncomingMessage,
@@ -470,6 +607,7 @@ export class Gateway {
     this.dependencies.intervals.clearInterval(this.refreshTimer);
     const servers = this.servers.splice(0);
     this.sessions.clear();
+    this.taskSessions.clear();
     await Promise.all(
       servers.map((server) => this.dependencies.servers.close(server)),
     );
@@ -488,6 +626,7 @@ export interface GatewayDependencies {
     options: http.RequestOptions,
     response: (message: http.IncomingMessage) => void,
   ): http.ClientRequest;
+  internalFetch: typeof internalFetch;
 }
 
 const productionDependencies: GatewayDependencies = {
@@ -497,6 +636,7 @@ const productionDependencies: GatewayDependencies = {
   certificateFor,
   refreshOAuth,
   executeEmail,
+  internalFetch,
   request(target, options, response) {
     return (target.protocol === "https:" ? https : http).request(
       target,

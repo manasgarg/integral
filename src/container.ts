@@ -33,6 +33,9 @@ export interface PiRuntime {
   prompt(text: string): Promise<string>;
   stop(): Promise<void>;
 }
+export interface TaskRuntime extends PiRuntime {
+  finish(): Promise<number>;
+}
 
 export interface ContainerBackend {
   ensureImage(
@@ -47,6 +50,12 @@ export interface ContainerBackend {
     network: string,
     onStderr: (line: string) => void,
   ): PiRuntime;
+  createTaskPi(
+    spec: ContainerSpec,
+    config: EffectiveConfig,
+    network: string,
+    onStderr: (line: string) => void,
+  ): TaskRuntime;
 }
 const managed = new Set([
   "HOME",
@@ -64,6 +73,7 @@ const managed = new Set([
   "GIT_SSL_CAINFO",
   "PIP_CERT",
   "PI_CODING_AGENT_DIR",
+  "NODE_USE_ENV_PROXY",
 ]);
 export function isManagedContainerVariable(name: string): boolean {
   return managed.has(name) || name.startsWith("INTEGRAL_");
@@ -106,6 +116,7 @@ export function buildContainerSpec(options: {
     GIT_SSL_CAINFO: bundlePath,
     PIP_CERT: bundlePath,
     PI_CODING_AGENT_DIR: "/home/pi/.pi/agent",
+    NODE_USE_ENV_PROXY: "1",
   };
   const provider = options.model.provider!;
   // Pi sees only a sentinel. The gateway swaps it for the host credential inside the allowed boundary.
@@ -181,7 +192,6 @@ export async function writeMcpExtension(
   sessionHome: string,
   connections: Connection[],
 ): Promise<void> {
-  if (!connections.length) return;
   const directory = join(sessionHome, ".pi", "agent", "extensions");
   await ensureDir(directory);
   const declarations = connections.map((connection) => ({
@@ -190,8 +200,20 @@ export async function writeMcpExtension(
     auth: connection.auth !== "none",
     transport: connection.transport,
   }));
-  const source = `import { Type } from "typebox";\nconst servers = ${JSON.stringify(declarations)};\nfunction headers(server) { const value = { "content-type": "application/json", accept: "application/json, text/event-stream" }; if (server.auth) value.authorization = "Bearer integral-managed-credential"; return value; }\nasync function call(server, payload, signal) {\n  if (server.transport !== "sse") { const response = await fetch(server.url, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); const body = await response.text(); if (!response.ok) throw new Error("MCP request failed: " + response.status); const data = body.split("\\n").filter(line => line.startsWith("data:")).at(-1)?.slice(5).trim(); return JSON.parse(data || body); }\n  const events = await fetch(server.url, { headers: headers(server), signal }); if (!events.ok || !events.body) throw new Error("MCP SSE connection failed: " + events.status); const reader = events.body.getReader(), decoder = new TextDecoder(); let buffer = "", endpoint;\n  while (!endpoint) { const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before endpoint"); buffer += decoder.decode(part.value, { stream: true }); const match = buffer.match(/event: endpoint\\r?\\ndata: (.+)\\r?\\n\\r?\\n/); if (match) { endpoint = new URL(match[1].trim(), server.url).toString(); buffer = buffer.slice((match.index || 0) + match[0].length); } }\n  const sent = await fetch(endpoint, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); if (!sent.ok) throw new Error("MCP SSE send failed: " + sent.status);\n  while (true) { const match = buffer.match(/data: (.+)\\r?\\n\\r?\\n/); if (match) { buffer = buffer.slice((match.index || 0) + match[0].length); const value = JSON.parse(match[1]); if (value.id === payload.id) { await reader.cancel(); return value; } } const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before response"); buffer += decoder.decode(part.value, { stream: true }); }\n}\nexport default function (pi) {\n  for (const server of servers) pi.registerTool({\n    name: "mcp_" + server.name, label: "MCP " + server.name, description: "Call a tool on the " + server.name + " remote MCP server",\n    parameters: Type.Object({ tool: Type.String(), arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),\n    async execute(_id, params, signal) {\n      const result = await call(server, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: params.tool, arguments: params.arguments || {} } }, signal);\n      return { content: result.result?.content || [{ type: "text", text: JSON.stringify(result.result ?? result) }], details: { server: server.name } };\n    }\n  });\n}\n`;
-  await atomicWrite(join(directory, "integral-mcp.ts"), source);
+  const source = `import { Type } from "typebox";\nconst servers = ${JSON.stringify(declarations)};\nfunction headers(server) { const value = { "content-type": "application/json", accept: "application/json, text/event-stream" }; if (server.auth) value.authorization = "Bearer integral-managed-credential"; return value; }\nasync function call(server, payload, signal) {\n  if (server.transport !== "sse") { const response = await fetch(server.url, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); const body = await response.text(); if (!response.ok) throw new Error("MCP request failed: " + response.status); const data = body.split("\\n").filter(line => line.startsWith("data:")).at(-1)?.slice(5).trim(); return JSON.parse(data || body); }\n  const events = await fetch(server.url, { headers: headers(server), signal }); if (!events.ok || !events.body) throw new Error("MCP SSE connection failed: " + events.status); const reader = events.body.getReader(), decoder = new TextDecoder(); let buffer = "", endpoint;\n  while (!endpoint) { const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before endpoint"); buffer += decoder.decode(part.value, { stream: true }); const match = buffer.match(/event: endpoint\\r?\\ndata: (.+)\\r?\\n\\r?\\n/); if (match) { endpoint = new URL(match[1].trim(), server.url).toString(); buffer = buffer.slice((match.index || 0) + match[0].length); } }\n  const sent = await fetch(endpoint, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); if (!sent.ok) throw new Error("MCP SSE send failed: " + sent.status);\n  while (true) { const match = buffer.match(/data: (.+)\\r?\\n\\r?\\n/); if (match) { buffer = buffer.slice((match.index || 0) + match[0].length); const value = JSON.parse(match[1]); if (value.id === payload.id) { await reader.cancel(); return value; } } const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before response"); buffer += decoder.decode(part.value, { stream: true }); }\n}\nasync function schedule(path, method, body, signal) { const response = await fetch("http://integral.control" + path, { method, headers: { "content-type": "application/json" }, signal, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await response.text(); if (!response.ok) throw new Error("Schedule request failed: " + response.status + " " + text.trim()); return text ? JSON.parse(text) : null; }\nfunction result(value) { return { content: [{ type: "text", text: JSON.stringify(value) }], details: value }; }\nexport default function (pi) {\n  for (const server of servers) pi.registerTool({\n    name: "mcp_" + server.name, label: "MCP " + server.name, description: "Call a tool on the " + server.name + " remote MCP server",\n    parameters: Type.Object({ tool: Type.String(), arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),\n    async execute(_id, params, signal) {\n      const value = await call(server, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: params.tool, arguments: params.arguments || {} } }, signal);\n      return { content: value.result?.content || [{ type: "text", text: JSON.stringify(value.result ?? value) }], details: { server: server.name } };\n    }\n  });\n  pi.registerTool({ name: "schedule_list", label: "List schedules", description: "List schedules managed by Integral", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/schedules", "GET", undefined, signal)); } });\n  pi.registerTool({ name: "schedule_create", label: "Create schedule", description: "Create a recurring cron schedule or one-time task", parameters: Type.Object({ prompt: Type.String(), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : { type: "recurring", cron: params.cron, timezone: params.timezone }; return result(await schedule("/integral/control/schedules", "POST", { prompt: params.prompt, trigger }, signal)); } });\n  for (const action of ["enable", "disable"]) pi.registerTool({ name: "schedule_" + action, label: action + " schedule", description: action + " a schedule", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id) + "/" + action, "POST", { expectedRevision: params.expectedRevision }, signal)); } });\n  pi.registerTool({ name: "schedule_update", label: "Update schedule", description: "Update a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer(), prompt: Type.Optional(Type.String()), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : params.cron || params.timezone ? { type: "recurring", cron: params.cron, timezone: params.timezone } : undefined; return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "PATCH", { expectedRevision: params.expectedRevision, prompt: params.prompt, trigger }, signal)); } });\n  pi.registerTool({ name: "schedule_delete", label: "Delete schedule", description: "Delete a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "DELETE", { expectedRevision: params.expectedRevision }, signal)); } });\n}\n`;
+  const proxiedSource = source
+    .replace(
+      'import { Type } from "typebox";',
+      'import { request } from "node:http";\nimport { Type } from "typebox";',
+    )
+    .replace(
+      /async function schedule\(path, method, body, signal\) \{.*?\}\nfunction result/s,
+      `function control(path) { const proxy = new URL(process.env.HTTP_PROXY), target = new URL(path, "http://integral.control"), authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = target.pathname; proxy.search = target.search; return { url: proxy.toString(), authorization }; }
+function controlRequest(path, method, body, signal) { return new Promise((resolve, reject) => { const target = control(path), payload = body === undefined ? undefined : JSON.stringify(body), chunks = []; let settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }, req = request(target.url, { agent: false, method, headers: { "content-type": "application/json", "proxy-authorization": target.authorization, ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, (res) => { res.on("data", (chunk) => chunks.push(chunk)); res.on("end", () => finish(() => resolve({ status: res.statusCode || 500, text: Buffer.concat(chunks).toString("utf8") }))); res.on("error", (error) => finish(() => reject(error))); }), abort = () => req.destroy(new Error("schedule request was cancelled")); signal?.addEventListener("abort", abort, { once: true }); req.on("error", (error) => finish(() => reject(error))); req.end(payload); }); }
+async function schedule(path, method, body, signal) { const response = await controlRequest(path, method, body, signal), text = response.text; if (response.status < 200 || response.status >= 300) throw new Error("Schedule request failed: " + response.status + " " + text.trim()); return text ? JSON.parse(text) : null; }
+function result`,
+    );
+  await atomicWrite(join(directory, "integral-mcp.ts"), proxiedSource);
 }
 
 export async function writeEmailExtension(
@@ -211,7 +233,7 @@ import { Type } from "typebox";
 const accounts = ${JSON.stringify(declarations)};
 function endpoint() { const proxy = new URL(process.env.HTTP_PROXY); const authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = "/integral/email"; return { url: proxy.toString(), authorization }; }
 function transportFailure(error, signal) { if (signal?.aborted) return new Error("email gateway request was cancelled"); const cause = error && typeof error === "object" && error.cause && typeof error.cause === "object" ? error.cause : error; const code = cause && typeof cause === "object" && typeof cause.code === "string" && /^[A-Z0-9_]{1,40}$/.test(cause.code) ? cause.code : undefined; return new Error("email gateway request failed" + (code ? ": " + code : "")); }
-function post(target, body, signal) { return new Promise((resolve, reject) => { if (signal?.aborted) { reject(transportFailure(undefined, signal)); return; } const chunks = []; let size = 0, settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }; const req = request(target.url, { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), "proxy-authorization": target.authorization } }, (res) => { res.on("data", (chunk) => { size += chunk.length; if (size > 500000) req.destroy(new Error("email gateway response exceeded limit")); else chunks.push(chunk); }); res.on("end", () => finish(() => resolve({ status: res.statusCode || 500, text: Buffer.concat(chunks).toString("utf8") }))); res.on("error", (error) => finish(() => reject(error))); }); const abort = () => req.destroy(transportFailure(undefined, signal)); signal?.addEventListener("abort", abort, { once: true }); req.on("error", (error) => finish(() => reject(error))); req.end(body); }); }
+function post(target, body, signal) { return new Promise((resolve, reject) => { if (signal?.aborted) { reject(transportFailure(undefined, signal)); return; } const chunks = []; let size = 0, settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }; const req = request(target.url, { agent: false, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), "proxy-authorization": target.authorization } }, (res) => { res.on("data", (chunk) => { size += chunk.length; if (size > 500000) req.destroy(new Error("email gateway response exceeded limit")); else chunks.push(chunk); }); res.on("end", () => finish(() => resolve({ status: res.statusCode || 500, text: Buffer.concat(chunks).toString("utf8") }))); res.on("error", (error) => finish(() => reject(error))); }); const abort = () => req.destroy(transportFailure(undefined, signal)); signal?.addEventListener("abort", abort, { once: true }); req.on("error", (error) => finish(() => reject(error))); req.end(body); }); }
 async function call(connection, operation, params, signal) { const target = endpoint(); let response; try { response = await post(target, JSON.stringify({ connection, operation, ...params }), signal); } catch (error) { throw transportFailure(error, signal); } if (response.status < 200 || response.status >= 300) throw new Error(response.text.trim() || "email operation failed"); return JSON.parse(response.text); }
 const schemas = {
   search: Type.Object({ query: Type.String(), maxResults: Type.Optional(Type.Number({ minimum: 1, maximum: 20 })) }),
@@ -221,6 +243,24 @@ const schemas = {
 export default function (pi) { for (const account of accounts) for (const capability of account.capabilities) pi.registerTool({ name: "email_" + account.toolName + "_" + capability, label: "Email " + account.name + " " + capability, description: capability + " email using the " + account.name + " account", parameters: schemas[capability], async execute(_id, params, signal) { const result = await call(account.name, capability, params, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: { account: account.name, capability } }; } }); }
 `;
   await atomicWrite(join(directory, "integral-email.ts"), source);
+}
+
+export async function writeTaskExtension(sessionHome: string): Promise<void> {
+  const directory = join(sessionHome, ".pi", "agent", "extensions");
+  await ensureDir(directory);
+  const source = `import { request } from "node:http";
+import { Type } from "typebox";
+let declaredOutcome;
+function endpoint() { const proxy = new URL(process.env.HTTP_PROXY); const authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = "/integral/task-outcome"; return { url: proxy.toString(), authorization }; }
+function post(body, signal) { return new Promise((resolve, reject) => { const target = endpoint(), payload = JSON.stringify(body), chunks = []; let settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }, req = request(target.url, { agent: false, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload), "proxy-authorization": target.authorization } }, (res) => { res.on("data", (chunk) => chunks.push(chunk)); res.on("end", () => finish(() => resolve({ status: res.statusCode || 500, text: Buffer.concat(chunks).toString("utf8") }))); res.on("error", (error) => finish(() => reject(error))); }), abort = () => req.destroy(new Error("task outcome request was cancelled")); signal?.addEventListener("abort", abort, { once: true }); req.on("error", (error) => finish(() => reject(error))); req.end(payload); }); }
+async function declare(outcome, message, signal) { const response = await post({ outcome, message }, signal); if (response.status < 200 || response.status >= 300) throw new Error(response.text.trim() || "task outcome declaration failed"); declaredOutcome = outcome; return { content: [{ type: "text", text: outcome === "complete" ? "Task completion recorded." : "Task failure recorded." }], details: { outcome, message }, terminate: true }; }
+export default function (pi) {
+  pi.registerTool({ name: "task_complete", label: "Complete task", description: "Declare that the isolated scheduled task completed successfully. This must be your final action when the task succeeded.", promptSnippet: "Declare successful completion of the scheduled task", promptGuidelines: ["Call task_complete as the final action when the scheduled task has succeeded."], parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: 100000 }) }), async execute(_id, params, signal) { return declare("complete", params.summary, signal); } });
+  pi.registerTool({ name: "task_fail", label: "Fail task", description: "Declare that the isolated scheduled task could not be completed. This must be your final action when the task failed.", promptSnippet: "Declare failure of the scheduled task", promptGuidelines: ["Call task_fail as the final action when the scheduled task cannot be completed."], parameters: Type.Object({ reason: Type.String({ minLength: 1, maxLength: 100000 }) }), async execute(_id, params, signal) { return declare("failed", params.reason, signal); } });
+  pi.on("turn_end", async (event) => { if (declaredOutcome || event.toolResults?.length) return; pi.sendMessage({ customType: "integral-task-outcome-required", content: "You attempted to finish this scheduled task without declaring its outcome. Review the work and call exactly one of task_complete or task_fail now. Do not answer with ordinary text.", display: true }, { deliverAs: "steer", triggerTurn: true }); });
+}
+`;
+  await atomicWrite(join(directory, "integral-task.ts"), source);
 }
 
 export async function writePiCredential(
@@ -472,6 +512,7 @@ export class PiContainer {
         timer: NodeJS.Timeout;
       }
     | undefined;
+  private exit: Promise<number | null> | undefined;
   constructor(
     readonly spec: ContainerSpec,
     private readonly config: EffectiveConfig,
@@ -486,6 +527,7 @@ export class PiContainer {
       { stdio: ["pipe", "pipe", "pipe"] },
     );
     this.child = child;
+    this.exit = new Promise((resolve) => child.once("exit", resolve));
     createInterface({ input: child.stdout }).on("line", (line) =>
       this.protocol(line),
     );
@@ -534,18 +576,39 @@ export class PiContainer {
     );
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        void this.stop();
+        this.pending = undefined;
         reject(new IntegralError("Pi turn timed out"));
+        void this.stop();
       }, this.config.runner.turnTimeoutSeconds * 1000);
       this.pending = { resolve, reject, timer };
     });
+  }
+  async finish(): Promise<number> {
+    const child = this.child,
+      exit = this.exit;
+    if (!child || !exit) throw new IntegralError("Pi container is not running");
+    if (this.pending) throw new IntegralError("Pi turn is still in flight");
+    child.stdin.end();
+    const result = await Promise.race([
+      exit,
+      new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 5_000),
+      ),
+    ]);
+    if (result === "timeout") {
+      await this.stop();
+      throw new IntegralError("Pi task did not exit cleanly after completion");
+    }
+    return result ?? 128;
   }
   async stop(): Promise<void> {
     const child = this.child;
     this.child = undefined;
     if (this.pending) {
-      clearTimeout(this.pending.timer);
+      const pending = this.pending;
       this.pending = undefined;
+      clearTimeout(pending.timer);
+      pending.reject(new IntegralError("Pi container stopped"));
     }
     if (child) {
       const exited = new Promise<boolean>((resolve) =>
@@ -576,6 +639,9 @@ export const dockerContainerBackend: ContainerBackend = {
   ensureNetwork: createLockedNetwork,
   networkGateway: dockerNetworkGateway,
   createPi(spec, config, network, onStderr) {
+    return new PiContainer(spec, config, network, onStderr);
+  },
+  createTaskPi(spec, config, network, onStderr) {
     return new PiContainer(spec, config, network, onStderr);
   },
 };

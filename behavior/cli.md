@@ -7,7 +7,7 @@ These behaviors cover command discovery and implementation information.
 Given integral is installed
 	When the user runs `integral`, `integral --help`, `integral -h`, or `integral help`
 		Then the command exits successfully
-			And lists `server`, `talk`, `queue`, `connection`, `config`, and `version`
+			And lists `server`, `talk`, `queue`, `schedule`, `connection`, `config`, and `version`
 			And does not list a separate `auth` or `credential` command
 			And describes each command in plain English
 	When npm reads the package metadata

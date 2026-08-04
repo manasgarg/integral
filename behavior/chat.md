@@ -108,6 +108,9 @@ Given the terminal is interactive
 ## CHAT-C53A90D2 — Choose a provider and model with friendly matching
 
 Given integral opens the model chooser for `integral talk` or `/model`
+	When the coordinator has already discovered models for the current connection generation and configuration
+		Then it serves the cached catalog without repeating Pi version, image, or model discovery
+			And invalidates that catalog after the connection generation changes
 	When it displays the available choices
 		And at least one active model connection exists
 		Then it groups models under each active model connection
@@ -222,3 +225,8 @@ Given conversation events were acknowledged before the coordinator stopped or cr
 	When a terminal attaches after that restart
 		Then it receives the restored conversation and current queue
 			And follows subsequent events in the same logical conversation
+	When an attached terminal loses the coordinator because the server restarts
+		Then the terminal remains open and reports that it is reconnecting
+			And reconnects to the coordinator for the same `$INTEGRAL_HOME`
+			And reconciles from the restored snapshot without rendering acknowledged conversation events twice
+			And accepts new local commands and messages after reconnection
