@@ -4,6 +4,7 @@ import { Coordinator, type ClientEvent } from "../src/coordinator.ts";
 import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
 import { saveConnection, validateConnection } from "../src/connections.ts";
+import { Logger } from "../src/logging.ts";
 
 async function coordinatorFixture(
   t: test.TestContext,
@@ -181,6 +182,7 @@ test("[SERVER-8A31D6C4] coordinator lifecycle can run against controlled listene
     config = await loadConfig(paths, {}),
     calls: string[] = [],
     timer = {};
+  let deferred!: () => void;
   const coordinator = new Coordinator(paths, config, {
     servers: {
       async listen(_server, port, address) {
@@ -200,18 +202,148 @@ test("[SERVER-8A31D6C4] coordinator lifecycle can run against controlled listene
         calls.push("clear");
       },
     },
+    defer(callback) {
+      calls.push("defer");
+      deferred = callback;
+      return callback;
+    },
+    cancelDeferred() {},
     async listModelChoices() {
       calls.push("catalog");
       return { choices: [] };
     },
   });
   await coordinator.start();
+  deferred();
+  await (coordinator as any).modelCatalog();
   await coordinator.stop();
   assert.deepEqual(calls, [
-    "catalog",
     `listen:127.0.0.1:${config.server.coordinatorPort}`,
     "interval:500",
+    "defer",
+    "catalog",
     "clear",
     "close",
   ]);
+});
+
+test("[SERVER-EC7ACFFC] [LOG-28BE37DE] coordinator becomes ready while catalog discovery reports progress in the background", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    calls: string[] = [],
+    lines: string[] = [];
+  let complete!: (catalog: { choices: []; piVersion: string }) => void,
+    catalogStarted!: () => void,
+    deferred!: () => void;
+  const pending = new Promise<{ choices: []; piVersion: string }>((resolve) => {
+      complete = resolve;
+    }),
+    started = new Promise<void>((resolve) => {
+      catalogStarted = resolve;
+    }),
+    coordinator = new Coordinator(
+      paths,
+      config,
+      {
+        servers: {
+          async listen() {
+            calls.push("listen");
+          },
+          async close() {},
+        },
+        intervals: {
+          setInterval() {
+            return {};
+          },
+          clearInterval() {},
+        },
+        defer(callback) {
+          deferred = callback;
+          return callback;
+        },
+        cancelDeferred() {},
+        async listModelChoices(_paths, _config, progress) {
+          calls.push("catalog:start");
+          catalogStarted();
+          progress?.("runtime.resolve", "checking the Pi runtime");
+          return pending;
+        },
+      },
+      new Logger({
+        component: "coordinator",
+        deploymentId: "test",
+        level: "info",
+        format: "json",
+        sink: (line) => lines.push(line),
+      }),
+    );
+
+  await coordinator.start();
+  deferred();
+  await started;
+  assert.deepEqual(calls, ["listen", "catalog:start"]);
+  assert.ok(
+    lines.some(
+      (line) =>
+        JSON.parse(line).event === "model_catalog.progress" &&
+        JSON.parse(line).stage === "runtime.resolve",
+    ),
+  );
+
+  complete({ choices: [], piVersion: "1.2.3" });
+  await (coordinator as any).modelCatalog();
+  assert.ok(
+    lines.some((line) => JSON.parse(line).event === "model_catalog.ready"),
+  );
+  await coordinator.stop();
+});
+
+test("[LOG-28BE37DE] coordinator warns when background catalog refresh fails", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    lines: string[] = [];
+  let deferred!: () => void;
+  const coordinator = new Coordinator(
+    paths,
+    config,
+    {
+      servers: {
+        async listen() {},
+        async close() {},
+      },
+      intervals: {
+        setInterval() {
+          return {};
+        },
+        clearInterval() {},
+      },
+      defer(callback) {
+        deferred = callback;
+        return callback;
+      },
+      cancelDeferred() {},
+      async listModelChoices() {
+        throw new Error("registry lookup timed out");
+      },
+    },
+    new Logger({
+      component: "coordinator",
+      deploymentId: "test",
+      level: "info",
+      format: "json",
+      sink: (line) => lines.push(line),
+    }),
+  );
+
+  await coordinator.start();
+  deferred();
+  const refresh = (coordinator as any).modelCatalog() as Promise<unknown>;
+  await assert.rejects(refresh, /timed out/);
+
+  const failed = lines
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((entry) => entry.event === "model_catalog.failed");
+  assert.equal(failed?.level, "warn");
+  assert.equal(failed?.message, "registry lookup timed out");
+  await coordinator.stop();
 });

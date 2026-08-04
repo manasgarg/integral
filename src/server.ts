@@ -50,7 +50,7 @@ function createProductionRuntime(
 ): ComponentRuntime {
   const runtime =
     component === "coordinator"
-      ? new Coordinator(paths, config)
+      ? new Coordinator(paths, config, {}, logger)
       : component === "gateway"
         ? new Gateway(paths, config, logger)
         : component === "scheduler"

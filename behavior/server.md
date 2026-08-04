@@ -121,6 +121,14 @@ Given the four components will run as separate processes
 	When missing components later become healthy
 		Then the deployment begins processing queued messages without restarting healthy components
 
+## SERVER-EC7ACFFC — Do not block coordinator readiness on model discovery
+
+Given coordinator startup begins a model catalog refresh
+	When registry access, image preparation, or model discovery is slow
+		Then the coordinator binds its listener without waiting for the refresh
+			And continues the refresh in the background
+			And serves the completed catalog to later model requests
+
 ## SERVER-6F18C2D9 — Isolate separate component failures
 
 Given coordinator, runner, gateway, and scheduler run in separate processes

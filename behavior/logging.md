@@ -84,6 +84,16 @@ Given a server component starts, becomes ready, fails during startup, or stops c
 			And a startup failure is emitted at `error`
 			And combined mode emits distinct lifecycle events for each component
 
+## LOG-28BE37DE — Explain model catalog refresh progress
+
+Given the coordinator refreshes the model catalog during or after startup
+	When it resolves the Pi runtime, resolves the managed image, or discovers models
+		Then it emits an informational progress event naming the active stage
+			And reports catalog readiness with the discovered model count
+	When catalog refresh fails
+		Then it emits a warning with the failure reason
+			And does not expose model credentials
+
 ## LOG-E5A81D23 — Log aggregate startup failure
 
 Given combined server startup fails
