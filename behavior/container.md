@@ -62,11 +62,13 @@ Given integral is provisioning a Pi container
 			And drops additional Linux capabilities
 			And uses a read-only root filesystem
 			And mounts `/tmp` as a size-bounded `tmpfs` with execution and set-user-ID disabled
-			And mounts one fresh session home as the other writable location
-			And does not mount host worker directories or repositories
+			And mounts one fresh session home and explicitly configured host stores as the only writable host filesystems
+			And places governed per-run repository checkouts only inside that fresh session home
+			And mounts each host store only at its recorded mount path
+			And does not mount canonical repositories or unconfigured host directories
 			And does not mount the Docker socket
 			And does not mount control-plane configuration or credentials
-			And mounts only the gateway CA, curated read-only run history, and fresh temporary session home as required
+			And mounts only the gateway CA, curated read-only run history, fresh temporary session home, store lock namespace, and configured store directories as required
 
 ## BOX-B45DEA9B — Keep one warm Pi conversation
 

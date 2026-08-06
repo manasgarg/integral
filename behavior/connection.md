@@ -2,13 +2,18 @@
 
 These behaviors preserve the source project's connection CLI ergonomics for a
 single user. Connections may describe model providers, email accounts, generic
-HTTP endpoints, or remote MCP servers. Every active connection is available to Pi; integral has no
-grant or revoke concept.
+HTTP endpoints, remote MCP servers, governed host Git repositories, or durable
+writable host stores. Every active connection is available to Pi; integral has
+no grant or revoke concept.
 
 <!-- Automation note (CONNECTION-03C4E791): Guided setup validation and its explicit equivalent are automated; keystroke-level interactive selection is not driven by the non-interactive default suite. -->
 <!-- Automation note (CONNECTION-1D691391): Commit-after-verification behavior is automated with a controlled failing endpoint; no real provider is contacted. -->
 <!-- Automation note (CONNECTION-741C2F56): The two independent removal decisions and storage outcomes are automated below the PTY prompt layer; prompt keystrokes are an acceptance test. -->
 <!-- Automation note (CONNECTION-E73B40C6): No-auth removal outcomes are automated below the PTY prompt layer; prompt keystrokes are an acceptance test. -->
+<!-- Automation note (CONNECTION-89A88F7C): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
+<!-- Automation note (CONNECTION-06B6AE14): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
+<!-- Automation note (CONNECTION-857967F4): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
+<!-- Automation note (CONNECTION-C0978F5E): This behavior defines planned host-resource source-validation functionality; executable coverage will land with implementation. -->
 
 ## CONNECTION-C14B8E70 — Show connection command help
 
@@ -17,6 +22,7 @@ Given integral is installed
 		Then the command lists `catalog`, `add`, `ls`, and `rm`
 			And describes bare `add` as guided setup
 			And documents `--auth` for explicit setup
+			And documents `--path`, `--branch`, and `--mount` for host resources
 			And does not list `grant` or `revoke`
 
 ## CONNECTION-75EC27E8 — Show the connection catalog
@@ -26,9 +32,11 @@ Given integral is installed
 		Then the command lists `openai-codex` and `anthropic`
 			And lists `gmail` and `mailgun` email providers
 			And lists generic `http` and `mcp` connection types
+			And lists the `host-repo` connection type
+			And lists the `host-store` connection type
 			And identifies the kind of each catalog entry
 			And describes supported OAuth, device-code, key, and no-auth methods
-			And does not list channel or host-resource connection types
+			And does not list channel or general host-directory connection types
 
 ## CONNECTION-03C4E791 — Open guided connection setup
 
@@ -39,6 +47,7 @@ Given an interactive terminal
 			And lets the user name the connection
 			And lets the user select an authentication method when required
 			And collects the endpoint and protocol details required by the type
+			And requires a mount path for a host resource
 			And runs the selected authentication flow
 			And completes the same setup as explicit `connection add <entry>`
 
@@ -276,7 +285,7 @@ Given the user is adding a generic HTTP or MCP connection
 
 ## CONNECTION-E73B40C6 — Remove a no-auth connection deliberately
 
-Given a no-auth connection exists
+Given a no-auth HTTP or MCP connection exists
 	And the terminal is interactive
 	When the user runs `integral connection rm <name>`
 		Then integral describes the connection record to be removed
@@ -286,3 +295,63 @@ Given a no-auth connection exists
 	When the user confirms removal
 		Then integral removes the connection record
 			And prevents new chats from selecting the removed connection
+
+## CONNECTION-89A88F7C — Add and attach an existing host repository
+
+Given an existing bare Git repository is available at an absolute host path
+	When the user runs `integral connection add host-repo --name <name> --path <path> [--branch <branch>] --mount <container-path>`
+		Then integral canonicalizes the host path
+			And validates that it is a bare Git repository readable and writable by the Integral host process
+			And selects `--branch <branch>` when supplied
+			And otherwise selects the repository's symbolic `HEAD` branch
+			And uses `main` for an empty repository whose symbolic `HEAD` is unborn
+			And stores an operator-owned governed repository connection without a credential
+			And does not copy, move, modify, or change ownership of the repository during setup
+			And validates and records the requested mount path in the same atomic operation
+			And marks every live Pi session stale so the checkout appears before its next prompt
+			And advances the connection generation
+	When the path or mount is missing, invalid, already connected, or the repository has no selectable branch
+		Then integral rejects setup without creating a connection or modifying the path
+			And explains how to create a bare clone when the source is a working checkout
+
+## CONNECTION-857967F4 — Add and attach an existing durable host store
+
+Given an existing host directory is available at an absolute path
+	When the user runs `integral connection add host-store --name <name> --path <path> --mount <container-path>`
+		Then integral canonicalizes the host path
+			And validates that it is a directory readable and writable by the Integral host process
+			And stores an operator-owned host-store connection without a credential
+			And does not copy, move, modify, snapshot, or change ownership of the directory during setup
+			And warns that Integral does not back up an operator-owned store
+			And validates and records the requested mount path in the same atomic operation
+			And marks every live Pi session stale so the store is mounted before its next prompt
+			And advances the connection generation
+	When the path or mount is missing, invalid, already connected, or lacks required access
+		Then integral rejects setup without creating a connection or modifying the path
+
+## CONNECTION-C0978F5E — Validate host-resource source paths
+
+Given the connection CLI is adding an existing host repository or store
+	When integral validates its source path
+		Then it resolves symbolic links and records one canonical absolute host path
+			And rejects the filesystem root
+			And rejects an Integral deployment root, control-plane directory, credential directory, or any of their ancestors
+			And rejects a path equal to, above, or below another configured host resource
+			And rejects a socket, device, named pipe, or other source of the wrong filesystem type
+			And performs all validation in trusted host code
+			And never makes the source path available to Pi
+
+## CONNECTION-06B6AE14 — List and remove host-resource connections safely
+
+Given a host-repository or host-store connection exists
+	When the user runs `integral connection ls`
+		Then integral identifies it as `host-repo` or `host-store`
+			And reports whether it is active, unavailable, or soft-deleted
+			And reports its Pi mount path
+			And does not print its canonical host path unless the user requests JSON output
+	When the user runs `integral connection rm <name>` in an interactive terminal
+		Then integral identifies the resource kind and whether its backing data is Integral-owned or operator-owned
+			And asks for confirmation
+	When the user confirms removal
+		Then integral performs the same soft deletion as the matching Pi resource tool
+			And never permanently deletes canonical repository or store content
