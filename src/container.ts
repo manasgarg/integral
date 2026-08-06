@@ -28,6 +28,8 @@ export interface ContainerSpec {
   gatewayAddress: string;
 }
 
+export type PiProtocolEvent = Record<string, unknown>;
+
 export interface PiRuntime {
   readonly spec: ContainerSpec;
   start(): Promise<void>;
@@ -50,12 +52,14 @@ export interface ContainerBackend {
     config: EffectiveConfig,
     network: string,
     onStderr: (line: string) => void,
+    onEvent?: (event: PiProtocolEvent) => void,
   ): PiRuntime;
   createTaskPi(
     spec: ContainerSpec,
     config: EffectiveConfig,
     network: string,
     onStderr: (line: string) => void,
+    onEvent?: (event: PiProtocolEvent) => void,
   ): TaskRuntime;
 }
 const managed = new Set([
@@ -95,6 +99,7 @@ export function buildContainerSpec(options: {
   image?: string;
   mcp: Connection[];
   connections?: Connection[];
+  historyView?: string;
 }): ContainerSpec {
   const proxy = new URL(options.gatewayUrl);
   proxy.username = "integral";
@@ -142,15 +147,22 @@ export function buildContainerSpec(options: {
   if (options.model.auth !== "oauth" && options.model.auth !== "device-code")
     args.push("--api-key", SENTINEL);
   args.push("--model", options.selectedModel);
+  const mounts = [
+    { source: options.caCert, target: caPath, readonly: true },
+    { source: options.caBundle, target: bundlePath, readonly: true },
+    { source: options.sessionHome, target: "/home/pi", readonly: false },
+  ];
+  if (options.historyView)
+    mounts.push({
+      source: options.historyView,
+      target: "/home/pi/history",
+      readonly: true,
+    });
   return {
     image: options.image ?? options.config.runner.image,
     args,
     environment,
-    mounts: [
-      { source: options.caCert, target: caPath, readonly: true },
-      { source: options.caBundle, target: bundlePath, readonly: true },
-      { source: options.sessionHome, target: "/home/pi", readonly: false },
-    ],
+    mounts,
     sessionId: options.sessionId,
     sessionToken: options.sessionToken,
     home: options.sessionHome,
@@ -497,12 +509,16 @@ export type PiProtocolResult =
   | { type: "ignored" };
 
 export function interpretPiProtocol(line: string): PiProtocolResult {
-  let event: Record<string, unknown>;
+  let event: PiProtocolEvent;
   try {
-    event = JSON.parse(line) as Record<string, unknown>;
+    event = JSON.parse(line) as PiProtocolEvent;
   } catch {
     return { type: "ignored" };
   }
+  return interpretPiEvent(event);
+}
+
+function interpretPiEvent(event: PiProtocolEvent): PiProtocolResult {
   if (
     event.type === "response" &&
     event.command === "prompt" &&
@@ -542,6 +558,8 @@ export class PiContainer {
     private readonly config: EffectiveConfig,
     private readonly network: string,
     private readonly diagnostic: (line: string) => void = () => undefined,
+    private readonly observe: (event: PiProtocolEvent) => void = () =>
+      undefined,
   ) {}
   async start(): Promise<void> {
     if (this.child) return;
@@ -572,8 +590,21 @@ export class PiContainer {
     });
   }
   private protocol(line: string): void {
+    let raw: PiProtocolEvent;
+    try {
+      raw = JSON.parse(line) as PiProtocolEvent;
+    } catch {
+      return;
+    }
+    try {
+      this.observe(raw);
+    } catch (error) {
+      this.diagnostic(
+        `run event observer failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     if (!this.pending) return;
-    const event = interpretPiProtocol(line);
+    const event = interpretPiEvent(raw);
     if (event.type === "rejected") {
       const pending = this.pending;
       this.pending = undefined;
@@ -662,11 +693,11 @@ export const dockerContainerBackend: ContainerBackend = {
   ensureImage: ensureContainerImage,
   ensureNetwork: createLockedNetwork,
   networkGateway: dockerNetworkGateway,
-  createPi(spec, config, network, onStderr) {
-    return new PiContainer(spec, config, network, onStderr);
+  createPi(spec, config, network, onStderr, onEvent) {
+    return new PiContainer(spec, config, network, onStderr, onEvent);
   },
-  createTaskPi(spec, config, network, onStderr) {
-    return new PiContainer(spec, config, network, onStderr);
+  createTaskPi(spec, config, network, onStderr, onEvent) {
+    return new PiContainer(spec, config, network, onStderr, onEvent);
   },
 };
 

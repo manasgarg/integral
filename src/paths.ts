@@ -22,6 +22,8 @@ export interface IntegralPaths {
   schedules: string;
   occurrences: string;
   completionOutbox: string;
+  runs: string;
+  runViews: string;
   ca: string;
 }
 
@@ -84,6 +86,8 @@ export function pathsFor(root: string): IntegralPaths {
     schedules: join(data, "scheduler", "schedules"),
     occurrences: join(data, "scheduler", "occurrences.json"),
     completionOutbox: join(data, "task-completion-outbox.json"),
+    runs: join(data, "runs"),
+    runViews: join(state, "run-views"),
     ca: join(data, "ca"),
   };
 }

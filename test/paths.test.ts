@@ -13,6 +13,8 @@ test("[ENV-2A7C4E91] INTEGRAL_HOME selects config, data, and state roots", async
   assert.equal(paths.config, join(root, "config"));
   assert.equal(paths.data, join(root, "data"));
   assert.equal(paths.state, join(root, "state"));
+  assert.equal(paths.runs, join(root, "data", "runs"));
+  assert.equal(paths.runViews, join(root, "state", "run-views"));
 });
 
 test("[ENV-8D13B6F0] HOME supplies the default .integral deployment", () => {

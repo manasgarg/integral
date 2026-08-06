@@ -66,7 +66,7 @@ Given integral is provisioning a Pi container
 			And does not mount host worker directories or repositories
 			And does not mount the Docker socket
 			And does not mount control-plane configuration or credentials
-			And mounts only the gateway CA and fresh temporary session home as required
+			And mounts only the gateway CA, curated read-only run history, and fresh temporary session home as required
 
 ## BOX-B45DEA9B — Keep one warm Pi conversation
 

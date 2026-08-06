@@ -42,6 +42,17 @@ workflows, host-managed worker storage, worker memory, actions, approvals,
 trust, budgets, email, host-resource connections, remote access, and service
 installation.
 
+Every Pi container lifetime is a run. Integral keeps a host-attested record of
+interactive runs and isolated scheduled-task attempts under the deployment data
+directory. Each agent environment receives a curated, read-only view at
+`$HOME/history`: `runs` is a stable snapshot of earlier finalized records, while
+`current` is a live projection of the active run. The view is execution
+evidence, not writable worker storage: it excludes credentials and host
+control-plane state and never exposes the durable archive itself. Each record
+includes ordered activity, objective failure and correction signals,
+provider-reported token and cache usage, timing, and available outcome evidence
+so an agent can inspect what worked, what did not, and what it cost.
+
 Host persistence is limited to configuration, connection credentials, the
 gateway CA, process locks, the conversation record, its message queue, schedule
 definitions and their Git-backed history, scheduled occurrences, the task
