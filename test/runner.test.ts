@@ -235,6 +235,25 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
     JSON.parse(await readFile(join(historyMount.source, "index.json"), "utf8")),
     { schemaVersion: 1, runs: [] },
   );
+  assert.deepEqual(await readdir(join(historyMount.source, "runs")), []);
+  const currentMetadata = JSON.parse(
+      await readFile(join(historyMount.source, "current", "run.json"), "utf8"),
+    ) as { status: string },
+    currentActivity = await readFile(
+      join(historyMount.source, "current", "activity.jsonl"),
+      "utf8",
+    ),
+    currentSignals = JSON.parse(
+      await readFile(
+        join(historyMount.source, "current", "signals.json"),
+        "utf8",
+      ),
+    ) as { usage: { inputTokens: number; cacheReadTokens: number } };
+  assert.equal(currentMetadata.status, "running");
+  assert.match(currentActivity, /hello/);
+  assert.match(currentActivity, /answer/);
+  assert.equal(currentSignals.usage.inputTokens, 12);
+  assert.equal(currentSignals.usage.cacheReadTokens, 8);
   await clock.fire(config.runner.idleTimeoutSeconds * 1000);
   assert.ok(calls.includes("pi:stop"));
   assert.ok(calls.includes("DELETE:/integral/internal/session"));

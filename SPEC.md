@@ -44,14 +44,14 @@ installation.
 
 Every Pi container lifetime is a run. Integral keeps a host-attested record of
 interactive runs and isolated scheduled-task attempts under the deployment data
-directory. When it prepares a later agent environment, it projects all earlier
-finalized records into a stable, curated, read-only view at `$HOME/history`.
-That view is execution evidence, not writable worker storage: it excludes
-credentials and host control-plane state, does not change during the run, and
-does not include the current run until a later environment is prepared. Each
-record includes ordered activity, objective failure and correction signals,
-provider-reported token and cache usage, timing, and outcome evidence so a later
-agent can inspect what worked, what did not, and what it cost.
+directory. Each agent environment receives a curated, read-only view at
+`$HOME/history`: `runs` is a stable snapshot of earlier finalized records, while
+`current` is a live projection of the active run. The view is execution
+evidence, not writable worker storage: it excludes credentials and host
+control-plane state and never exposes the durable archive itself. Each record
+includes ordered activity, objective failure and correction signals,
+provider-reported token and cache usage, timing, and available outcome evidence
+so an agent can inspect what worked, what did not, and what it cost.
 
 Host persistence is limited to configuration, connection credentials, the
 gateway CA, process locks, the conversation record, its message queue, schedule

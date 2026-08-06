@@ -117,7 +117,7 @@ test("[RUN-B1D837E0] [RUN-88706C0D] finalized runs retain ordered evidence, reda
   assert.deepEqual(signals.usage.unavailable, []);
 });
 
-test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view is a stable read-only projection of finalized earlier runs", async (t) => {
+test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view combines stable finalized runs with a live current-run projection", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
   let id = 0;
@@ -142,16 +142,54 @@ test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view is a stable re
     config,
     executionId: "execution-1",
   });
-  const view = await store.createHistoryView(current.runId),
+  const view = await store.createHistoryView(current),
     initialIndex = JSON.parse(await readFile(join(view, "index.json"), "utf8"));
   assert.deepEqual(
     initialIndex.runs.map((run: { runId: string }) => run.runId),
     [earlier.runId],
   );
-  assert.deepEqual((await readdir(view)).sort(), [earlier.runId, "index.json"]);
+  assert.deepEqual((await readdir(view)).sort(), [
+    "current",
+    "index.json",
+    "runs",
+  ]);
+  assert.deepEqual(await readdir(join(view, "runs")), [earlier.runId]);
   await assert.rejects(access(join(view, "index.json"), constants.W_OK));
 
+  await current.input("inspect this run", "original-request");
+  current.protocol({
+    type: "message_end",
+    message: { usage: { input: 20, output: 5, cacheRead: 10 } },
+  });
+  await current.output("current output");
+  const runningMetadata = JSON.parse(
+      await readFile(join(view, "current", "run.json"), "utf8"),
+    ),
+    runningActivity = await readFile(
+      join(view, "current", "activity.jsonl"),
+      "utf8",
+    ),
+    runningSignals = JSON.parse(
+      await readFile(join(view, "current", "signals.json"), "utf8"),
+    );
+  assert.equal(runningMetadata.status, "running");
+  assert.match(runningActivity, /inspect this run/);
+  assert.match(runningActivity, /current output/);
+  assert.equal(runningSignals.usage.inputTokens, 20);
+  assert.equal(runningSignals.usage.outputTokens, 5);
+  assert.equal(runningSignals.usage.cacheReadTokens, 10);
+  assert.equal(runningSignals.outcome, undefined);
+
   await current.finalize({ termination: "failed", error: "task failed" });
+  const finalCurrentMetadata = JSON.parse(
+      await readFile(join(view, "current", "run.json"), "utf8"),
+    ),
+    finalCurrentSignals = JSON.parse(
+      await readFile(join(view, "current", "signals.json"), "utf8"),
+    );
+  assert.equal(finalCurrentMetadata.status, "finalized");
+  assert.equal(finalCurrentMetadata.termination, "failed");
+  assert.equal(finalCurrentSignals.outcome, "failed");
   assert.deepEqual(
     (await store.finalizedForExecution("execution-1")).map((run) => run.runId),
     [current.runId],
@@ -170,13 +208,17 @@ test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view is a stable re
     model: selection,
     config,
   });
-  const laterView = await store.createHistoryView(later.runId),
+  const laterView = await store.createHistoryView(later),
     laterIndex = JSON.parse(
       await readFile(join(laterView, "index.json"), "utf8"),
     );
   assert.deepEqual(
     laterIndex.runs.map((run: { runId: string }) => run.runId),
     [earlier.runId, current.runId],
+  );
+  assert.deepEqual(
+    (await readdir(join(laterView, "runs"))).sort(),
+    [earlier.runId, current.runId].sort(),
   );
   await store.removeHistoryView(view);
   await store.removeHistoryView(laterView);
@@ -231,7 +273,7 @@ test("[RUN-B1D837E0] unfinished records become interrupted during recovery", asy
       model: selection,
       config,
     }),
-    view = await recovered.createHistoryView(next.runId),
+    view = await recovered.createHistoryView(next),
     index = JSON.parse(await readFile(join(view, "index.json"), "utf8")) as {
       runs: Array<{ runId: string }>;
     };

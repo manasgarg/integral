@@ -139,10 +139,7 @@ export class RunStore {
           this.now,
           this.newId,
           [],
-          events.reduce(
-            (maximum, event) => Math.max(maximum, event.sequence),
-            0,
-          ),
+          events,
         );
       await recorder.event("host", "interrupted", {
         error: "runner restarted before the run was finalized",
@@ -206,24 +203,27 @@ export class RunStore {
     );
   }
 
-  async createHistoryView(currentRunId: string): Promise<string> {
+  async createHistoryView(current: RunRecorder): Promise<string> {
     await ensureDir(this.paths.runViews);
     const directory = join(
-      this.paths.runViews,
-      `${currentRunId}-${this.newId().slice(0, 8)}`,
-    );
-    await ensureDir(directory, 0o755);
+        this.paths.runViews,
+        `${current.runId}-${this.newId().slice(0, 8)}`,
+      ),
+      runsDirectory = join(directory, "runs");
+    await ensureDir(runsDirectory, 0o755);
     try {
       const records: RunMetadata[] = [];
       for (const entry of await readdir(this.paths.runs, {
         withFileTypes: true,
       })) {
-        if (!entry.isDirectory() || entry.name === currentRunId) continue;
+        if (!entry.isDirectory() || entry.name === current.runId) continue;
         const source = join(this.paths.runs, entry.name),
           metadata = await readMetadata(source);
         if (!metadata || metadata.status !== "finalized") continue;
         records.push(metadata);
-        await cp(source, join(directory, metadata.runId), { recursive: true });
+        await cp(source, join(runsDirectory, metadata.runId), {
+          recursive: true,
+        });
       }
       records.sort(
         (left, right) =>
@@ -235,7 +235,8 @@ export class RunStore {
         json({ schemaVersion: 1, runs: records }),
         0o444,
       );
-      await makeReadOnly(directory);
+      await makeReadOnly(runsDirectory);
+      await current.projectTo(join(directory, "current"));
       return directory;
     } catch (error) {
       await removeTree(directory).catch(() => undefined);
@@ -294,6 +295,8 @@ export class RunRecorder {
   private finalized = false;
   private readonly secrets: string[];
   private readonly toolStarts = new Map<string, number>();
+  private readonly events: RunEvent[];
+  private projection: string | undefined;
   private writeError: unknown;
 
   constructor(
@@ -302,14 +305,31 @@ export class RunRecorder {
     private readonly now: () => number = Date.now,
     private readonly newId: () => string = randomUUID,
     sensitiveValues: string[] = [],
-    initialSequence = 0,
+    initialEvents: RunEvent[] = [],
   ) {
     this.secrets = sensitiveValues.filter(Boolean);
-    this.sequence = initialSequence;
+    this.events = [...initialEvents];
+    this.sequence = initialEvents.reduce(
+      (maximum, event) => Math.max(maximum, event.sequence),
+      0,
+    );
   }
 
   get runId(): string {
     return this.metadata.runId;
+  }
+
+  async projectTo(directory: string): Promise<void> {
+    await this.chain;
+    if (this.writeError)
+      throw this.writeError instanceof Error
+        ? this.writeError
+        : new Error("run event write failed", { cause: this.writeError });
+    await removeTree(directory);
+    await cp(this.directory, directory, { recursive: true });
+    await makeWritable(directory);
+    this.projection = directory;
+    await this.writeProjectionSignals();
   }
 
   event(
@@ -331,6 +351,13 @@ export class RunRecorder {
       await appendFile(join(this.directory, "activity.jsonl"), json(event), {
         mode: 0o600,
       });
+      this.events.push(event);
+      if (this.projection) {
+        await appendFile(join(this.projection, "activity.jsonl"), json(event), {
+          mode: 0o644,
+        });
+        await this.writeProjectionSignals();
+      }
     });
   }
 
@@ -421,6 +448,14 @@ export class RunRecorder {
     await this.enqueue(async () => {
       this.metadata = { ...this.metadata, ...structuredClone(values) };
       await atomicWrite(join(this.directory, "run.json"), json(this.metadata));
+      if (this.projection) {
+        await atomicWrite(
+          join(this.projection, "run.json"),
+          json(this.metadata),
+          0o644,
+        );
+        await this.writeProjectionSignals();
+      }
     });
   }
 
@@ -452,10 +487,21 @@ export class RunRecorder {
             }
           : {}),
       };
-      const events = await readEvents(this.directory),
-        signals = summarize(this.metadata, events);
+      const signals = summarize(this.metadata, this.events);
       await atomicWrite(join(this.directory, "signals.json"), json(signals));
       await atomicWrite(join(this.directory, "run.json"), json(this.metadata));
+      if (this.projection) {
+        await atomicWrite(
+          join(this.projection, "signals.json"),
+          json(signals),
+          0o644,
+        );
+        await atomicWrite(
+          join(this.projection, "run.json"),
+          json(this.metadata),
+          0o644,
+        );
+      }
     } catch (error) {
       this.finalized = false;
       throw error;
@@ -475,6 +521,15 @@ export class RunRecorder {
     void operation.catch((error: unknown) => {
       this.writeError ??= error;
     });
+  }
+
+  private async writeProjectionSignals(): Promise<void> {
+    if (!this.projection) return;
+    await atomicWrite(
+      join(this.projection, "signals.json"),
+      json(summarize(this.metadata, this.events)),
+      0o644,
+    );
   }
 }
 

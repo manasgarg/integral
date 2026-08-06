@@ -65,11 +65,11 @@ Given integral is recording a run
 			And does not infer an unobserved mistake, quality score, or cause
 			And does not store or expose private provider reasoning that was not part of the agent-visible protocol
 
-## RUN-01CA16F2 — Give each agent a view of all earlier runs
+## RUN-01CA16F2 — Give each agent a view of earlier and current runs
 
 Given one or more runs were finalized before integral prepares a new agent environment
 	When integral provisions an interactive or scheduled-task container
-		Then it makes every earlier finalized run in that deployment available under `$HOME/history`
+		Then it makes every earlier finalized run in that deployment available under `$HOME/history/runs`
 			And provides a machine-readable index ordered by run start time
 			And provides each run's metadata, ordered activity, learning-signal summary, usage, and outcome under its run ID
 			And includes successful, failed, interrupted, cancelled, and timed-out runs
@@ -78,7 +78,16 @@ Given one or more runs were finalized before integral prepares a new agent envir
 			And does not require the agent to call a host tool or network service to inspect it
 Given no run was finalized before integral prepares a new agent environment
 	When integral provisions the container
-		Then `$HOME/history` exists as an empty readable history view
+		Then `$HOME/history/runs` exists as an empty readable history view
+			And the machine-readable index contains no finalized runs
+Given integral has begun the run for a new agent environment
+	When it provisions the container
+		Then it makes that run available under `$HOME/history/current`
+			And exposes its running metadata, ordered activity, and provisional learning-signal and usage summary
+	When the current run records input, output, tool activity, provider usage, feedback, or failure
+		Then `$HOME/history/current` reflects the newly recorded evidence while the session remains active
+	When integral finalizes the current run
+		Then `$HOME/history/current` reflects its final status, outcome, elapsed time, and final learning-signal summary before the environment is removed
 
 ## RUN-79BACB0C — Expose run evidence without exposing authority
 
@@ -88,6 +97,7 @@ Given integral is constructing the agent-visible history view
 			And excludes gateway session tokens, real provider credentials, component authentication, and credential-bearing proxy URLs
 			And excludes host-only configuration, locks, and mutable queue state
 			And does not mount `<INTEGRAL_HOME>` or the host run archive itself into the container
+			And updates the current-run projection without exposing a writable path back to the durable record
 	When an agent attempts to modify, rename, or delete history content
 		Then the container filesystem refuses the change
 			And the durable host record remains unchanged
@@ -96,11 +106,11 @@ Given integral is constructing the agent-visible history view
 
 Given integral has selected the finalized runs visible to a new agent environment
 	When another run finishes while that agent is still active
-		Then the active agent's history view does not change
+		Then the active agent's finalized-runs index and `$HOME/history/runs` snapshot do not change
 			And a later agent environment includes the newly finalized run
-	When the current run writes output or reaches its outcome
-		Then its own record does not appear in its history view
-			And it becomes available only to agent environments prepared after finalization
+	When the current run writes evidence or reaches its outcome
+		Then only `$HOME/history/current` changes in that environment
+			And the run appears under `$HOME/history/runs/<run-id>` only in agent environments prepared after finalization
 Given integral restarts with an existing durable run archive
 	When it prepares the next agent environment
 		Then the environment receives the same finalized history as before the restart

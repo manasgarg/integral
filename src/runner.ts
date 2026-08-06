@@ -414,7 +414,7 @@ export class Runner {
     this.taskRun = recorder;
     let historyView: string | undefined, runtime: TaskRuntime | undefined;
     try {
-      historyView = await this.runs.createHistoryView(recorder.runId);
+      historyView = await this.runs.createHistoryView(recorder);
       this.taskHistoryView = historyView;
       spec.mounts.push({
         source: historyView,
@@ -678,7 +678,7 @@ export class Runner {
       });
     let historyView: string | undefined, pi: PiRuntime | undefined;
     try {
-      historyView = await this.runs.createHistoryView(recorder.runId);
+      historyView = await this.runs.createHistoryView(recorder);
       spec.mounts.push({
         source: historyView,
         target: "/home/pi/history",

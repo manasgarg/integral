@@ -29,8 +29,13 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
     caCert = join(paths.root, "ca.pem"),
     caBundle = join(paths.root, "bundle.pem");
   await mkdir(sessionHome, { recursive: true });
-  await mkdir(historyView, { recursive: true });
+  await mkdir(join(historyView, "current"), { recursive: true });
+  await mkdir(join(historyView, "runs"), { recursive: true });
   await writeFile(join(historyView, "index.json"), '{"runs":[]}\n');
+  await writeFile(
+    join(historyView, "current", "run.json"),
+    '{"status":"running"}\n',
+  );
   await writeFile(caCert, "acceptance CA fixture\n");
   await writeFile(caBundle, "acceptance CA fixture\n");
   const image = ensureContainerImage(config, "0.80.3");
@@ -132,6 +137,24 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
       ],
       { stdio: "ignore" },
     ),
+  );
+  await writeFile(
+    join(historyView, "current", "run.json"),
+    '{"status":"finalized","termination":"completed"}\n',
+  );
+  assert.equal(
+    execFileSync(
+      "docker",
+      [
+        "exec",
+        name,
+        "node",
+        "-e",
+        `process.stdout.write(require("node:fs").readFileSync("/home/pi/history/current/run.json", "utf8"))`,
+      ],
+      { encoding: "utf8" },
+    ),
+    '{"status":"finalized","termination":"completed"}\n',
   );
   assert.doesNotThrow(
     () =>
