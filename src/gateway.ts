@@ -431,6 +431,7 @@ export class Gateway {
     }
     if (
       req.url?.startsWith("/integral/control/schedules") ||
+      req.url === "/integral/control/container-packages" ||
       req.url?.startsWith("/integral/control/resources/")
     ) {
       try {
@@ -476,6 +477,10 @@ export class Gateway {
     target: URL,
     sessionId: string,
   ): Promise<void> {
+    if (target.pathname === "/integral/control/container-packages") {
+      await this.containerPackageControl(req, res, sessionId);
+      return;
+    }
     if (target.pathname.startsWith("/integral/control/resources/")) {
       await this.resourceControl(req, res, target, sessionId);
       return;
@@ -494,6 +499,45 @@ export class Gateway {
       body,
     );
     const responseBody = await upstream.text();
+    res.writeHead(upstream.status, {
+      "content-type":
+        upstream.headers.get("content-type") ?? "application/json",
+    });
+    res.end(responseBody);
+  }
+  private async containerPackageControl(
+    req: IncomingMessage,
+    res: ServerResponse,
+    sessionId: string,
+  ): Promise<void> {
+    const method = req.method ?? "GET";
+    if (method !== "GET" && method !== "POST")
+      throw new IntegralError("unsupported package operation", 405);
+    const body = method === "POST" ? await bodyJson(req) : {};
+    if (method === "POST") body.actor = `pi:${sessionId}`;
+    const upstream = await this.dependencies.internalFetch(
+        this.paths,
+        "gateway",
+        "coordinator",
+        "/integral/internal/container-packages",
+        {
+          method,
+          ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
+        },
+      ),
+      responseBody = await upstream.text();
+    if (method === "POST" && upstream.ok)
+      this.logger.event(
+        "info",
+        "gateway.container_packages",
+        "container package request allowed",
+        {
+          verdict: "allow",
+          operation: stringValue(body.operation),
+          session_id: sessionId,
+          request_id: randomUUID(),
+        },
+      );
     res.writeHead(upstream.status, {
       "content-type":
         upstream.headers.get("content-type") ?? "application/json",

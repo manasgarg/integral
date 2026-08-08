@@ -1,8 +1,9 @@
 FROM node:24.15.0-slim
 
 ARG PI_VERSION=latest
+ARG SYSTEM_PACKAGES="ca-certificates gh git"
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates gh git \
+    && apt-get install --yes --no-install-recommends ${SYSTEM_PACKAGES} \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && npm cache clean --force \

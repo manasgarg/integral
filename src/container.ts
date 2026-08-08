@@ -17,6 +17,7 @@ import { IntegralError } from "./errors.ts";
 import { atomicWrite, ensureDir } from "./fs.ts";
 import { DEFAULT_PI_IMAGE, INTEGRAL_VERSION } from "./constants.ts";
 import { OAUTH_SENTINEL, SENTINEL } from "./gateway-policy.ts";
+import { DEFAULT_CONTAINER_PACKAGES } from "./container-packages.ts";
 
 export interface ContainerSpec {
   image: string;
@@ -221,18 +222,22 @@ export async function writeMcpExtension(
     transport: connection.transport,
   }));
   const source = `import { Type } from "typebox";\nconst servers = ${JSON.stringify(declarations)};\nfunction headers(server) { const value = { "content-type": "application/json", accept: "application/json, text/event-stream" }; if (server.auth) value.authorization = "Bearer integral-managed-credential"; return value; }\nasync function call(server, payload, signal) {\n  if (server.transport !== "sse") { const response = await fetch(server.url, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); const body = await response.text(); if (!response.ok) throw new Error("MCP request failed: " + response.status); const data = body.split("\\n").filter(line => line.startsWith("data:")).at(-1)?.slice(5).trim(); return JSON.parse(data || body); }\n  const events = await fetch(server.url, { headers: headers(server), signal }); if (!events.ok || !events.body) throw new Error("MCP SSE connection failed: " + events.status); const reader = events.body.getReader(), decoder = new TextDecoder(); let buffer = "", endpoint;\n  while (!endpoint) { const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before endpoint"); buffer += decoder.decode(part.value, { stream: true }); const match = buffer.match(/event: endpoint\\r?\\ndata: (.+)\\r?\\n\\r?\\n/); if (match) { endpoint = new URL(match[1].trim(), server.url).toString(); buffer = buffer.slice((match.index || 0) + match[0].length); } }\n  const sent = await fetch(endpoint, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); if (!sent.ok) throw new Error("MCP SSE send failed: " + sent.status);\n  while (true) { const match = buffer.match(/data: (.+)\\r?\\n\\r?\\n/); if (match) { buffer = buffer.slice((match.index || 0) + match[0].length); const value = JSON.parse(match[1]); if (value.id === payload.id) { await reader.cancel(); return value; } } const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before response"); buffer += decoder.decode(part.value, { stream: true }); }\n}\nasync function schedule(path, method, body, signal) { const response = await fetch("http://integral.control" + path, { method, headers: { "content-type": "application/json" }, signal, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await response.text(); if (!response.ok) throw new Error("Schedule request failed: " + response.status + " " + text.trim()); return text ? JSON.parse(text) : null; }\nfunction result(value) { return { content: [{ type: "text", text: JSON.stringify(value) }], details: value }; }\nexport default function (pi) {\n  for (const server of servers) pi.registerTool({\n    name: "mcp_" + server.name, label: "MCP " + server.name, description: "Call a tool on the " + server.name + " remote MCP server",\n    parameters: Type.Object({ tool: Type.String(), arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),\n    async execute(_id, params, signal) {\n      const value = await call(server, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: params.tool, arguments: params.arguments || {} } }, signal);\n      return { content: value.result?.content || [{ type: "text", text: JSON.stringify(value.result ?? value) }], details: { server: server.name } };\n    }\n  });\n  pi.registerTool({ name: "schedule_list", label: "List schedules", description: "List schedules managed by Integral", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/schedules", "GET", undefined, signal)); } });\n  pi.registerTool({ name: "schedule_create", label: "Create schedule", description: "Create a recurring cron schedule or one-time task", parameters: Type.Object({ prompt: Type.String(), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : { type: "recurring", cron: params.cron, timezone: params.timezone }; return result(await schedule("/integral/control/schedules", "POST", { prompt: params.prompt, trigger }, signal)); } });\n  for (const action of ["enable", "disable"]) pi.registerTool({ name: "schedule_" + action, label: action + " schedule", description: action + " a schedule", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id) + "/" + action, "POST", { expectedRevision: params.expectedRevision }, signal)); } });\n  pi.registerTool({ name: "schedule_update", label: "Update schedule", description: "Update a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer(), prompt: Type.Optional(Type.String()), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : params.cron || params.timezone ? { type: "recurring", cron: params.cron, timezone: params.timezone } : undefined; return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "PATCH", { expectedRevision: params.expectedRevision, prompt: params.prompt, trigger }, signal)); } });\n  pi.registerTool({ name: "schedule_delete", label: "Delete schedule", description: "Delete a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "DELETE", { expectedRevision: params.expectedRevision }, signal)); } });\n}\n`;
-  const proxiedSource = source
-    .replace(
-      'import { Type } from "typebox";',
-      'import { request } from "node:http";\nimport { Type } from "typebox";',
-    )
-    .replace(
-      /async function schedule\(path, method, body, signal\) \{.*?\}\nfunction result/s,
-      `function control(path) { const proxy = new URL(process.env.HTTP_PROXY), target = new URL(path, "http://integral.control"), authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = target.pathname; proxy.search = target.search; return { url: proxy.toString(), authorization }; }
+  const packageTools = `  pi.registerTool({ name: "container_package_list", label: "List container packages", description: "List the governed Debian package set and current revision for the managed Pi image", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/container-packages", "GET", undefined, signal)); } });
+  for (const operation of ["install", "upgrade"]) pi.registerTool({ name: "container_package_" + operation, label: operation + " container packages", description: operation + " Debian packages through Integral's governed immutable-image builder; the current container is replaced after this turn", parameters: Type.Object({ packages: Type.Array(Type.String()), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/container-packages", "POST", { operation, packages: params.packages, expectedRevision: params.expectedRevision }, signal)); } });
+`,
+    extendedSource = source.replace(/\n}\n$/, `\n${packageTools}}\n`),
+    proxiedSource = extendedSource
+      .replace(
+        'import { Type } from "typebox";',
+        'import { request } from "node:http";\nimport { Type } from "typebox";',
+      )
+      .replace(
+        /async function schedule\(path, method, body, signal\) \{.*?\}\nfunction result/s,
+        `function control(path) { const proxy = new URL(process.env.HTTP_PROXY), target = new URL(path, "http://integral.control"), authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = target.pathname; proxy.search = target.search; return { url: proxy.toString(), authorization }; }
 function controlRequest(path, method, body, signal) { return new Promise((resolve, reject) => { const target = control(path), payload = body === undefined ? undefined : JSON.stringify(body), chunks = []; let settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }, req = request(target.url, { agent: false, method, headers: { "content-type": "application/json", "proxy-authorization": target.authorization, ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, (res) => { res.on("data", (chunk) => chunks.push(chunk)); res.on("end", () => finish(() => resolve({ status: res.statusCode || 500, text: Buffer.concat(chunks).toString("utf8") }))); res.on("error", (error) => finish(() => reject(error))); }), abort = () => req.destroy(new Error("schedule request was cancelled")); signal?.addEventListener("abort", abort, { once: true }); req.on("error", (error) => finish(() => reject(error))); req.end(payload); }); }
 async function schedule(path, method, body, signal) { const response = await controlRequest(path, method, body, signal), text = response.text; if (response.status < 200 || response.status >= 300) throw new Error("Schedule request failed: " + response.status + " " + text.trim()); return text ? JSON.parse(text) : null; }
 function result`,
-    );
+      );
   await atomicWrite(join(directory, "integral-mcp.ts"), proxiedSource);
 }
 
@@ -384,6 +389,7 @@ function inspectImage(image: string): string | undefined {
 export function managedPiImage(
   version: string,
   recipeInputs?: readonly Uint8Array[],
+  systemPackages: readonly string[] = DEFAULT_CONTAINER_PACKAGES,
 ): string {
   const dockerfile = fileURLToPath(
       new URL("../../Dockerfile.pi", import.meta.url),
@@ -398,6 +404,7 @@ export function managedPiImage(
     hash = createHash("sha256");
   for (const input of inputs)
     hash.update(String(input.byteLength)).update("\0").update(input);
+  hash.update("packages\0").update(JSON.stringify([...systemPackages].sort()));
   const recipe = hash.digest("hex").slice(0, 12);
   return `integral-pi:${INTEGRAL_VERSION}-recipe-${recipe}-pi-${version.replace(/[^0-9A-Za-z_.-]/g, "-")}`;
 }
@@ -405,10 +412,17 @@ export function managedPiImage(
 export function ensureContainerImage(
   config: EffectiveConfig,
   piVersion: string,
+  options: {
+    systemPackages?: readonly string[];
+    rebuild?: boolean;
+  } = {},
 ): string {
+  const systemPackages = [
+    ...(options.systemPackages ?? DEFAULT_CONTAINER_PACKAGES),
+  ].sort();
   const requested =
     config.runner.image === DEFAULT_PI_IMAGE
-      ? managedPiImage(piVersion)
+      ? managedPiImage(piVersion, undefined, systemPackages)
       : config.runner.image;
   const existing = inspectImage(requested);
   if (config.runner.pullPolicy === "never") {
@@ -418,7 +432,11 @@ export function ensureContainerImage(
       );
     return existing;
   }
-  if (config.runner.pullPolicy === "if-not-present" && existing)
+  if (
+    config.runner.pullPolicy === "if-not-present" &&
+    existing &&
+    !options.rebuild
+  )
     return existing;
   if (config.runner.image === DEFAULT_PI_IMAGE) {
     const dockerfile = fileURLToPath(
@@ -430,8 +448,11 @@ export function ensureContainerImage(
       [
         "build",
         "--pull",
+        ...(options.rebuild ? ["--no-cache"] : []),
         "--build-arg",
         `PI_VERSION=${piVersion}`,
+        "--build-arg",
+        `SYSTEM_PACKAGES=${systemPackages.join(" ")}`,
         "--tag",
         requested,
         "--file",

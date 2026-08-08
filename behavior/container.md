@@ -9,6 +9,7 @@ Pi RPC container.
 <!-- Automation note (BOX-BE26C696): Timeout, release, and cleanup paths are automated at the protocol boundary; real container termination is not exercised without a Docker daemon. -->
 <!-- Automation note (BOX-7D3A19E4): Idle timer and session cleanup paths are automated without waiting five real minutes or launching Docker. -->
 <!-- Automation note (BOX-C28F4A61): Provisioning-failure release behavior is automated without deliberately failing a live Docker daemon. -->
+<!-- Automation note (BOX-40521095): Package policy, authenticated control routing, immutable image replacement, and recipe identity are automated; the Docker acceptance profile verifies packages in a live image. -->
 
 ## BOX-AB639757 — Start Pi for the first message
 
@@ -109,3 +110,22 @@ Given the runner has claimed a queued message
 		Then integral durably returns the message to its prior queue position
 			And records the provisioning failure
 			And reports the failure to every attached terminal
+
+## BOX-40521095 — Govern Pi image package changes
+
+Given Pi runs in an immutable managed image without host Docker access
+	When Pi lists the image's Debian packages through Integral's authenticated control pathway
+		Then Integral returns the durable desired package set and its revision
+			And includes the base packages required by the managed image
+	When Pi requests installation of valid Debian package names at the current revision
+		Then Integral builds a replacement image from the selected exact Pi version
+			And obtains packages only through the base image's configured APT repositories
+			And records the new desired package set and immutable image identity
+			And replaces the current container after the active turn completes
+	When Pi requests an upgrade of desired packages at the current revision
+		Then Integral rebuilds the replacement image without cached package layers
+			And records a new revision and immutable image identity
+	When Pi submits command syntax, an unknown package for upgrade, or a stale revision
+		Then Integral rejects the request without changing package state or the selected image
+	When Integral later resolves a newer latest Pi release
+		Then it builds that exact Pi version with the durable desired package set

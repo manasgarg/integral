@@ -8,6 +8,7 @@ import { DEFAULT_PI_IMAGE } from "./constants.ts";
 import { listConnections } from "./connections.ts";
 import type { IntegralPaths } from "./paths.ts";
 import { ensurePiRuntime, type PiRuntimeResolution } from "./pi-runtime.ts";
+import { loadContainerPackageState } from "./container-packages.ts";
 
 export interface ModelSelection {
   connection: string;
@@ -37,6 +38,7 @@ export interface ModelCatalogDependencies {
   ensureImage(
     config: EffectiveConfig,
     piVersion: string,
+    options?: { systemPackages?: readonly string[]; rebuild?: boolean },
   ): string | Promise<string>;
   discoverModels(
     image: string,
@@ -77,7 +79,10 @@ export async function listModelChoices(
     "resolving the managed Pi image; this may build or pull an image",
     { pi_version: runtime.version },
   );
-  const image = await dependencies.ensureImage(config, runtime.version);
+  const packageState = await loadContainerPackageState(paths),
+    image = await dependencies.ensureImage(config, runtime.version, {
+      systemPackages: packageState.packages,
+    });
   progress?.("image.ready", "managed Pi image is ready", {
     pi_version: runtime.version,
   });

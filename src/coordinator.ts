@@ -33,8 +33,16 @@ import {
 import { internalFetch } from "./http-client.ts";
 import { DurableTaskQueue } from "./task-queue.ts";
 import type { ScheduledOccurrence } from "./occurrence-store.ts";
-import type { Component } from "./constants.ts";
+import { DEFAULT_PI_IMAGE, type Component } from "./constants.ts";
 import type { Logger } from "./logging.ts";
+import { ensureContainerImage } from "./container.ts";
+import {
+  loadContainerPackageState,
+  planContainerPackageChange,
+  saveContainerPackageState,
+  validateContainerPackageNames,
+  type ContainerPackageOperation,
+} from "./container-packages.ts";
 
 export interface ClientEvent {
   sequence: number;
@@ -52,6 +60,11 @@ export interface CoordinatorDependencies {
     config: EffectiveConfig,
     progress?: ModelCatalogProgress,
   ): Promise<ModelCatalog>;
+  ensureImage(
+    config: EffectiveConfig,
+    piVersion: string,
+    options: { systemPackages: readonly string[]; rebuild: boolean },
+  ): string | Promise<string>;
 }
 const productionDependencies: CoordinatorDependencies = {
   servers: nodeHttpServerRuntime,
@@ -62,6 +75,7 @@ const productionDependencies: CoordinatorDependencies = {
     clearTimeout(handle as NodeJS.Timeout | undefined),
   listModelChoices: (paths, config, progress) =>
     listModelChoices(paths, config, {}, progress),
+  ensureImage: ensureContainerImage,
 };
 export class Coordinator {
   readonly queue: DurableQueue;
@@ -218,6 +232,69 @@ export class Coordinator {
       return choice;
     });
   }
+  async containerPackageInventory(): Promise<Record<string, unknown>> {
+    const state = await loadContainerPackageState(this.paths),
+      selection = this.modelSelection.get();
+    return {
+      ...state,
+      piVersion: selection?.piVersion ?? null,
+      piImage: selection?.piImage ?? null,
+    };
+  }
+  async changeContainerPackages(input: {
+    operation: ContainerPackageOperation;
+    packages: unknown;
+    expectedRevision: number;
+    actor: string;
+  }): Promise<Record<string, unknown>> {
+    return this.exclusiveWork(async () => {
+      if (this.config.runner.image !== DEFAULT_PI_IMAGE)
+        throw new IntegralError(
+          "container packages can only be changed for Integral's managed Pi image",
+          409,
+        );
+      const selection = this.modelSelection.get();
+      if (!selection)
+        throw new IntegralError(
+          "select a model before changing container packages",
+          409,
+        );
+      const current = await loadContainerPackageState(this.paths),
+        requested = validateContainerPackageNames(input.packages),
+        next = planContainerPackageChange(
+          current,
+          input.operation,
+          requested,
+          input.expectedRevision,
+        );
+      if (!next) return this.containerPackageInventory();
+      const image = await this.dependencies.ensureImage(
+          this.config,
+          selection.piVersion,
+          { systemPackages: next.packages, rebuild: true },
+        ),
+        updatedSelection = { ...selection, piImage: image };
+      await saveContainerPackageState(this.paths, next);
+      await this.modelSelection.set(updatedSelection);
+      this.modelCatalogs.clear();
+      this.modelCatalogLoads.clear();
+      this.broadcast("conversation.selection", updatedSelection);
+      this.logger?.event(
+        "info",
+        "container.packages_updated",
+        "managed Pi image packages updated",
+        {
+          actor: input.actor,
+          operation: input.operation,
+          packages: requested,
+          package_revision: next.revision,
+          pi_version: selection.piVersion,
+          pi_image: image,
+        },
+      );
+      return { ...next, piVersion: selection.piVersion, piImage: image };
+    });
+  }
   private async modelCatalog(generation?: number): Promise<ModelCatalog> {
     const currentGeneration = generation ?? (await this.readGeneration()),
       key = `${this.config.fingerprint}:${currentGeneration}`,
@@ -323,6 +400,31 @@ export class Coordinator {
         const selection = await this.selectConversationModel(connection, model);
         json(res, 200, selection);
         return;
+      }
+      if (url.pathname === "/integral/internal/container-packages") {
+        if (!this.internal(req, "gateway")) return unauthorized(res);
+        if (req.method === "GET") {
+          json(res, 200, await this.containerPackageInventory());
+          return;
+        }
+        if (req.method === "POST") {
+          const body = await bodyJson(req),
+            operation = stringValue(body.operation);
+          if (operation !== "install" && operation !== "upgrade")
+            throw new IntegralError("invalid package operation", 400);
+          json(
+            res,
+            200,
+            await this.changeContainerPackages({
+              operation,
+              packages: body.packages,
+              expectedRevision: numberValue(body.expectedRevision),
+              actor: stringValue(body.actor),
+            }),
+          );
+          return;
+        }
+        throw new IntegralError("unsupported package operation", 405);
       }
       if (url.pathname === "/integral/messages" && req.method === "POST") {
         if (!this.modelSelection.get())

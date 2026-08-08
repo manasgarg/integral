@@ -15,6 +15,7 @@ import { loadConfig } from "../../src/config.ts";
 import { validateConnection } from "../../src/connections.ts";
 import { deploymentId } from "../../src/state.ts";
 import { fixture } from "../helpers.ts";
+import { ensurePiRuntime } from "../../src/pi-runtime.ts";
 
 test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi container enforces the declared identity, mounts, resources, and internal network", async (t) => {
   assert.doesNotThrow(
@@ -229,4 +230,39 @@ test("[CONNECTION-12C87631] managed Pi image includes Git and GitHub clients", a
         },
       ),
     );
+});
+
+test("[BOX-40521095] managed image contains the exact Pi release and governed Debian packages", async (t) => {
+  assert.doesNotThrow(
+    () => execFileSync("docker", ["info"], { stdio: "ignore" }),
+    "Docker acceptance requires a reachable Docker daemon",
+  );
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    runtime = await ensurePiRuntime(paths),
+    image = ensureContainerImage(config, runtime.version, {
+      systemPackages: ["ca-certificates", "gh", "git", "jq"],
+    }),
+    piVersion = execFileSync(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        image,
+        "node",
+        "-e",
+        'process.stdout.write(require("/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/package.json").version)',
+      ],
+      { encoding: "utf8" },
+    );
+  assert.equal(piVersion, runtime.version);
+  assert.doesNotThrow(() =>
+    execFileSync(
+      "docker",
+      ["run", "--rm", "--network", "none", image, "jq", "--version"],
+      { stdio: "ignore" },
+    ),
+  );
 });

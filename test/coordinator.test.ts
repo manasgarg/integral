@@ -145,6 +145,68 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] model choices are validated, persisted, br
   assert.deepEqual(restored.modelSelection.get(), selected);
 });
 
+test("[BOX-40521095] package changes rebuild the selected exact Pi image and persist its identity", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    builds: Array<{
+      version: string;
+      packages: readonly string[];
+      rebuild: boolean;
+    }> = [],
+    coordinator = new Coordinator(paths, config, {
+      ensureImage(_config, version, options) {
+        builds.push({
+          version,
+          packages: options.systemPackages,
+          rebuild: options.rebuild,
+        });
+        return `sha256:packages-${builds.length}`;
+      },
+    });
+  await coordinator.modelSelection.set({
+    connection: "work",
+    provider: "openai-codex",
+    model: "gpt-5.5",
+    piVersion: "9.8.7",
+    piImage: "sha256:base",
+  });
+  assert.deepEqual(await coordinator.containerPackageInventory(), {
+    revision: 0,
+    packages: ["ca-certificates", "gh", "git"],
+    piVersion: "9.8.7",
+    piImage: "sha256:base",
+  });
+  const installed = await coordinator.changeContainerPackages({
+    operation: "install",
+    packages: ["jq"],
+    expectedRevision: 0,
+    actor: "pi:session-1",
+  });
+  assert.deepEqual(installed, {
+    revision: 1,
+    packages: ["ca-certificates", "gh", "git", "jq"],
+    piVersion: "9.8.7",
+    piImage: "sha256:packages-1",
+  });
+  assert.deepEqual(builds, [
+    {
+      version: "9.8.7",
+      packages: ["ca-certificates", "gh", "git", "jq"],
+      rebuild: true,
+    },
+  ]);
+  assert.equal(coordinator.modelSelection.get()?.piImage, "sha256:packages-1");
+  const upgraded = await coordinator.changeContainerPackages({
+    operation: "upgrade",
+    packages: ["jq"],
+    expectedRevision: 1,
+    actor: "pi:session-1",
+  });
+  assert.equal(upgraded.revision, 2);
+  assert.equal(upgraded.piImage, "sha256:packages-2");
+  assert.equal(builds.length, 2);
+});
+
 test("[QUEUE-31A6D84F] [CHAT-D7E2F609] one in-flight claim completes to one persisted assistant event before next work", async (t) => {
   const { coordinator } = await coordinatorFixture(t);
   const first = await coordinator.queue.enqueue("one"),

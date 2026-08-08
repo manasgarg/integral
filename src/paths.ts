@@ -16,6 +16,7 @@ export interface IntegralPaths {
   modelSelection: string;
   piRuntime: string;
   piRuntimeState: string;
+  containerPackages: string;
   queue: string;
   taskQueue: string;
   scheduler: string;
@@ -87,6 +88,7 @@ export function pathsFor(root: string): IntegralPaths {
     modelSelection: join(data, "conversation-model.json"),
     piRuntime: join(data, "pi-runtime"),
     piRuntimeState: join(state, "pi-runtime.json"),
+    containerPackages: join(data, "container-packages.json"),
     queue: join(data, "queue.json"),
     taskQueue: join(data, "task-queue.json"),
     scheduler: join(data, "scheduler"),

@@ -43,6 +43,15 @@ test("[BOX-E1F472A1] managed Pi image identity changes with its build recipe", (
   assert.match(first, /^integral-pi:0\.1\.0-recipe-[a-f0-9]{12}-pi-1\.2\.3$/);
 });
 
+test("[BOX-40521095] managed Pi image identity includes the governed package set", () => {
+  const recipe = [Buffer.from("same recipe")],
+    base = managedPiImage("1.2.3", recipe, ["git"]),
+    customized = managedPiImage("1.2.3", recipe, ["git", "jq"]),
+    reordered = managedPiImage("1.2.3", recipe, ["jq", "git"]);
+  assert.notEqual(base, customized);
+  assert.equal(customized, reordered);
+});
+
 test("[GATEWAY-3F299566] gateway health identifies deployment and publishes the current component state", async (t) => {
   const paths = await fixture(t),
     deployment = deploymentId(paths);
@@ -420,6 +429,79 @@ test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the 
   assert.equal(status, 200);
   assert.equal(responseBody, "[]");
   assert.deepEqual(forwarded, ["/integral/schedules"]);
+});
+
+test("[BOX-40521095] authenticated package controls attach the Pi actor and cross only the internal coordinator boundary", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  let forwarded:
+    { target: string; path: string; body: Record<string, unknown> } | undefined;
+  const gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path, init) {
+          const serialized = init?.body;
+          if (typeof serialized !== "string")
+            throw new Error("expected serialized package request");
+          forwarded = {
+            target,
+            path,
+            body: JSON.parse(serialized) as Record<string, unknown>,
+          };
+          return Response.json({ revision: 1, packages: ["git", "jq"] });
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          operation: "install",
+          packages: ["jq"],
+          expectedRevision: 0,
+          actor: "forged",
+        }),
+      ),
+    ]) as unknown as IncomingMessage;
+  let status = 0;
+  const response = {
+    writeHead(value: number) {
+      status = value;
+      return response;
+    },
+    end() {
+      return response;
+    },
+  } as unknown as ServerResponse;
+  request.url = "/integral/control/container-packages";
+  request.method = "POST";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:package-token").toString("base64")}`,
+  };
+  gateway.sessions.set("package-token", "session-42");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  assert.equal(status, 200);
+  assert.deepEqual(forwarded, {
+    target: "coordinator",
+    path: "/integral/internal/container-packages",
+    body: {
+      operation: "install",
+      packages: ["jq"],
+      expectedRevision: 0,
+      actor: "pi:session-42",
+    },
+  });
 });
 
 test("[SCHEDULE-930581F7] task outcome declarations derive execution identity from the authenticated gateway session", async (t) => {
@@ -825,7 +907,7 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
   assert.equal(spec.sessionId, identity.sessionId);
 });
 
-test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose remote MCP and authenticated schedule tools", async (t) => {
+test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi extensions expose remote MCP and authenticated control tools", async (t) => {
   const paths = await fixture(t),
     mcp = validateConnection({
       name: "work-docs",
@@ -842,6 +924,9 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose r
   assert.match(source, /integral-managed-credential/);
   assert.match(source, /schedule_create/);
   assert.match(source, /schedule_update/);
+  assert.match(source, /container_package_list/);
+  assert.match(source, /container_package_" \+ operation/);
+  assert.match(source, /\["install", "upgrade"\]/);
   assert.match(source, /proxy-authorization/);
   assert.match(source, /request\(target\.url, \{ agent: false/);
   assert.doesNotMatch(source, /fetch\("http:\/\/integral\.control/);
