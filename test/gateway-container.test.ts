@@ -405,6 +405,9 @@ test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the 
   let status = 0,
     responseBody = "";
   const response = {
+    once() {
+      return response;
+    },
     writeHead(value: number) {
       status = value;
       return response;
@@ -431,7 +434,7 @@ test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the 
   assert.deepEqual(forwarded, ["/integral/schedules"]);
 });
 
-test("[BOX-40521095] authenticated package controls attach the Pi actor and cross only the internal coordinator boundary", async (t) => {
+test("[BOX-40521095] [GATEWAY-846B1000] authenticated package controls bind session and run lineage at the gateway", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
   let forwarded:
@@ -472,6 +475,9 @@ test("[BOX-40521095] authenticated package controls attach the Pi actor and cros
     ]) as unknown as IncomingMessage;
   let status = 0;
   const response = {
+    once() {
+      return response;
+    },
     writeHead(value: number) {
       status = value;
       return response;
@@ -486,6 +492,7 @@ test("[BOX-40521095] authenticated package controls attach the Pi actor and cros
     "proxy-authorization": `Basic ${Buffer.from("integral:package-token").toString("base64")}`,
   };
   gateway.sessions.set("package-token", "session-42");
+  gateway.sessionRunIds.set("session-42", "run-42");
   await (
     gateway as unknown as {
       route(req: IncomingMessage, res: ServerResponse): Promise<void>;
@@ -499,7 +506,8 @@ test("[BOX-40521095] authenticated package controls attach the Pi actor and cros
       operation: "install",
       packages: ["jq"],
       expectedRevision: 0,
-      actor: "pi:session-42",
+      originSessionId: "session-42",
+      originRunId: "run-42",
     },
   });
 });

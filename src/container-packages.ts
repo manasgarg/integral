@@ -11,6 +11,7 @@ export const DEFAULT_CONTAINER_PACKAGES = [
 export interface ContainerPackageState {
   revision: number;
   packages: string[];
+  lastApprovalId?: string;
 }
 
 export type ContainerPackageOperation = "install" | "upgrade";
@@ -53,12 +54,17 @@ export async function loadContainerPackageState(
       ) ||
       DEFAULT_CONTAINER_PACKAGES.some(
         (required) => !parsed.packages!.includes(required),
-      )
+      ) ||
+      (parsed.lastApprovalId !== undefined &&
+        typeof parsed.lastApprovalId !== "string")
     )
       throw new Error("invalid package state");
     return {
       revision: Number(parsed.revision),
       packages: [...new Set(parsed.packages)].sort(),
+      ...(parsed.lastApprovalId
+        ? { lastApprovalId: parsed.lastApprovalId }
+        : {}),
     };
   } catch {
     throw new IntegralError(

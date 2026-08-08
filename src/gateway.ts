@@ -86,6 +86,7 @@ export function allowsConnect(
 
 export class Gateway {
   readonly sessions = new Map<string, string>();
+  readonly sessionRunIds = new Map<string, string>();
   readonly taskSessions = new Map<
     string,
     { executionId: string; attemptId: string }
@@ -253,6 +254,7 @@ export class Gateway {
       const body = await bodyJson(req);
       const token = stringValue(body.token),
         sessionId = stringValue(body.sessionId),
+        runId = stringValue(body.runId),
         executionId = stringValue(body.executionId),
         attemptId = stringValue(body.attemptId);
       if (!token || !sessionId) {
@@ -264,6 +266,7 @@ export class Gateway {
         return;
       }
       this.sessions.set(token, sessionId);
+      if (runId) this.sessionRunIds.set(sessionId, runId);
       if (executionId && attemptId)
         this.taskSessions.set(sessionId, { executionId, attemptId });
       res.writeHead(204).end();
@@ -324,6 +327,7 @@ export class Gateway {
         sessionId = this.sessions.get(token);
       this.sessions.delete(token);
       if (sessionId) {
+        this.sessionRunIds.delete(sessionId);
         this.taskSessions.delete(sessionId);
         await this.releaseSessionLocks(sessionId);
       }
@@ -514,7 +518,18 @@ export class Gateway {
     if (method !== "GET" && method !== "POST")
       throw new IntegralError("unsupported package operation", 405);
     const body = method === "POST" ? await bodyJson(req) : {};
-    if (method === "POST") body.actor = `pi:${sessionId}`;
+    if (method === "POST") {
+      delete body.actor;
+      delete body.originSessionId;
+      delete body.originRunId;
+      body.originSessionId = sessionId;
+      const runId = this.sessionRunIds.get(sessionId);
+      if (runId) body.originRunId = runId;
+    }
+    const abort = new AbortController();
+    res.once("close", () => {
+      if (!res.writableEnded) abort.abort();
+    });
     const upstream = await this.dependencies.internalFetch(
         this.paths,
         "gateway",
@@ -522,6 +537,7 @@ export class Gateway {
         "/integral/internal/container-packages",
         {
           method,
+          signal: abort.signal,
           ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
         },
       ),
@@ -910,6 +926,7 @@ export class Gateway {
     const locks = [...this.resourceLocks.values()];
     this.resourceLocks.clear();
     this.sessions.clear();
+    this.sessionRunIds.clear();
     this.taskSessions.clear();
     await Promise.all([
       ...locks.map((lock) => lock.release().catch(() => undefined)),

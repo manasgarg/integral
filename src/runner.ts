@@ -30,7 +30,11 @@ import { updateComponentState } from "./state.ts";
 import { readText } from "./fs.ts";
 import { join } from "node:path";
 import { IntegralError } from "./errors.ts";
-import type { ConversationEvent, QueuedMessage } from "./queue.ts";
+import type {
+  ApprovalContinuation,
+  ConversationEvent,
+  QueuedMessage,
+} from "./queue.ts";
 import { sameSelection, type ModelSelection } from "./model-selection.ts";
 import type { ScheduledTask } from "./task-queue.ts";
 import { rm } from "node:fs/promises";
@@ -478,6 +482,7 @@ export class Runner {
           body: JSON.stringify({
             token: identity.sessionToken,
             sessionId: identity.sessionId,
+            runId: recorder.runId,
           }),
         },
       );
@@ -573,15 +578,24 @@ export class Runner {
           "conversation has no selected model connection and model",
         );
       this.dependencies.clock.clearTimeout(this.idle);
-      await this.ensurePi(body.context, selection, sessionGeneration);
+      const continuation = item.approvalContinuation;
+      if (continuation && this.pi) await this.destroyPi("selection-changed");
+      await this.ensurePi(
+        body.context,
+        selection,
+        sessionGeneration,
+        continuation,
+      );
       const activeRun = this.piRun;
       await activeRun?.input(
         item.text,
         item.attempts > 1
           ? "retry-instruction"
-          : this.piTurnCount === 0
-            ? "original-request"
-            : "follow-up",
+          : continuation
+            ? "approval-resolution"
+            : this.piTurnCount === 0
+              ? "original-request"
+              : "follow-up",
         {
           messageId: item.id,
           ...(activeRun ? { runId: activeRun.runId } : {}),
@@ -675,6 +689,7 @@ export class Runner {
     context: ConversationEvent[],
     selection: ModelSelection,
     sessionGeneration: number,
+    continuation?: ApprovalContinuation,
   ): Promise<void> {
     if (this.pi) return;
     const resolvedImage = await this.dependencies.containers.ensureImage(
@@ -691,13 +706,25 @@ export class Runner {
     );
     if (context.length)
       spec.args.push("--append-system-prompt", renderContext(context));
-    const parent = await this.runs.latestFinalized("interactive"),
+    const parent = continuation?.originRunId
+        ? undefined
+        : await this.runs.latestFinalized("interactive"),
       recorder = await this.runs.begin({
         kind: "interactive",
         sessionId: identity.sessionId,
         model: selection,
         config: this.config,
-        ...(parent ? { parentRunId: parent.runId } : {}),
+        ...(continuation?.originRunId
+          ? { parentRunId: continuation.originRunId }
+          : parent
+            ? { parentRunId: parent.runId }
+            : {}),
+        ...(continuation
+          ? {
+              parentSessionId: continuation.originSessionId,
+              approvalId: continuation.approvalId,
+            }
+          : {}),
         sensitiveValues: [identity.sessionToken],
       });
     if (context.length)
@@ -743,6 +770,7 @@ export class Runner {
           body: JSON.stringify({
             token: identity.sessionToken,
             sessionId: identity.sessionId,
+            runId: recorder.runId,
           }),
         },
       );
@@ -768,6 +796,12 @@ export class Runner {
           body: JSON.stringify({
             sessionId: identity.sessionId,
             state: "started",
+            ...(continuation
+              ? {
+                  parentSessionId: continuation.originSessionId,
+                  approvalId: continuation.approvalId,
+                }
+              : {}),
           }),
         },
       );

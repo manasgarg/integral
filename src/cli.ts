@@ -106,6 +106,9 @@ const TALK_HELP = `/help                         show this help
 /queue ls                     list queued and in-flight messages
 /queue edit <id> <text>       edit a queued message
 /queue delete <id>            delete a queued message
+/approvals                    list governed requests awaiting a human
+/approve <id>                 approve one governed request
+/deny <id>                    deny one governed request
 /exit                         detach this terminal
 `;
 const TALK_USER_STYLE = "\u001b[48;5;238m\u001b[97m";
@@ -1345,6 +1348,11 @@ export async function talkCommand(
     );
     if (!response.ok || !response.body)
       throw new IntegralError("could not attach to coordinator");
+    let attachmentId = response.headers.get("x-integral-attachment-id");
+    if (!attachmentId)
+      throw new IntegralError(
+        "coordinator did not issue a terminal attachment identity",
+      );
     follow = followCoordinatorEvents(
       response,
       paths,
@@ -1354,8 +1362,9 @@ export async function talkCommand(
       terminalId,
       Boolean(rl.colors),
       (working) => rl.setWorking?.(working),
-      (next) => {
+      (next, nextAttachmentId) => {
         endpoint = next;
+        attachmentId = nextAttachmentId;
       },
     );
     while (true) {
@@ -1403,6 +1412,35 @@ export async function talkCommand(
             dependencies.writeOutput(
               `${item.status}\t${item.id}\t${item.text}\n`,
             );
+          continue;
+        }
+        if (text === "/approvals") {
+          const approvals = (await fetchJson(
+            new URL("/integral/approvals", endpoint),
+            dependencies.fetch,
+          )) as Array<Record<string, unknown>>;
+          if (!approvals.length)
+            dependencies.writeOutput("No approval requests.\n");
+          else
+            for (const approval of approvals)
+              dependencies.writeOutput(`${renderApproval(approval)}\n`);
+          continue;
+        }
+        const approvalDecision = text.match(/^\/(approve|deny)\s+(\S+)$/);
+        if (approvalDecision) {
+          const result = (await fetchJson(
+            new URL(
+              `/integral/approvals/${encodeURIComponent(approvalDecision[2]!)}/${approvalDecision[1]}`,
+              endpoint,
+            ),
+            dependencies.fetch,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ attachmentId }),
+            },
+          )) as Record<string, unknown>;
+          dependencies.writeOutput(`${renderApproval(result)}\n`);
           continue;
         }
         const edit = text.match(/^\/queue edit\s+(\S+)\s+(.+)$/);
@@ -1595,7 +1633,7 @@ async function followCoordinatorEvents(
   terminalId: string,
   colors: boolean,
   setWorking: (working: boolean) => void,
-  connected: (endpoint: string) => void,
+  connected: (endpoint: string, attachmentId: string) => void,
 ): Promise<void> {
   const state: TalkEventState = {
     sawSnapshot: false,
@@ -1621,7 +1659,12 @@ async function followCoordinatorEvents(
         );
         if (!response.ok || !response.body)
           throw new IntegralError("could not attach to coordinator");
-        connected(endpoint);
+        const attachmentId = response.headers.get("x-integral-attachment-id");
+        if (!attachmentId)
+          throw new IntegralError(
+            "coordinator did not issue a terminal attachment identity",
+          );
+        connected(endpoint, attachmentId);
         if (reconnecting) writeOutput("integral: coordinator reconnected\n");
       }
       await consumeEvents(
@@ -1700,6 +1743,7 @@ async function consumeEvents(
         const snapshot = value as {
           conversation: { type: string; text?: string; sequence?: number }[];
           queue?: { status: string }[];
+          approvals?: Array<Record<string, unknown>>;
         };
         const latestSession = snapshot.conversation
           .filter((item) => item.type === "session")
@@ -1728,6 +1772,10 @@ async function consumeEvents(
           }
         }
         state.sawSnapshot = true;
+        if (firstSnapshot)
+          for (const approval of snapshot.approvals ?? [])
+            if (approval.status === "pending")
+              writeOutput(`${renderApproval(approval)}\n`);
       } else if (event === "conversation.user") {
         const item = value as {
           type: string;
@@ -1783,9 +1831,22 @@ async function consumeEvents(
         writeOutput(
           `model: ${item.connection} (${item.provider}) / ${item.model}\n`,
         );
+      } else if (
+        event === "approval.requested" ||
+        event === "approval.decided" ||
+        event === "approval.resolved"
+      ) {
+        writeOutput(`${renderApproval(value)}\n`);
       }
     }
   }
+}
+
+function renderApproval(value: Record<string, unknown>): string {
+  const id = typeof value.id === "string" ? value.id : "unknown",
+    status = typeof value.status === "string" ? value.status : "unknown",
+    summary = typeof value.summary === "string" ? value.summary : "request";
+  return `approval ${id} [${status}] ${summary}`;
 }
 
 function humanLabel(colors: boolean): string {
@@ -1800,8 +1861,9 @@ function humanMessage(text: string, colors: boolean): string {
 async function fetchJson(
   url: URL,
   fetcher: typeof globalThis.fetch = globalThis.fetch,
+  init?: RequestInit,
 ): Promise<unknown> {
-  const response = await fetcher(url);
+  const response = await fetcher(url, init);
   if (!response.ok)
     throw new IntegralError(
       ((await response.json()) as { error?: string }).error ??

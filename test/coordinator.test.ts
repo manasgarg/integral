@@ -5,6 +5,22 @@ import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
 import { saveConnection, validateConnection } from "../src/connections.ts";
 import { Logger } from "../src/logging.ts";
+import { EventEmitter } from "node:events";
+import type { ServerResponse } from "node:http";
+
+async function until(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (check()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition was not reached");
+}
+
+function waitingResponse(): ServerResponse & EventEmitter {
+  return Object.assign(new EventEmitter(), {
+    writableEnded: false,
+  }) as ServerResponse & EventEmitter;
+}
 
 async function coordinatorFixture(
   t: test.TestContext,
@@ -181,6 +197,7 @@ test("[BOX-40521095] package changes rebuild the selected exact Pi image and per
     packages: ["jq"],
     expectedRevision: 0,
     actor: "pi:session-1",
+    approvalId: "approval-install",
   });
   assert.deepEqual(installed, {
     revision: 1,
@@ -201,10 +218,177 @@ test("[BOX-40521095] package changes rebuild the selected exact Pi image and per
     packages: ["jq"],
     expectedRevision: 1,
     actor: "pi:session-1",
+    approvalId: "approval-upgrade",
   });
   assert.equal(upgraded.revision, 2);
   assert.equal(upgraded.piImage, "sha256:packages-2");
   assert.equal(builds.length, 2);
+  const recovered = await coordinator.changeContainerPackages({
+    operation: "upgrade",
+    packages: ["jq"],
+    expectedRevision: 1,
+    actor: "approval:approval-upgrade",
+    approvalId: "approval-upgrade",
+  });
+  assert.equal(recovered.revision, 2);
+  assert.equal(builds.length, 3);
+  assert.equal(builds[2]?.rebuild, false);
+});
+
+test("[GATEWAY-846B1000] a live Pi package request waits for an attached human and returns the durable result", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    builds: string[] = [],
+    coordinator = new Coordinator(paths, config, {
+      ensureImage: () => {
+        builds.push("build");
+        return "sha256:approved-image";
+      },
+    }),
+    selection = {
+      connection: "work",
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      piVersion: "1.2.3",
+      piImage: "sha256:base",
+    },
+    response = waitingResponse();
+  await coordinator.modelSelection.set(selection);
+  const waiting = coordinator.requestContainerPackageApproval(
+    {
+      operation: "install",
+      packages: ["jq"],
+      expectedRevision: 0,
+      sessionId: "session-live",
+      runId: "run-live",
+    },
+    response,
+  );
+  await until(() => (coordinator as any).approvalWaiters.size === 1);
+  const pending = coordinator.approvals.snapshot()[0]!;
+  assert.equal(pending.status, "pending");
+  assert.equal(builds.length, 0);
+  assert.equal(coordinator.queue.snapshot().length, 0);
+  await assert.rejects(
+    coordinator.decideApproval(pending.id, "approved", "forged-terminal"),
+    /attached human terminal/,
+  );
+  assert.equal(builds.length, 0);
+  (coordinator as any).attachments.add("human-a");
+  const decided = await coordinator.decideApproval(
+    pending.id,
+    "approved",
+    "human-a",
+  );
+  assert.equal(decided.status, "succeeded");
+  assert.equal((await waiting).status, "succeeded");
+  assert.equal(coordinator.queue.snapshot().length, 0);
+  assert.equal(
+    coordinator.modelSelection.get()?.piImage,
+    "sha256:approved-image",
+  );
+  assert.equal(builds.length, 1);
+});
+
+test("[GATEWAY-846B1000] denial is durable and never executes the package request", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  let builds = 0;
+  const coordinator = new Coordinator(paths, config, {
+      ensureImage: () => {
+        builds += 1;
+        return "sha256:unexpected";
+      },
+    }),
+    response = waitingResponse();
+  await coordinator.modelSelection.set({
+    connection: "work",
+    provider: "openai-codex",
+    model: "gpt-5.5",
+    piVersion: "1.2.3",
+    piImage: "sha256:base",
+  });
+  const waiting = coordinator.requestContainerPackageApproval(
+    {
+      operation: "upgrade",
+      packages: ["git"],
+      expectedRevision: 0,
+      sessionId: "session-denied",
+    },
+    response,
+  );
+  await until(() => (coordinator as any).approvalWaiters.size === 1);
+  const approvalId = coordinator.approvals.snapshot()[0]!.id;
+  (coordinator as any).attachments.add("human-denier");
+  assert.equal(
+    (await coordinator.decideApproval(approvalId, "denied", "human-denier"))
+      .status,
+    "denied",
+  );
+  assert.equal((await waiting).status, "denied");
+  assert.equal(builds, 0);
+});
+
+test("[GATEWAY-846B1000] an orphaned approval survives restart and queues one lineage-aware continuation", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    selection = {
+      connection: "work",
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      piVersion: "1.2.3",
+      piImage: "sha256:base",
+    },
+    first = new Coordinator(paths, config),
+    response = waitingResponse();
+  await first.modelSelection.set(selection);
+  const disconnected = first
+    .requestContainerPackageApproval(
+      {
+        operation: "install",
+        packages: ["jq"],
+        expectedRevision: 0,
+        sessionId: "session-ended",
+        runId: "run-ended",
+      },
+      response,
+    )
+    .catch((error: unknown) => error);
+  await until(() => (first as any).approvalWaiters.size === 1);
+  const approvalId = first.approvals.snapshot()[0]!.id;
+  response.emit("close");
+  assert.match(String(await disconnected), /approval remains pending/);
+
+  const restored = new Coordinator(paths, config, {
+    ensureImage: () => "sha256:replacement-image",
+  });
+  await restored.modelSelection.load();
+  await restored.queue.load();
+  await restored.approvals.load();
+  assert.equal(restored.approvals.get(approvalId).status, "pending");
+  (restored as any).attachments.add("human-after-restart");
+  assert.equal(
+    (
+      await restored.decideApproval(
+        approvalId,
+        "approved",
+        "human-after-restart",
+      )
+    ).status,
+    "succeeded",
+  );
+  const continuation = restored.queue.snapshot()[0]!;
+  assert.equal(continuation.approvalContinuation?.approvalId, approvalId);
+  assert.equal(
+    continuation.approvalContinuation?.originSessionId,
+    "session-ended",
+  );
+  assert.equal(continuation.approvalContinuation?.originRunId, "run-ended");
+  assert.match(continuation.text, /resolved as succeeded/);
+  await assert.rejects(
+    restored.decideApproval(approvalId, "denied", "human-after-restart"),
+    /already succeeded/,
+  );
 });
 
 test("[QUEUE-31A6D84F] [CHAT-D7E2F609] one in-flight claim completes to one persisted assistant event before next work", async (t) => {

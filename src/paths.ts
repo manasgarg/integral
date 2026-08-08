@@ -17,6 +17,8 @@ export interface IntegralPaths {
   piRuntime: string;
   piRuntimeState: string;
   containerPackages: string;
+  approvals: string;
+  approvalAudit: string;
   queue: string;
   taskQueue: string;
   scheduler: string;
@@ -89,6 +91,8 @@ export function pathsFor(root: string): IntegralPaths {
     piRuntime: join(data, "pi-runtime"),
     piRuntimeState: join(state, "pi-runtime.json"),
     containerPackages: join(data, "container-packages.json"),
+    approvals: join(data, "approvals.json"),
+    approvalAudit: join(data, "approval-audit.jsonl"),
     queue: join(data, "queue.json"),
     taskQueue: join(data, "task-queue.json"),
     scheduler: join(data, "scheduler"),
