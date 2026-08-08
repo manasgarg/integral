@@ -30,6 +30,10 @@ import { Gateway, allowsConnect, gatewayHealth } from "../src/gateway.ts";
 import { Logger } from "../src/logging.ts";
 import { deploymentId, writeComponentState } from "../src/state.ts";
 import { fixture } from "./helpers.ts";
+import {
+  cleanupResourceProjection,
+  prepareResourceProjection,
+} from "../src/resources.ts";
 
 test("[BOX-E1F472A1] managed Pi image identity changes with its build recipe", () => {
   const first = managedPiImage("1.2.3", [Buffer.from("first recipe")]),
@@ -904,7 +908,7 @@ test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticat
   assert.match(lockHelper, /proxy-authorization/);
 });
 
-test("[STORE-6148863C] [STORE-C38A633E] [STORE-83D2CD52] authenticated resource controls create, list, and soft-delete stores without host paths", async (t) => {
+test("[STORE-6148863C] [STORE-77471EF0] [STORE-C38A633E] [STORE-83D2CD52] authenticated resource controls create, lock, list, and soft-delete stores without host paths", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     gateway = new Gateway(
@@ -969,6 +973,25 @@ test("[STORE-6148863C] [STORE-C38A633E] [STORE-83D2CD52] authenticated resource 
     (listed.body as Array<{ id: string }>).map((item) => item.id),
     [value.id],
   );
+  const home = join(paths.root, "resource-home");
+  await mkdir(home);
+  const projection = await prepareResourceProjection(
+      paths,
+      config,
+      home,
+      "resource-session",
+    ),
+    locked = await call(
+      "POST",
+      `/integral/control/resources/stores/${value.id}/locks/update`,
+    );
+  assert.equal(locked.status, 200);
+  const released = await call(
+    "DELETE",
+    `/integral/control/resources/stores/${value.id}/locks/update`,
+    { lease: (locked.body as { lease: string }).lease },
+  );
+  assert.equal(released.status, 204);
   const deleted = await call(
     "DELETE",
     `/integral/control/resources/stores/${value.id}`,
@@ -976,6 +999,7 @@ test("[STORE-6148863C] [STORE-C38A633E] [STORE-83D2CD52] authenticated resource 
   );
   assert.equal(deleted.status, 200);
   assert.equal((deleted.body as { state: string }).state, "soft-deleted");
+  await cleanupResourceProjection(paths, config, projection);
 });
 
 test("[SCHEDULE-930581F7] task extension steers a tool-free final turn until Pi declares an outcome", async (t) => {

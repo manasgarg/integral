@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import test from "node:test";
 import { loadConfig } from "../src/config.ts";
 import { validateConnection } from "../src/connections.ts";
 import { readText } from "../src/fs.ts";
+import { Gateway } from "../src/gateway.ts";
+import { Logger } from "../src/logging.ts";
 import {
   addHostResource,
   cleanupResourceProjection,
@@ -22,6 +25,7 @@ import {
   softDeleteResource,
   validateMountPath,
 } from "../src/resources.ts";
+import { deploymentId } from "../src/state.ts";
 import { fixture } from "./helpers.ts";
 
 const run = promisify(execFile);
@@ -253,6 +257,50 @@ test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] repository work lands only
       .stdout,
     "governed\n",
   );
+  const gateway = new Gateway(
+    paths,
+    config,
+    new Logger({
+      component: "gateway",
+      deploymentId: deploymentId(paths),
+      level: "error",
+      format: "json",
+      sink: () => undefined,
+    }),
+  );
+  gateway.sessions.set("git-token", "run-one");
+  const request = Readable.from(
+      [],
+    ) as unknown as import("node:http").IncomingMessage,
+    advertised: Buffer[] = [];
+  let responseStatus = 0;
+  const response = {
+    writeHead(status: number) {
+      responseStatus = status;
+      return response;
+    },
+    end(value?: string | Buffer) {
+      if (value) advertised.push(Buffer.from(value));
+      return response;
+    },
+  } as unknown as import("node:http").ServerResponse;
+  request.url = `http://integral.control/integral/control/resources/repos/${resource.id}/git/info/refs?service=git-upload-pack`;
+  request.method = "GET";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:git-token").toString("base64")}`,
+  };
+  await (
+    gateway as unknown as {
+      route(
+        request: import("node:http").IncomingMessage,
+        response: import("node:http").ServerResponse,
+      ): Promise<void>;
+    }
+  ).route(request, response);
+  const advertisement = Buffer.concat(advertised).toString("utf8");
+  assert.equal(responseStatus, 200);
+  assert.match(advertisement, /service=git-upload-pack/);
+  assert.match(advertisement, new RegExp(proposed));
   await cleanupResourceProjection(paths, config, projection);
   await rm(bundle, { force: true });
 });
