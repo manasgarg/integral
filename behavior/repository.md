@@ -36,7 +36,7 @@ Given integral provisions any interactive or isolated scheduled Pi session
 Given Pi has an authenticated integral session
 	When Pi calls `repo_create` with a unique connection name and mount path
 		Then integral creates a stable repository ID
-			And creates an Integral-owned bare canonical repository under the deployment data directory
+			And creates a bare canonical repository under the deployment data directory
 			And initializes its canonical branch as `main`
 			And records the requested mount path with the repository connection
 			And creates a checkout on a branch named for the current run
@@ -46,7 +46,7 @@ Given Pi has an authenticated integral session
 			And does not expose the canonical host path to Pi
 	When canonical creation or checkout placement fails
 		Then the tool reports failure without an active repository connection
-			And removes any incomplete Integral-owned canonical repository and checkout
+			And removes any incomplete canonical repository and checkout created by that operation
 
 ## REPO-515BAAB9 — Constrain agent-visible resource mount paths
 
@@ -126,7 +126,7 @@ Given a governed repository checkout differs from its landed canonical head
 Given an active governed repository is visible to Pi
 	When Pi calls `repo_delete` with its repository ID and expected lifecycle revision
 		Then integral preserves unlanded current-run work using the same recovery boundary as run shutdown
-			And records a tombstone containing the repository identity, ownership, canonical branch, prior mount path, and deletion actor
+			And records a tombstone containing the repository identity, canonical branch, prior mount path, and deletion actor
 			And removes the repository from the active connection inventory
 			And marks the calling session for shutdown after the tool reports durable deletion
 			And prevents every other live checkout from landing after the deletion revision
@@ -149,23 +149,22 @@ Given a governed repository has a tombstone and its canonical repository remains
 		Then integral leaves the tombstone unchanged
 			And reports why restoration could not complete
 
-## REPO-4EB2390E — Distinguish Integral-owned and operator-owned canonicals
+## REPO-4EB2390E — Apply one lifecycle to every governed repository
 
-Given a governed repository was created by Pi
-	When it is soft-deleted
-		Then its Integral-owned canonical remains in deployment data
-			And no Pi tool or connection-removal flow can permanently purge it
-Given a governed repository was added from an existing host path
+Given a governed repository was created through Pi or added from an existing host path
+	When Pi or the connection CLI performs a lifecycle operation
+		Then integral applies the same states, revisions, tools, and restoration rules
+			And does not record or expose an ownership or provenance classification
 	When Pi soft-deletes it or the user removes its connection
 		Then integral removes access and preserves a tombstone
-			And never deletes, moves, rewrites, or changes ownership of the operator-owned repository merely because access was removed
+			And never deletes, moves, rewrites, or changes filesystem ownership of the canonical repository merely because access was removed
 			And a successful governed landing remains the only operation allowed to advance its selected canonical branch
 
 ## REPO-CEE2CA38 — Expose governed repository inventory without host paths
 
 Given active and soft-deleted governed repositories may exist
 	When Pi calls `repo_list`
-		Then integral returns each repository's stable ID, connection name, ownership, lifecycle state, lifecycle revision, canonical branch, and mount path
+		Then integral returns each repository's stable ID, connection name, lifecycle state, lifecycle revision, canonical branch, and mount path
 			And identifies recovery refs with unlanded work
 			And does not return canonical host paths or another deployment's repositories
 	When Pi calls a repository tool using only a path

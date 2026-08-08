@@ -305,7 +305,7 @@ Given an existing bare Git repository is available at an absolute host path
 			And selects `--branch <branch>` when supplied
 			And otherwise selects the repository's symbolic `HEAD` branch
 			And uses `main` for an empty repository whose symbolic `HEAD` is unborn
-			And stores an operator-owned governed repository connection without a credential
+			And stores a governed repository connection without a credential
 			And does not copy, move, modify, or change ownership of the repository during setup
 			And validates and records the requested mount path in the same atomic operation
 			And marks every live Pi session stale so the checkout appears before its next prompt
@@ -320,9 +320,8 @@ Given an existing host directory is available at an absolute path
 	When the user runs `integral connection add host-store --name <name> --path <path> --mount <container-path>`
 		Then integral canonicalizes the host path
 			And validates that it is a directory readable and writable by the Integral host process
-			And stores an operator-owned host-store connection without a credential
+			And stores a host-store connection without a credential
 			And does not copy, move, modify, snapshot, or change ownership of the directory during setup
-			And warns that Integral does not back up an operator-owned store
 			And validates and records the requested mount path in the same atomic operation
 			And marks every live Pi session stale so the store is mounted before its next prompt
 			And advances the connection generation
@@ -350,7 +349,7 @@ Given a host-repository or host-store connection exists
 			And reports its Pi mount path
 			And does not print its canonical host path unless the user requests JSON output
 	When the user runs `integral connection rm <name>` in an interactive terminal
-		Then integral identifies the resource kind and whether its backing data is Integral-owned or operator-owned
+		Then integral identifies the resource kind
 			And asks for confirmation
 	When the user confirms removal
 		Then integral performs the same soft deletion as the matching Pi resource tool

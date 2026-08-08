@@ -307,17 +307,17 @@ Given `[repositories]` may define `max_file_bytes`, `max_repo_bytes`, and `recov
 			And `max_repo_bytes` defaults to `1000000000`
 			And `max_repo_bytes` must not be smaller than `max_file_bytes`
 			And `recovery_retention_days` defaults to `14`
-			And the same limits apply to Pi-created and existing-host governed repositories
+			And the same limits apply to every governed repository
 	When an existing host repository already exceeds a configured limit
 		Then `connection add host-repo` refuses it without modifying the repository
 
 <!-- Automation note (CONFIG-9E97B8A3): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
 
-## CONFIG-9E97B8A3 — Configure Integral-owned store snapshots
+## CONFIG-9E97B8A3 — Configure governed store snapshots
 
 Given `[stores]` may define `snapshots`
 	When integral resolves that option
 		Then it must be a non-negative integer
 			And it defaults to `14`
-			And `0` disables snapshots for Integral-owned stores
-			And it does not enable snapshots for operator-owned host-store connections
+			And `0` disables snapshots for every governed store
+			And any positive value applies the same retention limit to every governed store
