@@ -17,6 +17,7 @@ their content.
 <!-- Automation note (STORE-C38A633E): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
 <!-- Automation note (STORE-097B028D): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
 <!-- Automation note (STORE-0B28DA79): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
+<!-- Automation note (STORE-0A19F4CB): This behavior defines planned durable-store availability functionality; executable coverage will land with implementation. -->
 
 ## STORE-350F3496 — Give Pi authenticated store lifecycle tools
 
@@ -24,7 +25,7 @@ Given integral provisions any interactive or isolated scheduled Pi session
 	When it prepares Pi's extensions
 		Then it registers `store_list`, `store_create`, `store_delete`, `store_restore`, `store_snapshot_list`, and `store_snapshot_restore`
 			And describes direct-write durability, advisory locking, snapshots, and soft deletion to Pi
-			And explains that creation, deletion, restoration, and snapshot restoration take effect through controlled session replacement
+			And explains that creation, restoration, and snapshot restoration replace affected sessions while deletion changes mounted resources only for later sessions
 			And sends every lifecycle operation through the authenticated gateway control boundary
 			And derives store authority from the session instead of accepting a host path from Pi
 			And keeps the tools available when no store connection exists yet
@@ -37,6 +38,7 @@ Given Pi has an authenticated integral session
 	When Pi calls `store_create` with a unique connection name and valid mount path
 		Then integral creates a stable store ID and lifecycle revision
 			And creates a protected backing directory under the deployment data directory
+			And records the canonical path and filesystem identity of its backing root
 			And records a `host-store` connection at the requested path
 			And marks the current session for replacement after the tool reports durable creation
 			And mounts the store read-write at that path before the next Pi prompt
@@ -56,13 +58,14 @@ Given one or more host-store connections are active and have mount paths
 			And does not expose another deployment's stores or the backing host path
 			And keeps the mount inside the container's non-root and capability-free boundary
 	When any active store is missing, not a directory, or not writable by the Integral host process
-		Then integral fails session provisioning before delivering a prompt
-			And identifies the unavailable connection without exposing its host path
-			And removes every temporary resource created for the failed session
+		Then integral marks the connection unavailable with a bounded reason
+			And advances its lifecycle revision and the connection generation
+			And provisions the session with the remaining active resources
+			And tells Pi which named store is unavailable without exposing its host path
 
 ## STORE-815F88A3 — Treat store content as inert durable bytes
 
-Given Pi writes, renames, or removes content in a mounted store
+Given Pi writes, renames, or removes content in a mounted store whose backing identity remains reachable
 	When the filesystem acknowledges the operation
 		Then the change remains in the backing directory after the Pi session ends or is recycled
 			And later sessions observe the resulting filesystem state
@@ -104,12 +107,23 @@ Given a governed store may have changed
 ## STORE-83D2CD52 — Soft-delete and restore a durable store
 
 Given an active host-store connection is visible to Pi
+	Or an unavailable host-store connection is visible to Pi
 	When Pi calls `store_delete` with its store ID and expected lifecycle revision
 		Then integral records a tombstone containing the store identity, prior mount path, revision, and deletion actor
-			And marks every session carrying the store stale for shutdown or replacement
 			And revokes the deleted lifecycle revision from further store control operations
-			And omits the store from later Pi sessions
+			And leaves every existing Pi session and store mount running until its ordinary end
+			And lets reads and writes through those mounts succeed or fail according to the host filesystem
+			And omits the store from every session started after deletion
 			And preserves all backing content and snapshots
+			And reports that the current session retains its mount until it ends
+	When the last session retaining a soft-deleted store mount ends
+		And snapshots are configured
+		And the backing path remains available
+		Then integral takes the ordinary changed-run snapshot
+			And does not remount the store merely to take that snapshot
+	When that backing path is unavailable as the last retaining session ends
+		Then integral records the final-snapshot failure
+			And leaves the tombstone and earlier snapshots unchanged
 	When Pi calls `store_restore` with the store ID, expected lifecycle revision, and a valid mount path
 		Then integral reactivates the same backing content
 			And records the requested mount path
@@ -118,6 +132,26 @@ Given an active host-store connection is visible to Pi
 			And mounts the store at that path before the next Pi prompt
 	When the expected lifecycle revision is stale
 		Then integral rejects the operation without changing store state or mount path
+	When the backing directory is missing or has a different filesystem identity
+		Then integral leaves the tombstone unchanged
+			And reports that restoration is unavailable without recreating the directory
+
+## STORE-0A19F4CB — Keep store sessions running after backing failure
+
+Given a Pi session was provisioned with a governed store mount
+	When trusted host code detects that its recorded path is missing, inaccessible, the wrong type, not writable, or replaced by another filesystem identity
+		Then integral marks the connection unavailable with a bounded reason
+			And advances its lifecycle revision and the connection generation
+			And leaves the existing Pi session and mount running until its ordinary end
+			And does not unmount, replace, or otherwise normalize the session's filesystem view
+			And lets later reads and writes through that mount succeed or fail according to the host filesystem
+			And rejects snapshot or restoration operations that require the unavailable backing path with `resource_unavailable`
+	When integral starts a later Pi session
+		Then it omits the unavailable store
+			And tells Pi the connection name and bounded availability reason without exposing its host path
+	When a filesystem operation through the retained mount succeeds after the recorded host path becomes unavailable
+		Then integral accepts the filesystem result without intervening
+			And does not promise that the bytes remain reachable after the retained mount ends
 
 ## STORE-4C006F7D — Apply one lifecycle to every governed store
 
@@ -148,9 +182,10 @@ Given a governed store has one or more retained snapshots
 
 ## STORE-C38A633E — Expose store inventory without host paths
 
-Given active and soft-deleted host stores may exist
+Given active, unavailable, and soft-deleted host stores may exist
 	When Pi calls `store_list`
 		Then integral returns each store's stable ID, connection name, lifecycle state, lifecycle revision, and mount path
+			And reports a bounded availability reason for an unavailable store
 			And reports snapshot availability
 			And does not return backing host paths or another deployment's stores
 	When Pi calls a store tool using only a path

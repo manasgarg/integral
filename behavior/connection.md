@@ -14,6 +14,7 @@ no grant or revoke concept.
 <!-- Automation note (CONNECTION-06B6AE14): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 <!-- Automation note (CONNECTION-857967F4): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
 <!-- Automation note (CONNECTION-C0978F5E): This behavior defines planned host-resource source-validation functionality; executable coverage will land with implementation. -->
+<!-- Automation note (CONNECTION-717CAD0E): This behavior defines planned host-resource availability functionality; executable coverage will land with implementation. -->
 
 ## CONNECTION-C14B8E70 — Show connection command help
 
@@ -307,6 +308,7 @@ Given an existing bare Git repository is available at an absolute host path
 			And uses `main` for an empty repository whose symbolic `HEAD` is unborn
 			And stores a governed repository connection without a credential
 			And does not copy, move, modify, or change ownership of the repository during setup
+			And records the canonical path and filesystem identity of its backing root
 			And validates and records the requested mount path in the same atomic operation
 			And marks every live Pi session stale so the checkout appears before its next prompt
 			And advances the connection generation
@@ -322,6 +324,7 @@ Given an existing host directory is available at an absolute path
 			And validates that it is a directory readable and writable by the Integral host process
 			And stores a host-store connection without a credential
 			And does not copy, move, modify, snapshot, or change ownership of the directory during setup
+			And records the canonical path and filesystem identity of its backing root
 			And validates and records the requested mount path in the same atomic operation
 			And marks every live Pi session stale so the store is mounted before its next prompt
 			And advances the connection generation
@@ -340,17 +343,44 @@ Given the connection CLI is adding an existing host repository or store
 			And performs all validation in trusted host code
 			And never makes the source path available to Pi
 
+## CONNECTION-717CAD0E — Detect and recover host-resource availability
+
+Given a host-repository or host-store connection records a canonical path and backing filesystem identity
+	When the periodic health check, session provisioner, or a host-mediated resource operation validates it
+		Then integral distinguishes `missing`, `wrong_type`, `permission_denied`, `identity_changed`, `invalid_repository`, and `read_only` where applicable
+			And marks an active failing resource unavailable with a bounded reason
+			And advances its lifecycle revision and the connection generation exactly once when it transitions from active
+			And does not terminate or replace an existing Pi session
+			And never recreates missing backing data
+	When an unavailable resource reappears with the same filesystem identity and passes validation
+		Then integral returns it to active for sessions started afterward
+			And advances its lifecycle revision and the connection generation
+			And does not alter any existing session
+	When a different backing identity appears at the recorded path
+		Then integral leaves the resource unavailable
+			And never silently adopts the replacement
+			And requires the operator to soft-delete the unavailable resource and add the replacement as a new governed resource
+	When the operator tries to add a replacement path still referenced by an existing session
+		Then integral rejects the addition until every session using the prior backing identity ends naturally
+
 ## CONNECTION-06B6AE14 — List and remove host-resource connections safely
 
 Given a host-repository or host-store connection exists
 	When the user runs `integral connection ls`
 		Then integral identifies it as `host-repo` or `host-store`
 			And reports whether it is active, unavailable, or soft-deleted
+			And reports a bounded availability reason and whether restoration is currently possible
 			And reports its Pi mount path
 			And does not print its canonical host path unless the user requests JSON output
 	When the user runs `integral connection rm <name>` in an interactive terminal
 		Then integral identifies the resource kind
+			And displays the lifecycle revision to be removed
 			And asks for confirmation
 	When the user confirms removal
+		And the displayed lifecycle revision remains current
 		Then integral performs the same soft deletion as the matching Pi resource tool
+			And does not terminate or replace an existing Pi session
+			And reports that existing sessions retain their checkout or mount until they end naturally
 			And never permanently deletes canonical repository or store content
+	When the lifecycle revision changes while confirmation is pending
+		Then integral rejects the stale confirmation without changing the connection

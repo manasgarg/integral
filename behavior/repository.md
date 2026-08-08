@@ -17,6 +17,7 @@ bare repositories may enter the same lifecycle through a host connection.
 <!-- Automation note (REPO-CEE2CA38): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 <!-- Automation note (REPO-D987932B): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 <!-- Automation note (REPO-D1865075): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
+<!-- Automation note (REPO-1C3B9872): This behavior defines planned governed-repository availability functionality; executable coverage will land with implementation. -->
 
 ## REPO-D1865075 — Give Pi authenticated repository lifecycle tools
 
@@ -24,7 +25,7 @@ Given integral provisions any interactive or isolated scheduled Pi session
 	When it prepares Pi's extensions
 		Then it registers `repo_list`, `repo_create`, `repo_push`, `repo_delete`, and `repo_restore`
 			And describes the commit-before-push and soft-delete semantics to Pi
-			And explains that creation, deletion, and restoration take effect through controlled session replacement
+			And explains that creation and restoration replace the calling session while deletion changes mounted resources only for later sessions
 			And sends every operation through the authenticated gateway control boundary
 			And derives repository authority from the session instead of accepting a host path from Pi
 			And keeps the tools available when no repository connection exists yet
@@ -38,6 +39,7 @@ Given Pi has an authenticated integral session
 		Then integral creates a stable repository ID
 			And creates a bare canonical repository under the deployment data directory
 			And initializes its canonical branch as `main`
+			And records the canonical path and filesystem identity of its backing root
 			And records the requested mount path with the repository connection
 			And creates a checkout on a branch named for the current run
 			And marks the current session for replacement after the tool reports durable creation
@@ -72,9 +74,11 @@ Given one or more governed repository connections are active and have mount path
 			And refuses a direct `git push origin`
 			And does not mount a canonical repository or its host parent directory into the container
 	When any active repository cannot be materialized at its recorded path
-		Then integral fails session provisioning before delivering a prompt
-			And identifies the unavailable connection without exposing its host path
-			And removes every checkout created for that failed session
+		Then integral marks the connection unavailable with a bounded reason
+			And advances its lifecycle revision and the connection generation
+			And removes any partial checkout for that repository
+			And provisions the session with the remaining active resources
+			And tells Pi which named repository is unavailable without exposing its host path
 
 ## REPO-CDA4609A — Land committed repository work through the host boundary
 
@@ -111,30 +115,47 @@ Given a governed repository canonical branch may have advanced since a run began
 Given a governed repository checkout differs from its landed canonical head
 	When the Pi run stops, fails, times out, or is recycled
 		Then integral snapshots its files without trusting or executing its `.git` metadata
-			And records the snapshot under a quarantine ref associated with the run
+			And records the snapshot in host recovery storage independent of the canonical repository
 			And records whether the checkout contained committed or uncommitted changes
-			And makes the recovery ref visible in repository status for a later run
+			And makes the recovery artifact visible in repository status for a later run
 			And only then removes the temporary checkout
 	When the checkout has no work beyond its landed canonical head
-		Then integral removes it without creating an empty recovery ref
-	When a recovery ref exceeds the configured retention period
-		Then integral removes it without changing canonical history
+		Then integral removes it without creating an empty recovery artifact
+	When a recovery artifact exceeds the configured retention period
+		Then integral removes it without requiring or changing canonical history
 			And records the expiration in host-attested repository history
 
 ## REPO-95B5606D — Soft-delete a governed repository from Pi
 
 Given an active governed repository is visible to Pi
+	Or an unavailable governed repository is visible to Pi
 	When Pi calls `repo_delete` with its repository ID and expected lifecycle revision
-		Then integral preserves unlanded current-run work using the same recovery boundary as run shutdown
-			And records a tombstone containing the repository identity, canonical branch, prior mount path, and deletion actor
+		Then integral records a tombstone containing the repository identity, canonical branch, prior mount path, and deletion actor
 			And removes the repository from the active connection inventory
-			And marks the calling session for shutdown after the tool reports durable deletion
-			And prevents every other live checkout from landing after the deletion revision
-			And marks every other Pi session carrying that repository stale for replacement before its next turn
-			And omits the repository from later Pi sessions
+			And prevents every existing checkout from landing after the deletion revision
+			And rejects later `repo_push` and `git fetch origin` calls from those checkouts as `resource_soft_deleted`
+			And leaves every existing Pi session and checkout running until its ordinary end
+			And lets those checkouts continue local edits and Git commits
+			And preserves unlanded work from each checkout when its session ordinarily ends
+			And omits the repository from every session started after deletion
 			And preserves the canonical repository and its complete history
+			And reports that the current session retains its checkout until it ends
 	When the expected lifecycle revision is stale
 		Then integral rejects deletion without changing the repository or its active checkouts
+
+## REPO-1C3B9872 — Keep repository sessions running after backing failure
+
+Given a Pi session was provisioned with a governed repository checkout
+	When trusted host code detects that the canonical repository is missing, inaccessible, invalid, or replaced by another filesystem identity
+		Then integral marks the connection unavailable with a bounded reason
+			And advances its lifecycle revision and the connection generation
+			And leaves the existing Pi session and checkout running until its ordinary end
+			And lets local file edits and Git commits succeed or fail normally inside that checkout
+			And rejects `repo_push`, `git fetch origin`, and later host-mediated operations with `resource_unavailable`
+			And preserves unlanded work in canonical-independent recovery storage when the session ends
+	When integral starts a later Pi session
+		Then it omits the unavailable repository
+			And tells Pi the connection name and bounded availability reason without exposing its host path
 
 ## REPO-F96C6AE6 — Restore a soft-deleted governed repository
 
@@ -162,10 +183,11 @@ Given a governed repository was created through Pi or added from an existing hos
 
 ## REPO-CEE2CA38 — Expose governed repository inventory without host paths
 
-Given active and soft-deleted governed repositories may exist
+Given active, unavailable, and soft-deleted governed repositories may exist
 	When Pi calls `repo_list`
 		Then integral returns each repository's stable ID, connection name, lifecycle state, lifecycle revision, canonical branch, and mount path
-			And identifies recovery refs with unlanded work
+			And reports a bounded availability reason for an unavailable repository
+			And identifies recovery artifacts with unlanded work
 			And does not return canonical host paths or another deployment's repositories
 	When Pi calls a repository tool using only a path
 		Then integral requires the path to resolve to exactly one repository in the authenticated session
