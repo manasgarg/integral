@@ -276,24 +276,30 @@ Given a connection uses `auth = "key"`
 			And neither option may contain carriage returns or newlines
 			And the actual key remains in protected credential storage
 
-## CONFIG-6A90E2D4 — Configure OAuth authentication metadata
+## CONFIG-6A90E2D4 — Configure explicit OAuth authentication metadata
 
-Given a generic connection uses `auth = "oauth"` or `auth = "device-code"`
+Given a generic HTTP connection uses `auth = "oauth"` or `auth = "device-code"`
+	Or an MCP connection supplies explicit OAuth compatibility overrides
 	When integral validates its non-secret authentication metadata
 		Then OAuth requires `authorization_url`, `token_url`, and `client_id`
 			And device-code additionally requires `device_authorization_url`
 			And `scopes` is an optional list of scope strings
 			And endpoint URLs must use HTTPS unless they target loopback
 			And client secrets and tokens remain outside configuration files
+Given an MCP connection does not supply explicit OAuth compatibility overrides
+	When integral validates its non-secret authentication metadata
+		Then OAuth endpoint, client-registration, and scope fields may be absent
+			And integral obtains them through standardized MCP authorization discovery before activating the connection
 
-## CONFIG-3F7A81C6 — Configure a remote MCP transport
+## CONFIG-3F7A81C6 — Configure a remote MCP transport override
 
 Given an `mcp` connection file may define `transport`
 	When integral validates the connection
 		Then `transport` accepts only `streamable-http` or `sse`
-			And defaults to `streamable-http`
-			And integral registers the configured transport and URL with Pi
-			And replaces characters outside letters, numbers, and underscores when forming the Pi tool name
+			And its absence causes integral to detect the transport from the endpoint
+			And its presence forces that transport as a compatibility override
+			And integral still negotiates the protocol and discovers tools before activating the connection
+			And integral registers each discovered tool with a deterministic connection namespace
 			And the gateway applies the connection's HTTP boundary and authentication
 
 <!-- Automation note (CONFIG-BAD88353): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
