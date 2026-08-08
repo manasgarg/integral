@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resolve } from "node:path";
 import {
   completeEmailOptions,
   createTalkTerminal,
@@ -157,6 +158,48 @@ test("[CONNECTION-12C87631] explicit GitHub setup stores one automatically bound
       state: "active",
     },
   ]);
+});
+
+test("[CONNECTION-89A88F7C] [CONNECTION-857967F4] explicit host resources accept absolute and relative source and mount paths", async () => {
+  assert.deepEqual(
+    await explicitConnection([
+      "host-repo",
+      "--name",
+      "code",
+      "--path",
+      "/srv/code.git",
+      "--mount",
+      "/home/pi/code",
+      "--branch",
+      "stable",
+    ]),
+    {
+      name: "code",
+      kind: "host-repo",
+      auth: "none",
+      path: "/srv/code.git",
+      mount: "/home/pi/code",
+      branch: "stable",
+    },
+  );
+  assert.deepEqual(
+    await explicitConnection([
+      "host-store",
+      "--name",
+      "files",
+      "--path",
+      "var/../files",
+      "--mount",
+      "knowledge/../files",
+    ]),
+    {
+      name: "files",
+      kind: "host-store",
+      auth: "none",
+      path: resolve("files"),
+      mount: "/home/pi/files",
+    },
+  );
 });
 
 test("[CONNECTION-512D9A25] unsupported authentication is rejected before creating a declaration", async (t) => {

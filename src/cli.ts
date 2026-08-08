@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { clearLine, cursorTo, moveCursor } from "node:readline";
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig, initConfig } from "./config.ts";
 import type { EffectiveConfig } from "./config.ts";
@@ -23,6 +24,7 @@ import { serverStatus, startComponents } from "./server.ts";
 import { componentEndpoint, verifiedFetch } from "./http-client.ts";
 import { oauthAccess, runGenericOAuth, runModelOAuth } from "./oauth.ts";
 import type { IntegralPaths } from "./paths.ts";
+import { addHostResource, softDeleteResource } from "./resources.ts";
 import {
   matchModelChoices,
   sameModel,
@@ -57,7 +59,7 @@ Commands:
 const CONNECTION_HELP = `Usage: integral connection <command>
 
 Commands:
-  catalog    show model, email, and generic connection types
+  catalog    show model, email, generic, and host-resource connection types
   add        guided setup (or: add <entry> --auth <method> [options])
   ls         list configured connections
   rm <name>  deliberately remove a connection
@@ -67,6 +69,10 @@ All active connections are available automatically. There are no grant or revoke
 Email examples:
   integral connection add gmail --auth oauth --account <email> --client-id <id> --capabilities read,search,send --allowed-recipients <addresses>
   integral connection add mailgun --auth key --domain <domain> --from <email> --capabilities send --allowed-recipients <addresses>
+
+Host-resource paths:
+  --path resolves relative paths from the current directory
+  --mount resolves relative paths below /home/pi
 `;
 const SERVER_HELP = `Usage: integral server start [--component <name>]
        integral server status [--json]
@@ -189,6 +195,27 @@ function renderEffectiveConfig(
         ["format", config.logging.format, "logging.format"],
       ],
     ],
+    [
+      "repositories",
+      [
+        [
+          "max_file_bytes",
+          config.repositories.maxFileBytes,
+          "repositories.max_file_bytes",
+        ],
+        [
+          "max_repo_bytes",
+          config.repositories.maxRepoBytes,
+          "repositories.max_repo_bytes",
+        ],
+        [
+          "recovery_retention_days",
+          config.repositories.recoveryRetentionDays,
+          "repositories.recovery_retention_days",
+        ],
+      ],
+    ],
+    ["stores", [["snapshots", config.stores.snapshots, "stores.snapshots"]]],
   ];
   const lines = ["Effective configuration"];
   for (const [section, values] of sections) {
@@ -315,18 +342,38 @@ async function connectionCommand(args: string[]): Promise<number> {
     const rows = await listConnections(paths);
     if (has(args, "--json"))
       writeJson(
-        rows.map(({ name, kind, provider, auth, state }) => ({
-          name,
-          kind,
-          provider: provider ?? null,
-          auth,
-          state,
-        })),
+        rows.map(
+          ({
+            name,
+            kind,
+            provider,
+            auth,
+            state,
+            mount,
+            resourceId,
+            lifecycleRevision,
+            availabilityReason,
+          }) => ({
+            name,
+            kind,
+            provider: provider ?? null,
+            auth,
+            state,
+            ...(kind === "host-repo" || kind === "host-store"
+              ? {
+                  resourceId,
+                  lifecycleRevision,
+                  mount,
+                  availabilityReason: availabilityReason ?? null,
+                }
+              : {}),
+          }),
+        ),
       );
     else
       for (const row of rows)
         process.stdout.write(
-          `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}\n`,
+          `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${row.mount ? `\t${row.mount}` : ""}\n`,
         );
     return 0;
   }
@@ -342,6 +389,17 @@ async function connectionCommand(args: string[]): Promise<number> {
       throw new IntegralError(
         `${setup.provider ?? setup.kind} does not support ${setup.auth} authentication`,
       );
+    if (setup.kind === "host-repo" || setup.kind === "host-store") {
+      const resource = await addHostResource(
+        paths,
+        setup,
+        await loadConfig(paths),
+      );
+      process.stdout.write(
+        `Added ${setup.name} (${setup.kind}, ${resource.mount}, revision ${resource.revision})\n`,
+      );
+      return 0;
+    }
     let credential: string | undefined;
     if (setup.auth === "key")
       credential = await readCredential(has(args, "--credential-stdin"));
@@ -361,6 +419,23 @@ async function connectionCommand(args: string[]): Promise<number> {
     if (!found) throw new IntegralError(`connection not found: ${name}`);
     const rl = createInterface({ input, output });
     try {
+      if (found.kind === "host-repo" || found.kind === "host-store") {
+        const revision = found.lifecycleRevision!;
+        if (
+          !(await confirm(
+            rl,
+            `Soft-delete ${found.kind} ${name} at revision ${revision}? Existing sessions retain it until they end. [y/N] `,
+          ))
+        ) {
+          process.stdout.write("Connection unchanged.\n");
+          return 0;
+        }
+        await softDeleteResource(paths, name, revision, "operator");
+        process.stdout.write(
+          `Soft-deleted ${name}; existing sessions retain their checkout or mount until they end.\n`,
+        );
+        return 0;
+      }
       if (found.auth !== "none") {
         const yes = await confirm(rl, `Remove credential for ${name}? [y/N] `);
         if (!yes) {
@@ -416,6 +491,12 @@ export async function explicitConnection(args: string[]): Promise<Connection> {
     raw.hosts = [...entry.hosts];
   } else if (entry.kind === "model" || entry.kind === "email") {
     raw.provider = entryName;
+  } else if (entry.kind === "host-repo" || entry.kind === "host-store") {
+    const path = flag(args, "--path"),
+      mount = flag(args, "--mount");
+    raw.path = path ? resolve(path) : path;
+    raw.mount = mount ? resolve("/home/pi", mount) : mount;
+    if (entry.kind === "host-repo") raw.branch = flag(args, "--branch");
   } else raw.url = flag(args, "--url");
   const methods = flag(args, "--methods");
   if (methods) raw.methods = methods.split(",");
@@ -616,6 +697,22 @@ async function guidedConnection(): Promise<Connection> {
           "--allowed-recipients",
           await rl.question("Allowed recipients (comma-separated): "),
         );
+    }
+    if (entry.kind === "host-repo" || entry.kind === "host-store") {
+      args.push(
+        "--path",
+        await rl.question(
+          "Host path (absolute or relative to current directory): ",
+        ),
+        "--mount",
+        await rl.question("Pi mount path (absolute or relative to /home/pi): "),
+      );
+      if (entry.kind === "host-repo") {
+        const branch = (
+          await rl.question("Canonical branch [symbolic HEAD]: ")
+        ).trim();
+        if (branch) args.push("--branch", branch);
+      }
     }
     return await explicitConnection(args);
   } finally {

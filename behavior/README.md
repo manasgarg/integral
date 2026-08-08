@@ -7,7 +7,9 @@ specifications for Phase 1.
 - [`environment.md`](environment.md) — deployment selection and container environment
 - [`config.md`](config.md) — configuration files, validation, and options
 - [`logging.md`](logging.md) — component diagnostics, structure, and redaction
-- [`connection.md`](connection.md) — provider, HTTP, and MCP connection setup
+- [`connection.md`](connection.md) — provider, service, and host-resource setup
+- [`repository.md`](repository.md) — agent-visible governed Git repositories
+- [`store.md`](store.md) — durable writable host stores
 - [`email.md`](email.md) — Gmail and Mailgun account capabilities and policy
 - [`server.md`](server.md) — combined and separate component lifecycle
 - [`gateway.md`](gateway.md) — health, session identity, and governed egress
@@ -32,3 +34,6 @@ and must not be assigned again. Retired opaque IDs:
 - `CONFIG-9D37B5A0` — moved logging configuration into the logging behavior group
 - `CONNECTION-B4E83C2D` — defaulted Anthropic to OAuth instead of asking the user
 - `CONFIG-A5D19E72` — selected the model connection and model from the main configuration
+- `REPO-EB7BFD7A` — deferred repository attachment after connection creation
+- `STORE-B76FB6B3` — deferred store attachment after connection creation
+- `CONNECTION-11EE2FC9` — attached a configured host resource in a separate CLI operation

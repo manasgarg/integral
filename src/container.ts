@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import {
 import { createInterface } from "node:readline";
 import type { EffectiveConfig } from "./config.ts";
 import type { Connection } from "./connections.ts";
+import type { ResourceProjection } from "./resources.ts";
 import { IntegralError } from "./errors.ts";
 import { atomicWrite, ensureDir } from "./fs.ts";
 import { DEFAULT_PI_IMAGE, INTEGRAL_VERSION } from "./constants.ts";
@@ -109,7 +110,7 @@ export function buildContainerSpec(options: {
     bundlePath = "/integral-ca/ca-bundle.pem";
   const environment: Record<string, string> = {
     HOME: "/home/pi",
-    PATH: "/usr/local/bin:/usr/bin:/bin",
+    PATH: "/home/pi/.local/bin:/usr/local/bin:/usr/bin:/bin",
     TMPDIR: "/tmp",
     HTTP_PROXY: proxyUrl,
     HTTPS_PROXY: proxyUrl,
@@ -262,6 +263,69 @@ const schemas = {
 export default function (pi) { for (const account of accounts) for (const capability of account.capabilities) pi.registerTool({ name: "email_" + account.toolName + "_" + capability, label: "Email " + account.name + " " + capability, description: capability + " email using the " + account.name + " account", parameters: schemas[capability], async execute(_id, params, signal) { const result = await call(account.name, capability, params, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: { account: account.name, capability } }; } }); }
 `;
   await atomicWrite(join(directory, "integral-email.ts"), source);
+}
+
+export async function writeResourceExtension(
+  sessionHome: string,
+  projection: ResourceProjection,
+): Promise<void> {
+  const directory = join(sessionHome, ".pi", "agent", "extensions");
+  await ensureDir(directory);
+  const repositories = projection.repositories.map(({ resource }) => ({
+    id: resource.id,
+    name: resource.connection,
+    mount: resource.mount,
+  }));
+  const stores = projection.stores.map((resource) => ({
+    id: resource.id,
+    name: resource.connection,
+    mount: resource.mount,
+  }));
+  const source = `import { execFile } from "node:child_process";
+import { readFile, rm } from "node:fs/promises";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { Type } from "typebox";
+const run = promisify(execFile), repositories = ${JSON.stringify(repositories)};
+function endpoint(path) { const proxy = new URL(process.env.HTTP_PROXY), authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = path; proxy.search = ""; return { url: proxy.toString(), authorization }; }
+function call(path, method, body, signal) { return new Promise((resolve, reject) => { const target = endpoint(path), payload = body === undefined ? undefined : JSON.stringify(body), chunks = []; let settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }, req = request(target.url, { agent: false, method, headers: { "content-type": "application/json", "proxy-authorization": target.authorization, ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, (res) => { res.on("data", chunk => chunks.push(chunk)); res.on("end", () => finish(() => { const text = Buffer.concat(chunks).toString("utf8"); if ((res.statusCode || 500) < 200 || (res.statusCode || 500) >= 300) reject(new Error(text.trim() || "resource operation failed")); else resolve(text ? JSON.parse(text) : null); })); }), abort = () => req.destroy(new Error("resource request was cancelled")); signal?.addEventListener("abort", abort, { once: true }); req.on("error", error => finish(() => reject(error))); req.end(payload); }); }
+function result(value) { return { content: [{ type: "text", text: JSON.stringify(value) }], details: value }; }
+export default function (pi) {
+  for (const kind of ["repo", "store"]) {
+    pi.registerTool({ name: kind + "_list", label: "List governed " + kind + "s", description: "List governed " + kind + " resources without exposing host paths", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await call("/integral/control/resources/" + kind + "s", "GET", undefined, signal)); } });
+    pi.registerTool({ name: kind + "_create", label: "Create governed " + kind, description: "Create and attach a host-managed " + kind + "; the current session is replaced after success", parameters: Type.Object({ name: Type.String(), mount: Type.String() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/" + kind + "s", "POST", params, signal)); } });
+    pi.registerTool({ name: kind + "_delete", label: "Soft-delete governed " + kind, description: "Remove this resource from future sessions while the current session keeps its mount", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/" + kind + "s/" + encodeURIComponent(params.id), "DELETE", params, signal)); } });
+    pi.registerTool({ name: kind + "_restore", label: "Restore governed " + kind, description: "Restore a soft-deleted resource at a mount path; the current session is replaced after success", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer(), mount: Type.String() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/" + kind + "s/" + encodeURIComponent(params.id) + "/restore", "POST", params, signal)); } });
+  }
+  pi.registerTool({ name: "repo_push", label: "Push governed repository", description: "Commit changes first, then land the current commit through Integral's validated host boundary", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { const repository = repositories.find(value => value.id === params.id || value.name === params.id); if (!repository) throw new Error("repository is not mounted in this session"); const checkout = repository.mount, proposed = (await run("git", ["rev-parse", "HEAD"], { cwd: checkout, signal })).stdout.trim(), bundle = join(tmpdir(), "integral-" + crypto.randomUUID() + ".bundle"); try { await run("git", ["bundle", "create", bundle, "HEAD"], { cwd: checkout, signal }); const encoded = (await readFile(bundle)).toString("base64"); return result(await call("/integral/control/resources/repos/" + encodeURIComponent(repository.id) + "/push", "POST", { proposed, bundle: encoded }, signal)); } finally { await rm(bundle, { force: true }); } } });
+  pi.registerTool({ name: "store_snapshot_list", label: "List store snapshots", description: "List retained snapshots for a governed store", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/stores/" + encodeURIComponent(params.id) + "/snapshots", "GET", undefined, signal)); } });
+  pi.registerTool({ name: "store_snapshot_restore", label: "Restore store snapshot", description: "Restore retained store bytes using the current lifecycle revision", parameters: Type.Object({ id: Type.String(), snapshotId: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/stores/" + encodeURIComponent(params.id) + "/snapshots/" + encodeURIComponent(params.snapshotId) + "/restore", "POST", params, signal)); } });
+}
+`;
+  await atomicWrite(join(directory, "integral-resources.ts"), source);
+  const bin = join(sessionHome, ".local", "bin"),
+    helper = join(bin, "integral-lock"),
+    lockSource = `#!/usr/bin/env node
+import { request } from "node:http";
+import { spawn } from "node:child_process";
+const stores = ${JSON.stringify(stores)};
+function usage() { console.error("usage: integral-lock <store-id|name|mount> <lock-name> -- <command> [args...]"); process.exit(2); }
+function call(path, method, body) { return new Promise((resolve, reject) => { const proxy = new URL(process.env.HTTP_PROXY), authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"), payload = body === undefined ? undefined : JSON.stringify(body), chunks = []; proxy.username = ""; proxy.password = ""; proxy.pathname = path; proxy.search = ""; const req = request(proxy, { method, headers: { "content-type": "application/json", "proxy-authorization": authorization, ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, res => { res.on("data", chunk => chunks.push(chunk)); res.on("end", () => { const text = Buffer.concat(chunks).toString("utf8"); if ((res.statusCode || 500) < 200 || (res.statusCode || 500) >= 300) reject(new Error(text.trim() || "store lock request failed")); else resolve(text ? JSON.parse(text) : null); }); }); req.on("error", reject); req.end(payload); }); }
+const separator = process.argv.indexOf("--"), selector = process.argv[2], name = process.argv[3];
+if (!selector || !name || separator !== 4 || !process.argv[5]) usage();
+const store = stores.find(value => value.id === selector || value.name === selector || value.mount === selector);
+if (!store) throw new Error("store is not mounted in this session: " + selector);
+const path = "/integral/control/resources/stores/" + encodeURIComponent(store.id) + "/locks/" + encodeURIComponent(name), acquired = await call(path, "POST"), command = process.argv[5], args = process.argv.slice(6);
+let code = 1;
+try { code = await new Promise((resolve, reject) => { const child = spawn(command, args, { stdio: "inherit", env: process.env }); child.on("error", reject); child.on("exit", (value, signal) => resolve(value ?? (signal ? 128 : 1))); }); }
+finally { await call(path, "DELETE", { lease: acquired.lease }).catch(error => console.error("integral-lock: " + error.message)); }
+process.exitCode = code;
+`;
+  await ensureDir(bin);
+  await atomicWrite(helper, lockSource, 0o700);
+  await chmod(helper, 0o700);
 }
 
 export async function writeTaskExtension(sessionHome: string): Promise<void> {

@@ -21,6 +21,7 @@ import {
   parsePiModelList,
   writeMcpExtension,
   writePiCredential,
+  writeResourceExtension,
   writeTaskExtension,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
@@ -29,6 +30,10 @@ import { Gateway, allowsConnect, gatewayHealth } from "../src/gateway.ts";
 import { Logger } from "../src/logging.ts";
 import { deploymentId, writeComponentState } from "../src/state.ts";
 import { fixture } from "./helpers.ts";
+import {
+  cleanupResourceProjection,
+  prepareResourceProjection,
+} from "../src/resources.ts";
 
 test("[BOX-E1F472A1] managed Pi image identity changes with its build recipe", () => {
   const first = managedPiImage("1.2.3", [Buffer.from("first recipe")]),
@@ -841,6 +846,160 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose r
   assert.match(source, /request\(target\.url, \{ agent: false/);
   assert.doesNotMatch(source, /fetch\("http:\/\/integral\.control/);
   assert.doesNotMatch(source, /actual-secret/);
+});
+
+test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticated governed resource tools", async (t) => {
+  const paths = await fixture(t);
+  await writeResourceExtension(paths.root, {
+    sessionId: "session",
+    repositories: [],
+    stores: [],
+    mounts: [],
+    unavailable: [],
+  });
+  const source = await readFile(
+    join(paths.root, ".pi/agent/extensions/integral-resources.ts"),
+    "utf8",
+  );
+  const typebox = join(paths.root, "node_modules/typebox");
+  await mkdir(typebox, { recursive: true });
+  await writeFile(
+    join(typebox, "package.json"),
+    JSON.stringify({ type: "module", exports: "./index.js" }),
+  );
+  await writeFile(
+    join(typebox, "index.js"),
+    "export const Type = new Proxy({}, { get: () => (...args) => args });\n",
+  );
+  const modulePath = join(
+    paths.root,
+    ".pi/agent/extensions/integral-resources.mjs",
+  );
+  await writeFile(modulePath, source);
+  const tools: string[] = [],
+    extension = (await import(
+      `${pathToFileURL(modulePath).href}?test=${Date.now()}`
+    )) as { default(pi: { registerTool(tool: { name: string }): void }): void };
+  extension.default({
+    registerTool(tool) {
+      tools.push(tool.name);
+    },
+  });
+  assert.deepEqual(tools, [
+    "repo_list",
+    "repo_create",
+    "repo_delete",
+    "repo_restore",
+    "store_list",
+    "store_create",
+    "store_delete",
+    "store_restore",
+    "repo_push",
+    "store_snapshot_list",
+    "store_snapshot_restore",
+  ]);
+  assert.match(source, /proxy-authorization/);
+  assert.doesNotMatch(source, /host path:/i);
+  const lockHelper = await readFile(
+    join(paths.root, ".local/bin/integral-lock"),
+    "utf8",
+  );
+  assert.match(lockHelper, /usage: integral-lock/);
+  assert.match(lockHelper, /proxy-authorization/);
+});
+
+test("[STORE-6148863C] [STORE-77471EF0] [STORE-C38A633E] [STORE-83D2CD52] authenticated resource controls create, lock, list, and soft-delete stores without host paths", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+    );
+  gateway.sessions.set("resource-token", "resource-session");
+  const call = async (
+    method: string,
+    url: string,
+    body?: Record<string, unknown>,
+  ): Promise<{ status: number; body: unknown }> => {
+    const request = Readable.from(
+        body ? [Buffer.from(JSON.stringify(body))] : [],
+      ) as unknown as IncomingMessage,
+      chunks: Buffer[] = [];
+    let status = 200;
+    const response = {
+      writeHead(value: number) {
+        status = value;
+        return response;
+      },
+      setHeader() {
+        return response;
+      },
+      end(value?: string | Buffer) {
+        if (value) chunks.push(Buffer.from(value));
+        return response;
+      },
+    } as unknown as ServerResponse;
+    request.url = url;
+    request.method = method;
+    request.headers = {
+      "content-type": "application/json",
+      "proxy-authorization": `Basic ${Buffer.from("integral:resource-token").toString("base64")}`,
+    };
+    await (
+      gateway as unknown as {
+        route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+      }
+    ).route(request, response);
+    const text = Buffer.concat(chunks).toString("utf8");
+    return { status, body: text ? JSON.parse(text) : undefined };
+  };
+  const created = await call("POST", "/integral/control/resources/stores", {
+    name: "agent-memory",
+    mount: "/home/pi/agent-memory",
+  });
+  assert.equal(created.status, 201);
+  const value = created.body as { id: string; revision: number };
+  assert.equal(JSON.stringify(created.body).includes(paths.root), false);
+  const listed = await call("GET", "/integral/control/resources/stores");
+  assert.equal(listed.status, 200);
+  assert.deepEqual(
+    (listed.body as Array<{ id: string }>).map((item) => item.id),
+    [value.id],
+  );
+  const home = join(paths.root, "resource-home");
+  await mkdir(home);
+  const projection = await prepareResourceProjection(
+      paths,
+      config,
+      home,
+      "resource-session",
+    ),
+    locked = await call(
+      "POST",
+      `/integral/control/resources/stores/${value.id}/locks/update`,
+    );
+  assert.equal(locked.status, 200);
+  const released = await call(
+    "DELETE",
+    `/integral/control/resources/stores/${value.id}/locks/update`,
+    { lease: (locked.body as { lease: string }).lease },
+  );
+  assert.equal(released.status, 204);
+  const deleted = await call(
+    "DELETE",
+    `/integral/control/resources/stores/${value.id}`,
+    { expectedRevision: value.revision },
+  );
+  assert.equal(deleted.status, 200);
+  assert.equal((deleted.body as { state: string }).state, "soft-deleted");
+  await cleanupResourceProjection(paths, config, projection);
 });
 
 test("[SCHEDULE-930581F7] task extension steers a tool-free final turn until Pi declares an outcome", async (t) => {

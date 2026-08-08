@@ -5,7 +5,7 @@ import { loadConfig, initConfig, STARTER_CONFIG } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
 import { DEFAULT_PI_IMAGE } from "../src/constants.ts";
 
-test("[CONFIG-8A31F6C2] [CONFIG-2D7C49E1] [CONFIG-A16F73C8] [CONFIG-E82C4A19] [CONFIG-4B97D20E] [CONFIG-73E1A6B5] [CONFIG-F2C84D16] [LOG-0A6F3D92] built-in configuration is complete and side-effect free", async (t) => {
+test("[CONFIG-8A31F6C2] [CONFIG-2D7C49E1] [CONFIG-A16F73C8] [CONFIG-E82C4A19] [CONFIG-4B97D20E] [CONFIG-73E1A6B5] [CONFIG-F2C84D16] [CONFIG-BAD88353] [CONFIG-9E97B8A3] [LOG-0A6F3D92] built-in configuration is complete and side-effect free", async (t) => {
   const paths = await fixture(t);
   const config = await loadConfig(paths, {});
   assert.deepEqual(config.server, {
@@ -26,8 +26,26 @@ test("[CONFIG-8A31F6C2] [CONFIG-2D7C49E1] [CONFIG-A16F73C8] [CONFIG-E82C4A19] [C
     contextMaxMessages: 200,
     contextMaxChars: 100000,
   });
+  assert.deepEqual(config.repositories, {
+    maxFileBytes: 100_000_000,
+    maxRepoBytes: 1_000_000_000,
+    recoveryRetentionDays: 14,
+  });
+  assert.deepEqual(config.stores, { snapshots: 14 });
   assert.deepEqual(config.logging, { level: "info", format: "text" });
   await assert.rejects(stat(paths.mainConfig), { code: "ENOENT" });
+});
+
+test("[CONFIG-BAD88353] [CONFIG-9E97B8A3] governed resource limits reject unsafe values", async (t) => {
+  const paths = await fixture(t);
+  await mkdir(paths.config, { recursive: true });
+  await writeFile(
+    paths.mainConfig,
+    "[repositories]\nmax_file_bytes=200\nmax_repo_bytes=100\n",
+  );
+  await assert.rejects(loadConfig(paths, {}), /must not be smaller/);
+  await writeFile(paths.mainConfig, "[stores]\nsnapshots=-1\n");
+  await assert.rejects(loadConfig(paths, {}), /non-negative integer/);
 });
 
 test("[CONFIG-C41E8B75] [CONFIG-1F84C6A2] generated configuration is valid, protected, and never overwritten", async (t) => {

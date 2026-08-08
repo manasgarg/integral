@@ -239,17 +239,20 @@ Given an integral command creates or replaces a configuration file
 
 ## CONFIG-48C2D7A1 — Validate common connection options
 
-Given a connection file may define `name`, `kind`, `provider`, `url`, and `auth`
+Given a connection file may define `name`, `kind`, `provider`, `url`, `auth`, `path`, `branch`, and `mount`
 	When integral validates the connection
 		Then `name` must contain at most 64 filesystem-safe letters, numbers, dots, underscores, or hyphens
 			And must start with a letter or number
 			And must be unique across loaded connection files
-			And `kind` accepts only `model`, `http`, `mcp`, or `email`
+			And `kind` accepts only `model`, `http`, `mcp`, `email`, `host-repo`, or `host-store`
 			And `provider` is required for `model` and must name a catalog provider
 			And `provider` is required for `email` and must name an email provider
 			And `url` is required for `http` and `mcp` and must use HTTP or HTTPS
 			And `auth` accepts only `oauth`, `device-code`, `key`, or `none`
 			And generic connections must declare `auth` explicitly
+			And `host-repo` requires an absolute `path`, accepts an optional `branch`, and has no authentication metadata
+			And `host-store` requires an absolute `path` and has no authentication or branch metadata
+			And `mount` is required only for host resources and uses the common agent-visible mount-path validation
 			And model connections use the catalog auth default when `auth` is omitted
 			And unknown connection options are rejected
 
@@ -292,3 +295,29 @@ Given an `mcp` connection file may define `transport`
 			And integral registers the configured transport and URL with Pi
 			And replaces characters outside letters, numbers, and underscores when forming the Pi tool name
 			And the gateway applies the connection's HTTP boundary and authentication
+
+<!-- Automation note (CONFIG-BAD88353): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
+
+## CONFIG-BAD88353 — Configure governed repository limits
+
+Given `[repositories]` may define `max_file_bytes`, `max_repo_bytes`, and `recovery_retention_days`
+	When integral resolves those options
+		Then each value must be a positive integer
+			And `max_file_bytes` defaults to `100000000`
+			And `max_repo_bytes` defaults to `1000000000`
+			And `max_repo_bytes` must not be smaller than `max_file_bytes`
+			And `recovery_retention_days` defaults to `14`
+			And the same limits apply to every governed repository
+	When an existing host repository already exceeds a configured limit
+		Then `connection add host-repo` refuses it without modifying the repository
+
+<!-- Automation note (CONFIG-9E97B8A3): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
+
+## CONFIG-9E97B8A3 — Configure governed store snapshots
+
+Given `[stores]` may define `snapshots`
+	When integral resolves that option
+		Then it must be a non-negative integer
+			And it defaults to `14`
+			And `0` disables snapshots for every governed store
+			And any positive value applies the same retention limit to every governed store
