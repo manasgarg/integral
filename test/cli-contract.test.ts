@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resolve } from "node:path";
 import {
   completeEmailOptions,
   createTalkTerminal,
@@ -159,7 +160,7 @@ test("[CONNECTION-12C87631] explicit GitHub setup stores one automatically bound
   ]);
 });
 
-test("[CONNECTION-89A88F7C] [CONNECTION-857967F4] explicit host resources require and preserve their source and mount", async () => {
+test("[CONNECTION-89A88F7C] [CONNECTION-857967F4] explicit host resources accept absolute and relative source and mount paths", async () => {
   assert.deepEqual(
     await explicitConnection([
       "host-repo",
@@ -187,15 +188,15 @@ test("[CONNECTION-89A88F7C] [CONNECTION-857967F4] explicit host resources requir
       "--name",
       "files",
       "--path",
-      "/srv/files",
+      "var/../files",
       "--mount",
-      "/home/pi/files",
+      "knowledge/../files",
     ]),
     {
       name: "files",
       kind: "host-store",
       auth: "none",
-      path: "/srv/files",
+      path: resolve("files"),
       mount: "/home/pi/files",
     },
   );

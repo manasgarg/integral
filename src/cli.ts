@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { clearLine, cursorTo, moveCursor } from "node:readline";
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig, initConfig } from "./config.ts";
 import type { EffectiveConfig } from "./config.ts";
@@ -68,6 +69,10 @@ All active connections are available automatically. There are no grant or revoke
 Email examples:
   integral connection add gmail --auth oauth --account <email> --client-id <id> --capabilities read,search,send --allowed-recipients <addresses>
   integral connection add mailgun --auth key --domain <domain> --from <email> --capabilities send --allowed-recipients <addresses>
+
+Host-resource paths:
+  --path resolves relative paths from the current directory
+  --mount resolves relative paths below /home/pi
 `;
 const SERVER_HELP = `Usage: integral server start [--component <name>]
        integral server status [--json]
@@ -487,8 +492,10 @@ export async function explicitConnection(args: string[]): Promise<Connection> {
   } else if (entry.kind === "model" || entry.kind === "email") {
     raw.provider = entryName;
   } else if (entry.kind === "host-repo" || entry.kind === "host-store") {
-    raw.path = flag(args, "--path");
-    raw.mount = flag(args, "--mount");
+    const path = flag(args, "--path"),
+      mount = flag(args, "--mount");
+    raw.path = path ? resolve(path) : path;
+    raw.mount = mount ? resolve("/home/pi", mount) : mount;
     if (entry.kind === "host-repo") raw.branch = flag(args, "--branch");
   } else raw.url = flag(args, "--url");
   const methods = flag(args, "--methods");
@@ -694,9 +701,11 @@ async function guidedConnection(): Promise<Connection> {
     if (entry.kind === "host-repo" || entry.kind === "host-store") {
       args.push(
         "--path",
-        await rl.question("Host path: "),
+        await rl.question(
+          "Host path (absolute or relative to current directory): ",
+        ),
         "--mount",
-        await rl.question("Pi mount path below /home/pi: "),
+        await rl.question("Pi mount path (absolute or relative to /home/pi): "),
       );
       if (entry.kind === "host-repo") {
         const branch = (

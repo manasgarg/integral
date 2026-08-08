@@ -299,9 +299,11 @@ Given a no-auth HTTP or MCP connection exists
 
 ## CONNECTION-89A88F7C — Add and attach an existing host repository
 
-Given an existing bare Git repository is available at an absolute host path
+Given an existing bare Git repository is available at a host path
 	When the user runs `integral connection add host-repo --name <name> --path <path> [--branch <branch>] --mount <container-path>`
-		Then integral canonicalizes the host path
+		Then integral accepts an absolute host path or resolves a relative host path from the current directory
+			And accepts an absolute container path or resolves a relative container path below `/home/pi`
+			And canonicalizes the host path
 			And validates that it is a bare Git repository readable and writable by the Integral host process
 			And selects `--branch <branch>` when supplied
 			And otherwise selects the repository's symbolic `HEAD` branch
@@ -318,9 +320,11 @@ Given an existing bare Git repository is available at an absolute host path
 
 ## CONNECTION-857967F4 — Add and attach an existing durable host store
 
-Given an existing host directory is available at an absolute path
+Given an existing host directory is available at a host path
 	When the user runs `integral connection add host-store --name <name> --path <path> --mount <container-path>`
-		Then integral canonicalizes the host path
+		Then integral accepts an absolute host path or resolves a relative host path from the current directory
+			And accepts an absolute container path or resolves a relative container path below `/home/pi`
+			And canonicalizes the host path
 			And validates that it is a directory readable and writable by the Integral host process
 			And stores a host-store connection without a credential
 			And does not copy, move, modify, snapshot, or change ownership of the directory during setup
