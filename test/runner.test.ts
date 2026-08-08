@@ -202,6 +202,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
         sessionToken: "token-1",
       }),
       writeMcpExtension: async () => undefined,
+      writeResourceExtension: async () => undefined,
       async writeEmailExtension(home, connections) {
         assert.equal(home, "/test/session");
         assert.deepEqual(
@@ -392,6 +393,7 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-A4C19E72] runner
         sessionToken: "token-2",
       }),
       writeMcpExtension: async () => undefined,
+      writeResourceExtension: async () => undefined,
       writePiCredential: async () => undefined,
       listen: async () => undefined,
       close: async () => undefined,
@@ -618,6 +620,7 @@ test("[CONNECTION-12C87631] runner recycles a Pi session after GitHub is connect
           sessionToken: "replacement-token",
         }),
         writeMcpExtension: async () => undefined,
+        writeResourceExtension: async () => undefined,
         writeEmailExtension: async () => undefined,
         writePiCredential: async () => undefined,
         listen: async () => undefined,
@@ -632,7 +635,7 @@ test("[CONNECTION-12C87631] runner recycles a Pi session after GitHub is connect
     piVersion: "1.2.3",
     piImage: "sha256:test-pi",
   };
-  (runner as any).piConnectionGeneration = 1;
+  (runner as any).piSessionGeneration = 1;
 
   await runner.runOnce();
 
@@ -797,6 +800,7 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] [RUN-B1D837E0]
         sessionToken: "task-token",
       }),
       writeMcpExtension: async () => undefined,
+      writeResourceExtension: async () => undefined,
       async writeEmailExtension(home, connections) {
         assert.equal(home, "/test/task-home");
         assert.deepEqual(

@@ -1,0 +1,310 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import test from "node:test";
+import { loadConfig } from "../src/config.ts";
+import { validateConnection } from "../src/connections.ts";
+import { readText } from "../src/fs.ts";
+import {
+  addHostResource,
+  cleanupResourceProjection,
+  createResource,
+  listStoreSnapshots,
+  prepareResourceProjection,
+  readResource,
+  refreshResource,
+  repositoryBundlePush,
+  restoreResource,
+  restoreStoreSnapshot,
+  sessionHasResource,
+  softDeleteResource,
+  validateMountPath,
+} from "../src/resources.ts";
+import { fixture } from "./helpers.ts";
+
+const run = promisify(execFile);
+
+test("[REPO-515BAAB9] governed mount paths stay below the safe Pi home namespace", () => {
+  assert.equal(validateMountPath("/home/pi/work/repo"), "/home/pi/work/repo");
+  for (const path of [
+    "relative",
+    "/home/pi",
+    "/home/pi/.pi",
+    "/home/pi/.pi/extensions",
+    "/home/pi/history/runs",
+    "/tmp/repo",
+  ])
+    assert.throws(() => validateMountPath(path));
+});
+
+test("[CONNECTION-717CAD0E] a replacement directory is never silently adopted, while the recorded identity can recover", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    backing = `${paths.root}-identity-store`,
+    original = `${backing}.original`;
+  t.after(() => rm(backing, { recursive: true, force: true }));
+  t.after(() => rm(original, { recursive: true, force: true }));
+  await mkdir(backing);
+  const resource = await addHostResource(
+    paths,
+    validateConnection({
+      name: "identity",
+      kind: "host-store",
+      auth: "none",
+      path: backing,
+      mount: "/home/pi/identity",
+    }),
+    config,
+  );
+  await rename(backing, original);
+  await mkdir(backing);
+  const replaced = await refreshResource(paths, resource);
+  assert.equal(replaced.state, "unavailable");
+  assert.equal(replaced.availabilityReason, "identity_changed");
+  await rm(backing, { recursive: true });
+  await rename(original, backing);
+  const recovered = await refreshResource(paths, replaced);
+  assert.equal(recovered.state, "active");
+  assert.equal(recovered.identity.inode, resource.identity.inode);
+});
+
+test("[CONNECTION-717CAD0E] [STORE-18E17123] [STORE-0A19F4CB] host stores retain existing projections but disappear from later sessions after failure", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    backing = `${paths.root}-operator-store`;
+  t.after(() => rm(backing, { recursive: true, force: true }));
+  t.after(() => rm(`${backing}.missing`, { recursive: true, force: true }));
+  await mkdir(backing);
+  await writeFile(join(backing, "value.txt"), "durable");
+  const resource = await addHostResource(
+    paths,
+    validateConnection({
+      name: "documents",
+      kind: "host-store",
+      auth: "none",
+      path: backing,
+      mount: "/home/pi/documents",
+    }),
+    config,
+  );
+  const firstHome = join(paths.root, "first-home");
+  await mkdir(firstHome);
+  const first = await prepareResourceProjection(
+    paths,
+    config,
+    firstHome,
+    "11111111-1111-4111-8111-111111111111",
+  );
+  assert.deepEqual(first.mounts, [
+    { source: backing, target: "/home/pi/documents", readonly: false },
+  ]);
+  assert.equal(
+    await sessionHasResource(
+      paths,
+      resource.id,
+      "11111111-1111-4111-8111-111111111111",
+    ),
+    true,
+  );
+  assert.equal(await sessionHasResource(paths, resource.id, "unknown"), false);
+  await rename(backing, `${backing}.missing`);
+  const unavailable = await refreshResource(
+    paths,
+    (await readResource(paths, "documents"))!,
+  );
+  assert.equal(unavailable.state, "unavailable");
+  assert.equal(unavailable.availabilityReason, "missing");
+  assert.equal(first.mounts[0]?.source, backing);
+  const laterHome = join(paths.root, "later-home");
+  await mkdir(laterHome);
+  const later = await prepareResourceProjection(
+    paths,
+    config,
+    laterHome,
+    "22222222-2222-4222-8222-222222222222",
+  );
+  assert.equal(later.mounts.length, 0);
+  assert.deepEqual(later.unavailable, [
+    { name: "documents", kind: "host-store", reason: "missing" },
+  ]);
+  await rename(`${backing}.missing`, backing);
+  assert.equal((await refreshResource(paths, unavailable)).state, "active");
+  assert.equal(resource.path, backing);
+  await cleanupResourceProjection(paths, config, first);
+  assert.equal(
+    await sessionHasResource(
+      paths,
+      resource.id,
+      "11111111-1111-4111-8111-111111111111",
+    ),
+    false,
+  );
+});
+
+test("[REPO-95B5606D] [STORE-83D2CD52] soft deletion preserves current leases and backing bytes without replacing the active session", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    resource = await createResource(
+      paths,
+      "host-store",
+      "memory",
+      "/home/pi/memory",
+      config,
+    ),
+    home = join(paths.root, "home");
+  await mkdir(home);
+  await writeFile(join(resource.path, "kept.txt"), "yes");
+  const projection = await prepareResourceProjection(
+    paths,
+    config,
+    home,
+    "33333333-3333-4333-8333-333333333333",
+  );
+  const sessionGeneration = await readText(
+    join(paths.state, "session-generation"),
+  );
+  const deleted = await softDeleteResource(
+    paths,
+    resource.connection,
+    resource.revision,
+    "pi:test",
+  );
+  assert.equal(deleted.state, "soft-deleted");
+  assert.equal(
+    await readText(join(paths.state, "session-generation")),
+    sessionGeneration,
+  );
+  assert.equal(await readFile(join(resource.path, "kept.txt"), "utf8"), "yes");
+  assert.equal(projection.mounts.length, 1);
+  const laterHome = join(paths.root, "later");
+  await mkdir(laterHome);
+  assert.equal(
+    (await prepareResourceProjection(paths, config, laterHome, "later")).mounts
+      .length,
+    0,
+  );
+  const restored = await restoreResource(
+    paths,
+    resource.connection,
+    deleted.revision,
+    "/home/pi/restored-memory",
+  );
+  assert.equal(restored.state, "active");
+  assert.notEqual(
+    await readText(join(paths.state, "session-generation")),
+    sessionGeneration,
+  );
+  await cleanupResourceProjection(paths, config, projection);
+  assert.equal((await listStoreSnapshots(paths, resource.id)).length, 1);
+});
+
+test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] repository work lands only through a validated bundle", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    resource = await createResource(
+      paths,
+      "host-repo",
+      "source",
+      "/home/pi/source",
+      config,
+    ),
+    home = join(paths.root, "repo-home");
+  await mkdir(home);
+  const projection = await prepareResourceProjection(
+      paths,
+      config,
+      home,
+      "run-one",
+    ),
+    checkout = projection.repositories[0]!.checkout;
+  await writeFile(join(checkout, "README.md"), "governed\n");
+  await run("git", ["add", "README.md"], { cwd: checkout });
+  await run(
+    "git",
+    [
+      "-c",
+      "user.name=Integral Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "initial",
+    ],
+    { cwd: checkout },
+  );
+  const proposed = (
+      await run("git", ["rev-parse", "HEAD"], { cwd: checkout })
+    ).stdout.trim(),
+    bundle = join(paths.root, "proposal.bundle");
+  await run("git", ["bundle", "create", bundle, "HEAD"], { cwd: checkout });
+  const landed = await repositoryBundlePush(
+    paths,
+    config,
+    resource.id,
+    await readFile(bundle),
+    proposed,
+  );
+  assert.equal(landed.landed, proposed);
+  assert.equal(
+    (await run("git", ["--git-dir", resource.path, "show", "main:README.md"]))
+      .stdout,
+    "governed\n",
+  );
+  await cleanupResourceProjection(paths, config, projection);
+  await rm(bundle, { force: true });
+});
+
+test("[STORE-F0338E2A] [STORE-0B28DA79] store snapshots deduplicate bytes and restore through lifecycle CAS", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    resource = await createResource(
+      paths,
+      "host-store",
+      "snapshots",
+      "/home/pi/snapshots",
+      config,
+    );
+  await writeFile(join(resource.path, "value.txt"), "one");
+  for (const [session, value] of [
+    ["snapshot-one", "one"],
+    ["snapshot-one-again", "one"],
+    ["snapshot-two", "two"],
+  ] as const) {
+    await writeFile(join(resource.path, "value.txt"), value);
+    const home = join(paths.root, session);
+    await mkdir(home);
+    await cleanupResourceProjection(
+      paths,
+      config,
+      await prepareResourceProjection(paths, config, home, session),
+    );
+  }
+  const snapshots = await listStoreSnapshots(paths, resource.id);
+  assert.equal(snapshots.length, 2);
+  assert.ok(
+    snapshots.every(
+      (snapshot) => !JSON.stringify(snapshot).includes(paths.root),
+    ),
+  );
+  const restored = await restoreStoreSnapshot(
+    paths,
+    config,
+    resource.id,
+    snapshots.at(-1)!.id,
+    resource.revision,
+  );
+  assert.equal(restored.revision, resource.revision + 1);
+  assert.equal(await readFile(join(resource.path, "value.txt"), "utf8"), "one");
+  await assert.rejects(
+    restoreStoreSnapshot(
+      paths,
+      config,
+      resource.id,
+      snapshots[0]!.id,
+      resource.revision,
+    ),
+    /stale resource revision/,
+  );
+});

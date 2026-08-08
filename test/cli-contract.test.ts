@@ -159,6 +159,48 @@ test("[CONNECTION-12C87631] explicit GitHub setup stores one automatically bound
   ]);
 });
 
+test("[CONNECTION-89A88F7C] [CONNECTION-857967F4] explicit host resources require and preserve their source and mount", async () => {
+  assert.deepEqual(
+    await explicitConnection([
+      "host-repo",
+      "--name",
+      "code",
+      "--path",
+      "/srv/code.git",
+      "--mount",
+      "/home/pi/code",
+      "--branch",
+      "stable",
+    ]),
+    {
+      name: "code",
+      kind: "host-repo",
+      auth: "none",
+      path: "/srv/code.git",
+      mount: "/home/pi/code",
+      branch: "stable",
+    },
+  );
+  assert.deepEqual(
+    await explicitConnection([
+      "host-store",
+      "--name",
+      "files",
+      "--path",
+      "/srv/files",
+      "--mount",
+      "/home/pi/files",
+    ]),
+    {
+      name: "files",
+      kind: "host-store",
+      auth: "none",
+      path: "/srv/files",
+      mount: "/home/pi/files",
+    },
+  );
+});
+
 test("[CONNECTION-512D9A25] unsupported authentication is rejected before creating a declaration", async (t) => {
   const paths = await fixture(t),
     result = await capture(

@@ -21,6 +21,7 @@ import {
   parsePiModelList,
   writeMcpExtension,
   writePiCredential,
+  writeResourceExtension,
   writeTaskExtension,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
@@ -841,6 +842,60 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose r
   assert.match(source, /request\(target\.url, \{ agent: false/);
   assert.doesNotMatch(source, /fetch\("http:\/\/integral\.control/);
   assert.doesNotMatch(source, /actual-secret/);
+});
+
+test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticated governed resource tools", async (t) => {
+  const paths = await fixture(t);
+  await writeResourceExtension(paths.root, {
+    sessionId: "session",
+    repositories: [],
+    stores: [],
+    mounts: [],
+    unavailable: [],
+  });
+  const source = await readFile(
+    join(paths.root, ".pi/agent/extensions/integral-resources.ts"),
+    "utf8",
+  );
+  const typebox = join(paths.root, "node_modules/typebox");
+  await mkdir(typebox, { recursive: true });
+  await writeFile(
+    join(typebox, "package.json"),
+    JSON.stringify({ type: "module", exports: "./index.js" }),
+  );
+  await writeFile(
+    join(typebox, "index.js"),
+    "export const Type = new Proxy({}, { get: () => (...args) => args });\n",
+  );
+  const modulePath = join(
+    paths.root,
+    ".pi/agent/extensions/integral-resources.mjs",
+  );
+  await writeFile(modulePath, source);
+  const tools: string[] = [],
+    extension = (await import(
+      `${pathToFileURL(modulePath).href}?test=${Date.now()}`
+    )) as { default(pi: { registerTool(tool: { name: string }): void }): void };
+  extension.default({
+    registerTool(tool) {
+      tools.push(tool.name);
+    },
+  });
+  assert.deepEqual(tools, [
+    "repo_list",
+    "repo_create",
+    "repo_delete",
+    "repo_restore",
+    "store_list",
+    "store_create",
+    "store_delete",
+    "store_restore",
+    "repo_push",
+    "store_snapshot_list",
+    "store_snapshot_restore",
+  ]);
+  assert.match(source, /proxy-authorization/);
+  assert.doesNotMatch(source, /host path:/i);
 });
 
 test("[SCHEDULE-930581F7] task extension steers a tool-free final turn until Pi declares an outcome", async (t) => {

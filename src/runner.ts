@@ -12,11 +12,17 @@ import {
   writeMcpExtension,
   writeEmailExtension,
   writeTaskExtension,
+  writeResourceExtension,
   writePiCredential,
   type ContainerBackend,
   type PiRuntime,
   type TaskRuntime,
 } from "./container.ts";
+import {
+  cleanupResourceProjection,
+  prepareResourceProjection,
+  type ResourceProjection,
+} from "./resources.ts";
 import { ensureCa } from "./ca.ts";
 import { componentEndpoint, internalFetch } from "./http-client.ts";
 import { deploymentId, readComponentState } from "./state.ts";
@@ -54,6 +60,9 @@ export interface RunnerDependencies {
   writeMcpExtension: typeof writeMcpExtension;
   writeEmailExtension: typeof writeEmailExtension;
   writeTaskExtension: typeof writeTaskExtension;
+  writeResourceExtension: typeof writeResourceExtension;
+  prepareResourceProjection: typeof prepareResourceProjection;
+  cleanupResourceProjection: typeof cleanupResourceProjection;
   writePiCredential: typeof writePiCredential;
   now(): number;
   listen(server: http.Server, port: number, address: string): Promise<void>;
@@ -77,6 +86,9 @@ const productionDependencies: RunnerDependencies = {
   writeMcpExtension,
   writeEmailExtension,
   writeTaskExtension,
+  writeResourceExtension,
+  prepareResourceProjection,
+  cleanupResourceProjection,
   writePiCredential,
   now: Date.now,
   async listen(server, port, address) {
@@ -107,10 +119,12 @@ export class Runner {
   private activeTaskRuntime: TaskRuntime | undefined;
   private taskRun: RunRecorder | undefined;
   private taskHistoryView: string | undefined;
+  private taskResources: ResourceProjection | undefined;
   private piSelection: ModelSelection | undefined;
-  private piConnectionGeneration: number | undefined;
+  private piSessionGeneration: number | undefined;
   private piRun: RunRecorder | undefined;
   private piHistoryView: string | undefined;
+  private piResources: ResourceProjection | undefined;
   private piTurnCount = 0;
   private readonly runs: RunStore;
   private readonly dependencies: RunnerDependencies;
@@ -367,11 +381,20 @@ export class Runner {
       });
       if (runtime) {
         await this.revoke(runtime.spec.sessionToken);
+        if (this.taskResources)
+          await this.dependencies
+            .cleanupResourceProjection(
+              this.paths,
+              this.config,
+              this.taskResources,
+            )
+            .catch(() => undefined);
         await runtime.stop().catch(() => undefined);
       }
       await this.removeHistoryView(this.taskHistoryView);
       this.taskRun = undefined;
       this.taskHistoryView = undefined;
+      this.taskResources = undefined;
       if (this.activeTaskRuntime === runtime)
         this.activeTaskRuntime = undefined;
       this.taskBusy = false;
@@ -387,10 +410,11 @@ export class Runner {
       throw new IntegralError(
         `scheduled Pi image ${task.profile.piImage} is unavailable`,
       );
-    const { spec, identity } = await this.preparePiEnvironment(
+    const { spec, identity, resources } = await this.preparePiEnvironment(
       task.profile,
       task.profile.piImage,
     );
+    this.taskResources = resources;
     await this.dependencies.writeTaskExtension(spec.home);
     spec.args.push("--append-system-prompt", renderTaskContext(task));
     const previous = await this.runs.finalizedForExecution(task.executionId),
@@ -469,6 +493,9 @@ export class Runner {
         error: error instanceof Error ? error.message : String(error),
       });
       await this.revoke(identity.sessionToken);
+      await this.dependencies
+        .cleanupResourceProjection(this.paths, this.config, resources)
+        .catch(() => undefined);
       if (runtime) await runtime.stop().catch(() => undefined);
       else await rm(spec.home, { recursive: true, force: true });
       await this.removeHistoryView(historyView);
@@ -482,14 +509,15 @@ export class Runner {
     this.busy = true;
     let item: QueuedMessage | undefined, turnStarted: number | undefined;
     try {
-      const [coordinatorState, gatewayState, generationRaw] = await Promise.all(
-        [
+      const [coordinatorState, gatewayState, generationRaw, sessionRaw] =
+        await Promise.all([
           readComponentState(this.paths, "coordinator"),
           readComponentState(this.paths, "gateway"),
           readText(join(this.paths.state, "connection-generation")),
-        ],
-      );
-      const generation = Number(generationRaw?.trim() || "0");
+          readText(join(this.paths.state, "session-generation")),
+        ]);
+      const generation = Number(generationRaw?.trim() || "0"),
+        sessionGeneration = Number(sessionRaw?.trim() || generation);
       await updateComponentState(this.paths, "runner", {
         connectionGeneration: generation,
         status: "ready",
@@ -507,7 +535,7 @@ export class Runner {
         throw new IntegralError(
           "component configuration or connection generations disagree",
         );
-      if (this.pi && this.piConnectionGeneration !== generation)
+      if (this.pi && this.piSessionGeneration !== sessionGeneration)
         await this.destroyPi();
       await this.ensureGatewayListener();
       const gateway = await this.dependencies.fetch(
@@ -545,7 +573,7 @@ export class Runner {
           "conversation has no selected model connection and model",
         );
       this.dependencies.clock.clearTimeout(this.idle);
-      await this.ensurePi(body.context, selection, generation);
+      await this.ensurePi(body.context, selection, sessionGeneration);
       const activeRun = this.piRun;
       await activeRun?.input(
         item.text,
@@ -646,7 +674,7 @@ export class Runner {
   private async ensurePi(
     context: ConversationEvent[],
     selection: ModelSelection,
-    connectionGeneration: number,
+    sessionGeneration: number,
   ): Promise<void> {
     if (this.pi) return;
     const resolvedImage = await this.dependencies.containers.ensureImage(
@@ -657,7 +685,7 @@ export class Runner {
       throw new IntegralError(
         `selected Pi image ${selection.piImage} is unavailable; run /model to refresh the runtime selection`,
       );
-    const { spec, identity } = await this.preparePiEnvironment(
+    const { spec, identity, resources } = await this.preparePiEnvironment(
       selection,
       selection.piImage,
     );
@@ -725,9 +753,10 @@ export class Runner {
       await pi.start();
       this.pi = pi;
       this.piSelection = { ...selection };
-      this.piConnectionGeneration = connectionGeneration;
+      this.piSessionGeneration = sessionGeneration;
       this.piRun = recorder;
       this.piHistoryView = historyView;
+      this.piResources = resources;
       this.piTurnCount = 0;
       await this.dependencies.internalFetch(
         this.paths,
@@ -749,6 +778,9 @@ export class Runner {
         error: error instanceof Error ? error.message : String(error),
       });
       await this.revoke(identity.sessionToken);
+      await this.dependencies
+        .cleanupResourceProjection(this.paths, this.config, resources)
+        .catch(() => undefined);
       if (pi) await pi.stop();
       else await rm(spec.home, { recursive: true, force: true });
       await this.removeHistoryView(historyView);
@@ -764,27 +796,44 @@ export class Runner {
       identity = this.dependencies.newSessionIdentity(),
       ca = await this.dependencies.ensureCa(this.paths),
       home = await this.dependencies.freshSessionHome();
+    const resources = await this.dependencies.prepareResourceProjection(
+      this.paths,
+      this.config,
+      home,
+      identity.sessionId,
+    );
     await this.dependencies.writeMcpExtension(home, mcp);
     await this.dependencies.writeEmailExtension(home, email);
+    await this.dependencies.writeResourceExtension(home, resources);
     await this.dependencies.writePiCredential(home, model);
     const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
     gatewayUrl.hostname = "host.integral.internal";
+    const spec = buildContainerSpec({
+      config: this.config,
+      gatewayUrl: gatewayUrl.toString(),
+      gatewayAddress: this.dockerGateway,
+      caCert: ca.cert,
+      caBundle: ca.bundle,
+      sessionHome: home,
+      ...identity,
+      model,
+      selectedModel: selection.model,
+      image,
+      mcp,
+      connections: active,
+    });
+    spec.mounts.push(...resources.mounts);
+    if (resources.unavailable.length)
+      spec.args.push(
+        "--append-system-prompt",
+        `Unavailable governed resources: ${resources.unavailable
+          .map((value) => `${value.name} (${value.reason})`)
+          .join(", ")}. Host paths are intentionally hidden.`,
+      );
     return {
       identity,
-      spec: buildContainerSpec({
-        config: this.config,
-        gatewayUrl: gatewayUrl.toString(),
-        gatewayAddress: this.dockerGateway,
-        caCert: ca.cert,
-        caBundle: ca.bundle,
-        sessionHome: home,
-        ...identity,
-        model,
-        selectedModel: selection.model,
-        image,
-        mcp,
-        connections: active,
-      }),
+      resources,
+      spec,
     };
   }
   private armIdle(): void {
@@ -816,12 +865,14 @@ export class Runner {
     this.idle = undefined;
     const pi = this.pi;
     const recorder = this.piRun,
-      historyView = this.piHistoryView;
+      historyView = this.piHistoryView,
+      resources = this.piResources;
     this.pi = undefined;
     this.piSelection = undefined;
-    this.piConnectionGeneration = undefined;
+    this.piSessionGeneration = undefined;
     this.piRun = undefined;
     this.piHistoryView = undefined;
+    this.piResources = undefined;
     this.piTurnCount = 0;
     if (pi) {
       await this.finalizeRun(recorder, {
@@ -829,6 +880,10 @@ export class Runner {
         ...(error ? { error } : {}),
       });
       await this.revoke(pi.spec.sessionToken);
+      if (resources)
+        await this.dependencies
+          .cleanupResourceProjection(this.paths, this.config, resources)
+          .catch(() => undefined);
       await pi.stop();
       await this.removeHistoryView(historyView);
       await this.dependencies

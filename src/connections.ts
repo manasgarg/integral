@@ -1,11 +1,12 @@
 import { readdir, readFile, rm, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, normalize } from "node:path";
 import { parse } from "smol-toml";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
 import { IntegralError } from "./errors.ts";
 import type { IntegralPaths } from "./paths.ts";
 
-export type ConnectionKind = "model" | "http" | "mcp" | "email";
+export type ConnectionKind =
+  "model" | "http" | "mcp" | "email" | "host-repo" | "host-store";
 export type AuthMethod = "oauth" | "device-code" | "key" | "none";
 export type EmailCapability = "read" | "search" | "send";
 export interface Connection {
@@ -31,9 +32,15 @@ export interface Connection {
   fromAddress?: string;
   region?: "us" | "eu";
   allowedRecipients?: string[];
+  path?: string;
+  branch?: string;
+  mount?: string;
 }
 export interface ListedConnection extends Connection {
-  state: "active" | "DISABLED (no secret)";
+  state: "active" | "unavailable" | "soft-deleted" | "DISABLED (no secret)";
+  resourceId?: string;
+  lifecycleRevision?: number;
+  availabilityReason?: string;
 }
 
 export const CATALOG = [
@@ -60,6 +67,8 @@ export const CATALOG = [
   { name: "mcp", kind: "mcp", auth: ["oauth", "device-code", "key", "none"] },
   { name: "gmail", kind: "email", auth: ["oauth"] },
   { name: "mailgun", kind: "email", auth: ["key"] },
+  { name: "host-repo", kind: "host-repo", auth: ["none"] },
+  { name: "host-store", kind: "host-store", auth: ["none"] },
 ] as const;
 
 const namePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -86,6 +95,9 @@ const knownKeys = new Set([
   "from_address",
   "region",
   "allowed_recipients",
+  "path",
+  "branch",
+  "mount",
 ]);
 
 const emailAddressPattern = /^[^\s<>@,;]+@[^\s<>@,;]+$/;
@@ -155,8 +167,12 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
       `connection file stem ${stem} does not match declared name ${name}`,
     );
   const kind = requiredString(value.kind, "kind") as ConnectionKind;
-  if (!["model", "http", "mcp", "email"].includes(kind))
-    throw new IntegralError("kind must be model, http, mcp, or email");
+  if (
+    !["model", "http", "mcp", "email", "host-repo", "host-store"].includes(kind)
+  )
+    throw new IntegralError(
+      "kind must be model, http, mcp, email, host-repo, or host-store",
+    );
   const provider =
     value.provider === undefined
       ? undefined
@@ -185,6 +201,9 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     );
   if (provider === "github" && auth !== "key")
     throw new IntegralError("GitHub connections require key authentication");
+  const hostResource = kind === "host-repo" || kind === "host-store";
+  if (hostResource && auth !== "none")
+    throw new IntegralError("host resources use no authentication");
   const url =
     (kind === "http" || kind === "mcp") && provider !== "github"
       ? secureUrl(value.url, "url")
@@ -348,6 +367,51 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
       result.region = region;
     }
   }
+  if (hostResource) {
+    const path = requiredString(value.path, "path"),
+      mount = requiredString(value.mount, "mount");
+    if (!isAbsolute(path)) throw new IntegralError("path must be absolute");
+    if (!isAbsolute(mount) || normalize(mount) !== mount)
+      throw new IntegralError("mount must be an absolute normalized path");
+    if (mount === "/home/pi" || !mount.startsWith("/home/pi/"))
+      throw new IntegralError("mount must be below /home/pi");
+    const relativeMount = mount.slice("/home/pi/".length);
+    if (
+      [".pi", "history"].some(
+        (reserved) =>
+          relativeMount === reserved ||
+          relativeMount.startsWith(`${reserved}/`),
+      )
+    )
+      throw new IntegralError("mount overlaps an Integral control path");
+    result.path = path;
+    result.mount = mount;
+    if (kind === "host-repo") {
+      if (value.branch !== undefined)
+        result.branch = requiredString(value.branch, "branch");
+    } else if (value.branch !== undefined) {
+      throw new IntegralError("branch is supported only by host-repo");
+    }
+    for (const forbidden of [
+      "provider",
+      "url",
+      "hosts",
+      "methods",
+      "capabilities",
+    ])
+      if (value[forbidden] !== undefined)
+        throw new IntegralError(
+          `${forbidden} is not supported by host resources`,
+        );
+  } else if (
+    value.path !== undefined ||
+    value.branch !== undefined ||
+    value.mount !== undefined
+  ) {
+    throw new IntegralError(
+      "path, branch, and mount are only for host resources",
+    );
+  }
   return result;
 }
 
@@ -372,6 +436,9 @@ export function connectionToml(c: Connection): string {
     ["domain", c.domain],
     ["from_address", c.fromAddress],
     ["region", c.region],
+    ["path", c.path],
+    ["branch", c.branch],
+    ["mount", c.mount],
   ];
   for (const [key, value] of scalar)
     if (value !== undefined && !rows.some((row) => row.startsWith(`${key} =`)))
@@ -469,15 +536,39 @@ export async function listConnections(
 ): Promise<ListedConnection[]> {
   const loaded = await loadConnections(paths);
   if (loaded.errors.length) throw new IntegralError(loaded.errors.join("\n"));
+  const resourceModule = await import("./resources.ts"),
+    records = await resourceModule.listResourceRecords(paths),
+    hostRecords = new Map(
+      (
+        await Promise.all(
+          records.map((record) =>
+            resourceModule.refreshResource(paths, record),
+          ),
+        )
+      ).map((record) => [record.connection, record]),
+    );
   return Promise.all(
-    loaded.connections.map(async (c) => ({
-      ...c,
-      state:
-        c.auth === "none" ||
-        usableCredential(c, await credentialFor(paths, c.name))
-          ? "active"
-          : "DISABLED (no secret)",
-    })),
+    loaded.connections.map(async (c) => {
+      const resource = hostRecords.get(c.name);
+      return {
+        ...c,
+        state: resource
+          ? resource.state
+          : c.auth === "none" ||
+              usableCredential(c, await credentialFor(paths, c.name))
+            ? "active"
+            : "DISABLED (no secret)",
+        ...(resource
+          ? {
+              resourceId: resource.id,
+              lifecycleRevision: resource.revision,
+              ...(resource.availabilityReason
+                ? { availabilityReason: resource.availabilityReason }
+                : {}),
+            }
+          : {}),
+      } satisfies ListedConnection;
+    }),
   );
 }
 function usableCredential(
@@ -504,10 +595,14 @@ function usableCredential(
 }
 
 async function bumpGeneration(paths: IntegralPaths): Promise<number> {
-  const file = join(paths.state, "connection-generation");
-  const current = Number((await readText(file))?.trim() || "0");
+  const file = join(paths.state, "connection-generation"),
+    sessionFile = join(paths.state, "session-generation"),
+    current = Number((await readText(file))?.trim() || "0");
   const next = Number.isSafeInteger(current) ? current + 1 : 1;
-  await atomicWrite(file, `${next}\n`);
+  await Promise.all([
+    atomicWrite(file, `${next}\n`),
+    atomicWrite(sessionFile, `${next}\n`),
+  ]);
   return next;
 }
 

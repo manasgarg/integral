@@ -25,6 +25,12 @@ export interface EffectiveConfig {
     tmpfsMb: number;
   };
   conversation: { contextMaxMessages: number; contextMaxChars: number };
+  repositories: {
+    maxFileBytes: number;
+    maxRepoBytes: number;
+    recoveryRetentionDays: number;
+  };
+  stores: { snapshots: number };
   logging: { level: LogLevel; format: LogFormat };
   sources: Record<string, ValueSource>;
   fingerprint: string;
@@ -43,6 +49,10 @@ const defaults = {
   "runner.tmpfs_mb": 2048,
   "conversation.context_max_messages": 200,
   "conversation.context_max_chars": 100000,
+  "repositories.max_file_bytes": 100000000,
+  "repositories.max_repo_bytes": 1000000000,
+  "repositories.recovery_retention_days": 14,
+  "stores.snapshots": 14,
   "logging.level": "info",
   "logging.format": "text",
 } as const;
@@ -58,6 +68,8 @@ const allowed: Record<string, readonly string[]> = {
     "tmpfs_mb",
   ],
   conversation: ["context_max_messages", "context_max_chars"],
+  repositories: ["max_file_bytes", "max_repo_bytes", "recovery_retention_days"],
+  stores: ["snapshots"],
   logging: ["level", "format"],
 };
 
@@ -267,6 +279,27 @@ export async function loadConfig(
       false,
     ),
   };
+  const repositories = {
+    maxFileBytes: int(
+      val("repositories", "max_file_bytes"),
+      "repositories.max_file_bytes",
+    ),
+    maxRepoBytes: int(
+      val("repositories", "max_repo_bytes"),
+      "repositories.max_repo_bytes",
+    ),
+    recoveryRetentionDays: int(
+      val("repositories", "recovery_retention_days"),
+      "repositories.recovery_retention_days",
+    ),
+  };
+  if (repositories.maxRepoBytes < repositories.maxFileBytes)
+    throw new IntegralError(
+      "repositories.max_repo_bytes must not be smaller than repositories.max_file_bytes",
+    );
+  const stores = {
+    snapshots: int(val("stores", "snapshots"), "stores.snapshots", false),
+  };
   const sources: Record<string, ValueSource> = {};
   for (const key of Object.keys(defaults)) {
     const [section, option] = key.split(".") as [string, string];
@@ -278,7 +311,14 @@ export async function loadConfig(
   if (env.INTEGRAL_LOG_LEVEL?.trim()) sources["logging.level"] = "environment";
   if (env.INTEGRAL_LOG_FORMAT?.trim())
     sources["logging.format"] = "environment";
-  const shared = { server, runner, conversation, logging };
+  const shared = {
+    server,
+    runner,
+    conversation,
+    repositories,
+    stores,
+    logging,
+  };
   const fingerprinted = {
     ...shared,
     server: {
@@ -303,7 +343,7 @@ export async function loadConfig(
   };
 }
 
-export const STARTER_CONFIG = `# integral Phase 1 configuration\n\n[server]\ngateway_port = 7310\ncoordinator_port = 7311\nrunner_port = 7312\nscheduler_port = 7313\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[logging]\nlevel = "info"\nformat = "text"\n`;
+export const STARTER_CONFIG = `# integral Phase 1 configuration\n\n[server]\ngateway_port = 7310\ncoordinator_port = 7311\nrunner_port = 7312\nscheduler_port = 7313\n\n[runner]\nimage = "${DEFAULT_PI_IMAGE}"\npull_policy = "if-not-present"\nturn_timeout_seconds = 1800\nidle_timeout_seconds = 300\nmemory_mb = 2048\ntmpfs_mb = 2048\n\n[conversation]\ncontext_max_messages = 200\ncontext_max_chars = 100000\n\n[repositories]\nmax_file_bytes = 100000000\nmax_repo_bytes = 1000000000\nrecovery_retention_days = 14\n\n[stores]\nsnapshots = 14\n\n[logging]\nlevel = "info"\nformat = "text"\n`;
 
 export async function initConfig(paths: IntegralPaths): Promise<void> {
   if ((await readText(paths.mainConfig)) !== undefined)

@@ -4,6 +4,7 @@ import tls from "node:tls";
 import { readFile } from "node:fs/promises";
 import type { Duplex } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import type { Connection } from "./connections.ts";
 import {
   connectionBoundaries,
@@ -39,6 +40,20 @@ import {
 } from "./runtime.ts";
 import { executeEmail, parseEmailOperation } from "./email.ts";
 import { internalFetch } from "./http-client.ts";
+import {
+  createResource,
+  listResourceRecords,
+  listStoreSnapshots,
+  refreshResource,
+  repositoryBundlePush,
+  resourceForId,
+  restoreResource,
+  restoreStoreSnapshot,
+  sessionHasResource,
+  softDeleteResource,
+  type ResourceKind,
+  type ResourceRecord,
+} from "./resources.ts";
 
 function modelBoundary(connection: Connection): Connection {
   if (connection.kind !== "model") return connection;
@@ -176,6 +191,10 @@ export class Gateway {
     ) {
       generation = current + 1;
       await atomicWrite(generationFile, `${generation}\n`);
+      await atomicWrite(
+        join(this.paths.state, "session-generation"),
+        `${generation}\n`,
+      );
     }
     if (loaded.errors.length) this.sawInvalidConnections = true;
     else {
@@ -397,7 +416,10 @@ export class Gateway {
       }
       return;
     }
-    if (req.url?.startsWith("/integral/control/schedules")) {
+    if (
+      req.url?.startsWith("/integral/control/schedules") ||
+      req.url?.startsWith("/integral/control/resources/")
+    ) {
       try {
         await this.control(
           req,
@@ -441,6 +463,10 @@ export class Gateway {
     target: URL,
     sessionId: string,
   ): Promise<void> {
+    if (target.pathname.startsWith("/integral/control/resources/")) {
+      await this.resourceControl(req, res, target, sessionId);
+      return;
+    }
     if (!target.pathname.startsWith("/integral/control/schedules"))
       throw new IntegralError("unknown integral control endpoint", 404);
     const schedulerPath = target.pathname.replace(
@@ -460,6 +486,168 @@ export class Gateway {
         upstream.headers.get("content-type") ?? "application/json",
     });
     res.end(responseBody);
+  }
+  private async resourceControl(
+    req: IncomingMessage,
+    res: ServerResponse,
+    target: URL,
+    sessionId: string,
+  ): Promise<void> {
+    const parts = target.pathname
+        .slice("/integral/control/resources/".length)
+        .split("/")
+        .filter(Boolean)
+        .map(decodeURIComponent),
+      collection = parts[0],
+      kind: ResourceKind = collection === "repos" ? "host-repo" : "host-store";
+    if (collection !== "repos" && collection !== "stores")
+      throw new IntegralError("unknown resource collection", 404);
+    const method = req.method ?? "GET";
+    if (parts.length === 1 && method === "GET") {
+      const records = await Promise.all(
+        (await listResourceRecords(this.paths))
+          .filter((value) => value.kind === kind)
+          .map((value) => refreshResource(this.paths, value)),
+      );
+      const inventory = await Promise.all(
+        records.map(async (value) => ({
+          ...publicResource(value),
+          ...(kind === "host-store"
+            ? {
+                snapshots: (await listStoreSnapshots(this.paths, value.id))
+                  .length,
+              }
+            : {}),
+        })),
+      );
+      respondJson(res, inventory);
+      return;
+    }
+    if (parts.length === 1 && method === "POST") {
+      const body = await bodyJson(req),
+        name = stringValue(body.name),
+        mount = stringValue(body.mount);
+      if (!name || !mount)
+        throw new IntegralError("name and mount are required", 400);
+      const value = await createResource(
+        this.paths,
+        kind,
+        name,
+        mount,
+        this.config,
+      );
+      this.logger.event(
+        "info",
+        "gateway.resource_created",
+        "resource created",
+        {
+          resource_id: value.id,
+          session_id: sessionId,
+          kind,
+        },
+      );
+      respondJson(res, publicResource(value), 201);
+      return;
+    }
+    const id = parts[1],
+      resource = id ? await resourceForId(this.paths, id) : undefined;
+    if (!resource || resource.kind !== kind)
+      throw new IntegralError("resource not found", 404);
+    if (kind === "host-repo" && parts[2] === "git") {
+      if (!(await sessionHasResource(this.paths, resource.id, sessionId)))
+        throw new IntegralError(
+          "repository is not mounted in this session",
+          403,
+        );
+      const active = await refreshResource(this.paths, resource);
+      if (active.state !== "active")
+        throw new IntegralError("resource_unavailable", 409);
+      if (
+        method === "GET" &&
+        parts[3] === "info" &&
+        parts[4] === "refs" &&
+        target.searchParams.get("service") === "git-upload-pack"
+      ) {
+        const advertised = await gitUploadPack(active.path, undefined, true),
+          prefix = Buffer.from("001e# service=git-upload-pack\n0000");
+        res.writeHead(200, {
+          "content-type": "application/x-git-upload-pack-advertisement",
+          "cache-control": "no-cache",
+        });
+        res.end(Buffer.concat([prefix, advertised]));
+        return;
+      }
+      if (method === "POST" && parts[3] === "git-upload-pack") {
+        const request = await bodyBuffer(req, 16 * 1024 * 1024),
+          response = await gitUploadPack(active.path, request, false);
+        res.writeHead(200, {
+          "content-type": "application/x-git-upload-pack-result",
+          "cache-control": "no-cache",
+        });
+        res.end(response);
+        return;
+      }
+      throw new IntegralError("unknown Git repository operation", 404);
+    }
+    if (parts.length === 2 && method === "DELETE") {
+      const body = await bodyJson(req),
+        revision = integerValue(body.expectedRevision);
+      const value = await softDeleteResource(
+        this.paths,
+        resource.connection,
+        revision,
+        `pi:${sessionId}`,
+      );
+      respondJson(res, publicResource(value));
+      return;
+    }
+    if (parts[2] === "restore" && parts.length === 3 && method === "POST") {
+      const body = await bodyJson(req),
+        value = await restoreResource(
+          this.paths,
+          resource.connection,
+          integerValue(body.expectedRevision),
+          stringValue(body.mount),
+        );
+      respondJson(res, publicResource(value));
+      return;
+    }
+    if (kind === "host-repo" && parts[2] === "push" && method === "POST") {
+      const body = await bodyJson(
+          req,
+          Math.ceil((this.config.repositories.maxRepoBytes * 4) / 3) + 10_000,
+        ),
+        encoded = stringValue(body.bundle),
+        proposed = stringValue(body.proposed);
+      const value = await repositoryBundlePush(
+        this.paths,
+        this.config,
+        resource.id,
+        Buffer.from(encoded, "base64"),
+        proposed,
+      );
+      respondJson(res, value);
+      return;
+    }
+    if (kind === "host-store" && parts[2] === "snapshots") {
+      if (parts.length === 3 && method === "GET") {
+        respondJson(res, await listStoreSnapshots(this.paths, resource.id));
+        return;
+      }
+      if (parts.length === 5 && parts[4] === "restore" && method === "POST") {
+        const body = await bodyJson(req),
+          value = await restoreStoreSnapshot(
+            this.paths,
+            this.config,
+            resource.id,
+            parts[3]!,
+            integerValue(body.expectedRevision),
+          );
+        respondJson(res, publicResource(value));
+        return;
+      }
+    }
+    throw new IntegralError("unknown resource operation", 404);
   }
   async scheduleControl(
     sessionId: string,
@@ -686,8 +874,87 @@ async function bodyJson(
     return {};
   }
 }
+async function bodyBuffer(
+  req: IncomingMessage,
+  maxBytes: number,
+): Promise<Buffer> {
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for await (const chunk of req) {
+    const part = Buffer.from(chunk);
+    bytes += part.byteLength;
+    if (bytes > maxBytes)
+      throw new IntegralError("request body is too large", 413);
+    chunks.push(part);
+  }
+  return Buffer.concat(chunks);
+}
+async function gitUploadPack(
+  gitDir: string,
+  input: Buffer | undefined,
+  advertise: boolean,
+): Promise<Buffer> {
+  return await new Promise<Buffer>((resolve, reject) => {
+    const child = spawn(
+        "git",
+        [
+          "upload-pack",
+          "--stateless-rpc",
+          ...(advertise ? ["--advertise-refs"] : []),
+          gitDir,
+        ],
+        {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_PROTOCOL: "version=1",
+          },
+        },
+      ),
+      output: Buffer[] = [],
+      errors: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(output));
+      else
+        reject(
+          new IntegralError(
+            Buffer.concat(errors).toString("utf8").trim() ||
+              "Git upload failed",
+          ),
+        );
+    });
+    child.stdin.end(input);
+  });
+}
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+function integerValue(value: unknown): number {
+  if (!Number.isInteger(value))
+    throw new IntegralError("expectedRevision must be an integer", 400);
+  return value as number;
+}
+function publicResource(value: ResourceRecord): Record<string, unknown> {
+  return {
+    id: value.id,
+    name: value.connection,
+    kind: value.kind,
+    state: value.state,
+    revision: value.revision,
+    mount: value.mount,
+    ...(value.branch ? { branch: value.branch } : {}),
+    ...(value.availabilityReason
+      ? { availabilityReason: value.availabilityReason }
+      : {}),
+  };
+}
+function respondJson(res: ServerResponse, value: unknown, status = 200): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(value));
 }
 function respondError(res: ServerResponse, error: unknown): void {
   const status = error instanceof IntegralError ? error.exitCode : 500;

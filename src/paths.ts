@@ -25,6 +25,13 @@ export interface IntegralPaths {
   runs: string;
   runViews: string;
   ca: string;
+  resources: string;
+  repositories: string;
+  stores: string;
+  recovery: string;
+  storeSnapshots: string;
+  storeLocks: string;
+  resourceSessions: string;
 }
 
 function canonicalize(path: string): string {
@@ -89,6 +96,13 @@ export function pathsFor(root: string): IntegralPaths {
     runs: join(data, "runs"),
     runViews: join(state, "run-views"),
     ca: join(data, "ca"),
+    resources: join(data, "resources"),
+    repositories: join(data, "repositories"),
+    stores: join(data, "stores"),
+    recovery: join(data, "repository-recovery"),
+    storeSnapshots: join(data, "store-snapshots"),
+    storeLocks: join(state, "store-locks"),
+    resourceSessions: join(state, "resource-sessions"),
   };
 }
 
