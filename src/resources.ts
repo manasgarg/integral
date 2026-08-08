@@ -890,6 +890,22 @@ export async function sessionHasResource(
   }
 }
 
+export async function listRepositoryRecovery(
+  paths: IntegralPaths,
+  id: string,
+): Promise<Array<{ id: string; createdAt: string }>> {
+  const root = join(paths.recovery, id),
+    entries = (await readdir(root).catch(() => [] as string[]))
+      .sort()
+      .reverse();
+  return await Promise.all(
+    entries.map(async (entry) => ({
+      id: entry,
+      createdAt: (await stat(join(root, entry))).mtime.toISOString(),
+    })),
+  );
+}
+
 export interface StoreSnapshot {
   id: string;
   createdAt: string;
@@ -1010,7 +1026,7 @@ export async function repositoryBundlePush(
   id: string,
   bundle: Buffer,
   proposed: string,
-): Promise<{ prior?: string; landed: string }> {
+): Promise<{ prior?: string; landed: string; changedPaths: string[] }> {
   return await withResourceLock(paths, id, () =>
     repositoryBundlePushUnlocked(paths, config, id, bundle, proposed),
   );
@@ -1022,7 +1038,7 @@ async function repositoryBundlePushUnlocked(
   id: string,
   bundle: Buffer,
   proposed: string,
-): Promise<{ prior?: string; landed: string }> {
+): Promise<{ prior?: string; landed: string; changedPaths: string[] }> {
   const resource = await resourceForId(paths, id);
   if (!resource || resource.kind !== "host-repo")
     throw new IntegralError("repository not found", 404);
@@ -1069,6 +1085,20 @@ async function repositoryBundlePushUnlocked(
         prior,
         proposed,
       ]);
+    const changedPaths = (
+      await git([
+        "--git-dir",
+        repo,
+        "diff-tree",
+        "--root",
+        "--no-commit-id",
+        "--name-only",
+        "-r",
+        prior ? `${prior}..${proposed}` : proposed,
+      ])
+    )
+      .split("\n")
+      .filter(Boolean);
     await git([
       "--git-dir",
       current.path,
@@ -1085,7 +1115,7 @@ async function repositoryBundlePushUnlocked(
       prior || "0000000000000000000000000000000000000000",
     ]);
     await git(["--git-dir", current.path, "update-ref", "-d", incoming]);
-    return { ...(prior ? { prior } : {}), landed: proposed };
+    return { ...(prior ? { prior } : {}), landed: proposed, changedPaths };
   } finally {
     await git(["--git-dir", current.path, "update-ref", "-d", incoming]).catch(
       () => undefined,

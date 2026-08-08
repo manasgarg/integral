@@ -896,6 +896,86 @@ test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticat
   ]);
   assert.match(source, /proxy-authorization/);
   assert.doesNotMatch(source, /host path:/i);
+  const lockHelper = await readFile(
+    join(paths.root, ".local/bin/integral-lock"),
+    "utf8",
+  );
+  assert.match(lockHelper, /usage: integral-lock/);
+  assert.match(lockHelper, /proxy-authorization/);
+});
+
+test("[STORE-6148863C] [STORE-C38A633E] [STORE-83D2CD52] authenticated resource controls create, list, and soft-delete stores without host paths", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+    );
+  gateway.sessions.set("resource-token", "resource-session");
+  const call = async (
+    method: string,
+    url: string,
+    body?: Record<string, unknown>,
+  ): Promise<{ status: number; body: unknown }> => {
+    const request = Readable.from(
+        body ? [Buffer.from(JSON.stringify(body))] : [],
+      ) as unknown as IncomingMessage,
+      chunks: Buffer[] = [];
+    let status = 200;
+    const response = {
+      writeHead(value: number) {
+        status = value;
+        return response;
+      },
+      setHeader() {
+        return response;
+      },
+      end(value?: string | Buffer) {
+        if (value) chunks.push(Buffer.from(value));
+        return response;
+      },
+    } as unknown as ServerResponse;
+    request.url = url;
+    request.method = method;
+    request.headers = {
+      "content-type": "application/json",
+      "proxy-authorization": `Basic ${Buffer.from("integral:resource-token").toString("base64")}`,
+    };
+    await (
+      gateway as unknown as {
+        route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+      }
+    ).route(request, response);
+    const text = Buffer.concat(chunks).toString("utf8");
+    return { status, body: text ? JSON.parse(text) : undefined };
+  };
+  const created = await call("POST", "/integral/control/resources/stores", {
+    name: "agent-memory",
+    mount: "/home/pi/agent-memory",
+  });
+  assert.equal(created.status, 201);
+  const value = created.body as { id: string; revision: number };
+  assert.equal(JSON.stringify(created.body).includes(paths.root), false);
+  const listed = await call("GET", "/integral/control/resources/stores");
+  assert.equal(listed.status, 200);
+  assert.deepEqual(
+    (listed.body as Array<{ id: string }>).map((item) => item.id),
+    [value.id],
+  );
+  const deleted = await call(
+    "DELETE",
+    `/integral/control/resources/stores/${value.id}`,
+    { expectedRevision: value.revision },
+  );
+  assert.equal(deleted.status, 200);
+  assert.equal((deleted.body as { state: string }).state, "soft-deleted");
 });
 
 test("[SCHEDULE-930581F7] task extension steers a tool-free final turn until Pi declares an outcome", async (t) => {

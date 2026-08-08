@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,7 +110,7 @@ export function buildContainerSpec(options: {
     bundlePath = "/integral-ca/ca-bundle.pem";
   const environment: Record<string, string> = {
     HOME: "/home/pi",
-    PATH: "/usr/local/bin:/usr/bin:/bin",
+    PATH: "/home/pi/.local/bin:/usr/local/bin:/usr/bin:/bin",
     TMPDIR: "/tmp",
     HTTP_PROXY: proxyUrl,
     HTTPS_PROXY: proxyUrl,
@@ -276,6 +276,11 @@ export async function writeResourceExtension(
     name: resource.connection,
     mount: resource.mount,
   }));
+  const stores = projection.stores.map((resource) => ({
+    id: resource.id,
+    name: resource.connection,
+    mount: resource.mount,
+  }));
   const source = `import { execFile } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 import { request } from "node:http";
@@ -300,6 +305,27 @@ export default function (pi) {
 }
 `;
   await atomicWrite(join(directory, "integral-resources.ts"), source);
+  const bin = join(sessionHome, ".local", "bin"),
+    helper = join(bin, "integral-lock"),
+    lockSource = `#!/usr/bin/env node
+import { request } from "node:http";
+import { spawn } from "node:child_process";
+const stores = ${JSON.stringify(stores)};
+function usage() { console.error("usage: integral-lock <store-id|name|mount> <lock-name> -- <command> [args...]"); process.exit(2); }
+function call(path, method, body) { return new Promise((resolve, reject) => { const proxy = new URL(process.env.HTTP_PROXY), authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"), payload = body === undefined ? undefined : JSON.stringify(body), chunks = []; proxy.username = ""; proxy.password = ""; proxy.pathname = path; proxy.search = ""; const req = request(proxy, { method, headers: { "content-type": "application/json", "proxy-authorization": authorization, ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, res => { res.on("data", chunk => chunks.push(chunk)); res.on("end", () => { const text = Buffer.concat(chunks).toString("utf8"); if ((res.statusCode || 500) < 200 || (res.statusCode || 500) >= 300) reject(new Error(text.trim() || "store lock request failed")); else resolve(text ? JSON.parse(text) : null); }); }); req.on("error", reject); req.end(payload); }); }
+const separator = process.argv.indexOf("--"), selector = process.argv[2], name = process.argv[3];
+if (!selector || !name || separator !== 4 || !process.argv[5]) usage();
+const store = stores.find(value => value.id === selector || value.name === selector || value.mount === selector);
+if (!store) throw new Error("store is not mounted in this session: " + selector);
+const path = "/integral/control/resources/stores/" + encodeURIComponent(store.id) + "/locks/" + encodeURIComponent(name), acquired = await call(path, "POST"), command = process.argv[5], args = process.argv.slice(6);
+let code = 1;
+try { code = await new Promise((resolve, reject) => { const child = spawn(command, args, { stdio: "inherit", env: process.env }); child.on("error", reject); child.on("exit", (value, signal) => resolve(value ?? (signal ? 128 : 1))); }); }
+finally { await call(path, "DELETE", { lease: acquired.lease }).catch(error => console.error("integral-lock: " + error.message)); }
+process.exitCode = code;
+`;
+  await ensureDir(bin);
+  await atomicWrite(helper, lockSource, 0o700);
+  await chmod(helper, 0o700);
 }
 
 export async function writeTaskExtension(sessionHome: string): Promise<void> {

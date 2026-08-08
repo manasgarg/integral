@@ -247,6 +247,7 @@ test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] repository work lands only
     proposed,
   );
   assert.equal(landed.landed, proposed);
+  assert.deepEqual(landed.changedPaths, ["README.md"]);
   assert.equal(
     (await run("git", ["--git-dir", resource.path, "show", "main:README.md"]))
       .stdout,

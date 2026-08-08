@@ -29,7 +29,7 @@ import {
 import { IntegralError } from "./errors.ts";
 import type { Logger } from "./logging.ts";
 import { oauthAccess, refreshOAuth } from "./oauth.ts";
-import { atomicWrite } from "./fs.ts";
+import { acquireLock, atomicWrite } from "./fs.ts";
 import { readText } from "./fs.ts";
 import { join } from "node:path";
 import {
@@ -42,6 +42,7 @@ import { executeEmail, parseEmailOperation } from "./email.ts";
 import { internalFetch } from "./http-client.ts";
 import {
   createResource,
+  listRepositoryRecovery,
   listResourceRecords,
   listStoreSnapshots,
   refreshResource,
@@ -97,6 +98,15 @@ export class Gateway {
   private lastConnectionHash: string | undefined;
   private lastGeneration = 0;
   private sawInvalidConnections = false;
+  private readonly resourceLocks = new Map<
+    string,
+    {
+      sessionId: string;
+      resourceId: string;
+      name: string;
+      release(): Promise<void>;
+    }
+  >();
   private readonly dependencies: GatewayDependencies;
   constructor(
     private readonly paths: IntegralPaths,
@@ -313,7 +323,10 @@ export class Gateway {
       const token = stringValue(body.token),
         sessionId = this.sessions.get(token);
       this.sessions.delete(token);
-      if (sessionId) this.taskSessions.delete(sessionId);
+      if (sessionId) {
+        this.taskSessions.delete(sessionId);
+        await this.releaseSessionLocks(sessionId);
+      }
       res.writeHead(204).end();
       return;
     }
@@ -517,7 +530,12 @@ export class Gateway {
                 snapshots: (await listStoreSnapshots(this.paths, value.id))
                   .length,
               }
-            : {}),
+            : {
+                recoveryArtifacts: await listRepositoryRecovery(
+                  this.paths,
+                  value.id,
+                ),
+              }),
         })),
       );
       respondJson(res, inventory);
@@ -553,6 +571,54 @@ export class Gateway {
       resource = id ? await resourceForId(this.paths, id) : undefined;
     if (!resource || resource.kind !== kind)
       throw new IntegralError("resource not found", 404);
+    if (kind === "host-store" && parts[2] === "locks" && parts.length === 4) {
+      if (!(await sessionHasResource(this.paths, resource.id, sessionId)))
+        throw new IntegralError("store is not mounted in this session", 403);
+      const current = await refreshResource(this.paths, resource);
+      if (current.state !== "active")
+        throw new IntegralError(
+          current.state === "soft-deleted"
+            ? "resource_soft_deleted"
+            : "resource_unavailable",
+          409,
+        );
+      const name = parts[3]!;
+      if (!/^[A-Za-z0-9._-]{1,100}$/.test(name))
+        throw new IntegralError("invalid store lock name", 400);
+      if (method === "POST") {
+        const release = await acquireResourceAdvisoryLock(
+            this.paths,
+            resource.id,
+            name,
+            req,
+          ),
+          lease = randomUUID();
+        this.resourceLocks.set(lease, {
+          sessionId,
+          resourceId: resource.id,
+          name,
+          release,
+        });
+        respondJson(res, { lease });
+        return;
+      }
+      if (method === "DELETE") {
+        const body = await bodyJson(req),
+          lease = stringValue(body.lease),
+          held = this.resourceLocks.get(lease);
+        if (
+          !held ||
+          held.sessionId !== sessionId ||
+          held.resourceId !== resource.id ||
+          held.name !== name
+        )
+          throw new IntegralError("store lock lease not found", 404);
+        this.resourceLocks.delete(lease);
+        await held.release();
+        res.writeHead(204).end();
+        return;
+      }
+    }
     if (kind === "host-repo" && parts[2] === "git") {
       if (!(await sessionHasResource(this.paths, resource.id, sessionId)))
         throw new IntegralError(
@@ -797,11 +863,23 @@ export class Gateway {
   async stop(): Promise<void> {
     this.dependencies.intervals.clearInterval(this.refreshTimer);
     const servers = this.servers.splice(0);
+    const locks = [...this.resourceLocks.values()];
+    this.resourceLocks.clear();
     this.sessions.clear();
     this.taskSessions.clear();
-    await Promise.all(
-      servers.map((server) => this.dependencies.servers.close(server)),
+    await Promise.all([
+      ...locks.map((lock) => lock.release().catch(() => undefined)),
+      ...servers.map((server) => this.dependencies.servers.close(server)),
+    ]);
+  }
+  private async releaseSessionLocks(sessionId: string): Promise<void> {
+    const held = [...this.resourceLocks.entries()].filter(
+      ([, value]) => value.sessionId === sessionId,
     );
+    for (const [lease, value] of held) {
+      this.resourceLocks.delete(lease);
+      await value.release().catch(() => undefined);
+    }
   }
 }
 
@@ -929,6 +1007,27 @@ async function gitUploadPack(
     });
     child.stdin.end(input);
   });
+}
+async function acquireResourceAdvisoryLock(
+  paths: IntegralPaths,
+  resourceId: string,
+  name: string,
+  req: IncomingMessage,
+): Promise<() => Promise<void>> {
+  const digest = createHash("sha256")
+      .update(`${resourceId}\0${name}`)
+      .digest("hex"),
+    path = join(paths.storeLocks, `advisory-${digest}.lock`);
+  for (;;) {
+    if (req.destroyed)
+      throw new IntegralError("store lock request was cancelled", 499);
+    try {
+      return await acquireLock(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
 }
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
