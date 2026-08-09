@@ -16,6 +16,10 @@ import { validateConnection } from "../../src/connections.ts";
 import { deploymentId } from "../../src/state.ts";
 import { fixture } from "../helpers.ts";
 import { ensurePiRuntime } from "../../src/pi-runtime.ts";
+import {
+  buildImageRecipe,
+  ensureImageRecipeRepository,
+} from "../../src/image-recipe.ts";
 
 test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi container enforces the declared identity, mounts, resources, and internal network", async (t) => {
   assert.doesNotThrow(
@@ -262,6 +266,28 @@ test("[BOX-40521095] managed image contains the exact Pi release and governed De
     execFileSync(
       "docker",
       ["run", "--rm", "--network", "none", image, "jq", "--version"],
+      { stdio: "ignore" },
+    ),
+  );
+});
+
+test("[BOX-6A91C3E7] [CLI-5D8A1C72] a fresh recipe build resolves floating Pi and records its installed inventory", async (t) => {
+  assert.doesNotThrow(
+    () => execFileSync("docker", ["info"], { stdio: "ignore" }),
+    "Docker acceptance requires a reachable Docker daemon",
+  );
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    commit = await ensureImageRecipeRepository(paths),
+    result = await buildImageRecipe(paths, config, commit, "acceptance-user");
+  assert.equal(result.recipeCommit, commit);
+  assert.match(result.image, /^sha256:/);
+  assert.match(result.piVersion, /^\d+\.\d+\.\d+/);
+  assert.ok(result.packages.some((entry) => entry.startsWith("git=")));
+  assert.doesNotThrow(() =>
+    execFileSync(
+      "docker",
+      ["run", "--rm", "--network", "none", result.image, "pi", "--version"],
       { stdio: "ignore" },
     ),
   );

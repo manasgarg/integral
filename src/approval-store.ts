@@ -27,13 +27,28 @@ export interface PackageApprovalRequest {
   expectedRevision: number;
 }
 
+export interface ImageRecipeApprovalRequest {
+  kind: "image-recipe";
+  operation: "proposal" | "rebuild";
+  baseCommit: string;
+  proposedCommit?: string;
+  proposalRef?: string;
+  treeDigest: string;
+  changedPaths: string[];
+  diff: string;
+  priorImage: string;
+}
+
+export type GovernedApprovalRequest =
+  PackageApprovalRequest | ImageRecipeApprovalRequest;
+
 export interface ApprovalRecord {
   schemaVersion: 1;
   id: string;
   status: ApprovalStatus;
   summary: string;
   requestDigest: string;
-  request: PackageApprovalRequest;
+  request: GovernedApprovalRequest;
   origin: {
     sessionId: string;
     runId?: string;
@@ -65,6 +80,7 @@ export interface PublicApproval {
   expiresAt: string;
   decision?: ApprovalRecord["decision"];
   execution?: ApprovalRecord["execution"];
+  details?: Record<string, unknown>;
 }
 
 interface ApprovalFile {
@@ -99,6 +115,20 @@ export function publicApproval(record: ApprovalRecord): PublicApproval {
     ...(record.decision ? { decision: structuredClone(record.decision) } : {}),
     ...(record.execution
       ? { execution: structuredClone(record.execution) }
+      : {}),
+    ...(record.request.kind === "image-recipe"
+      ? {
+          details: {
+            operation: record.request.operation,
+            baseCommit: record.request.baseCommit,
+            proposedCommit: record.request.proposedCommit,
+            treeDigest: record.request.treeDigest,
+            changedPaths: record.request.changedPaths,
+            diff: record.request.diff,
+            priorImage: record.request.priorImage,
+            floatingResolution: true,
+          },
+        }
       : {}),
   };
 }
@@ -143,21 +173,25 @@ export class ApprovalStore {
   }
 
   async create(input: {
-    request: PackageApprovalRequest;
+    request: GovernedApprovalRequest;
     sessionId: string;
     runId?: string;
     selection: ModelSelection;
     deadlineMs?: number;
   }): Promise<ApprovalRecord> {
     const created = this.now(),
-      packages = [...input.request.packages].sort(),
-      request = { ...input.request, packages },
+      request = canonicalRequest(input.request),
       canonical = JSON.stringify(request),
       record: ApprovalRecord = {
         schemaVersion: 1,
         id: this.newId(),
         status: "pending",
-        summary: `${request.operation} Debian packages: ${packages.join(", ")}`,
+        summary:
+          request.kind === "container-packages"
+            ? `${request.operation} Debian packages: ${request.packages.join(", ")}`
+            : request.operation === "proposal"
+              ? `update managed Pi image recipe to ${request.proposedCommit?.slice(0, 12)}`
+              : `fresh rebuild of managed Pi image recipe ${request.baseCommit.slice(0, 12)}`,
         requestDigest: createHash("sha256").update(canonical).digest("hex"),
         request,
         origin: {
@@ -301,14 +335,43 @@ function validRecord(value: unknown): value is ApprovalRecord {
       "succeeded",
       "failed",
     ].includes(record.status) &&
-    record.request?.kind === "container-packages" &&
-    (record.request.operation === "install" ||
-      record.request.operation === "upgrade") &&
-    Array.isArray(record.request.packages) &&
-    Number.isInteger(record.request.expectedRevision) &&
-    record.request.expectedRevision >= 0 &&
+    validRequest(record.request) &&
     typeof record.origin?.sessionId === "string" &&
     record.origin.sessionId.length > 0 &&
     typeof record.origin.selection?.piImage === "string"
+  );
+}
+
+function canonicalRequest(
+  request: GovernedApprovalRequest,
+): GovernedApprovalRequest {
+  return request.kind === "container-packages"
+    ? { ...request, packages: [...request.packages].sort() }
+    : { ...request, changedPaths: [...request.changedPaths].sort() };
+}
+
+function validRequest(value: unknown): value is GovernedApprovalRequest {
+  if (!value || typeof value !== "object") return false;
+  const request = value as Partial<GovernedApprovalRequest> &
+    Record<string, unknown>;
+  if (request.kind === "container-packages")
+    return (
+      (request.operation === "install" || request.operation === "upgrade") &&
+      Array.isArray(request.packages) &&
+      Number.isInteger(request.expectedRevision) &&
+      Number(request.expectedRevision) >= 0
+    );
+  return (
+    request.kind === "image-recipe" &&
+    (request.operation === "proposal" || request.operation === "rebuild") &&
+    typeof request.baseCommit === "string" &&
+    typeof request.treeDigest === "string" &&
+    typeof request.priorImage === "string" &&
+    Array.isArray(request.changedPaths) &&
+    typeof request.diff === "string" &&
+    (request.proposedCommit === undefined ||
+      typeof request.proposedCommit === "string") &&
+    (request.proposalRef === undefined ||
+      typeof request.proposalRef === "string")
   );
 }

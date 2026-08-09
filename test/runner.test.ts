@@ -12,8 +12,19 @@ import { loadConfig } from "../src/config.ts";
 import { saveConnection, validateConnection } from "../src/connections.ts";
 import { Logger } from "../src/logging.ts";
 import { Runner, type RunnerClock } from "../src/runner.ts";
+import type { ResourceProjection } from "../src/resources.ts";
 import { deploymentId, writeComponentState } from "../src/state.ts";
 import { fixture } from "./helpers.ts";
+
+function emptyProjection(sessionId: string): ResourceProjection {
+  return {
+    sessionId,
+    repositories: [],
+    stores: [],
+    mounts: [],
+    unavailable: [],
+  };
+}
 
 class ManualClock implements RunnerClock {
   readonly timers: {
@@ -197,6 +208,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
         bundle: "/test/bundle.pem",
       }),
       freshSessionHome: async () => "/test/session",
+      prepareResourceProjection: async () => emptyProjection("session-1"),
       newSessionIdentity: () => ({
         sessionId: "session-1",
         sessionToken: "token-1",
@@ -224,7 +236,8 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
   assert.equal(calls.filter((call) => call === "talk:email-tools").length, 1);
   assert.ok(calls.includes("pi:prompt:hello"));
   assert.equal(spec?.image, "sha256:test-pi");
-  assert.deepEqual(spec?.args.slice(-2), ["--model", "claude-sonnet-4-6"]);
+  assert.ok(spec?.args.includes("claude-sonnet-4-6"));
+  assert.match(spec?.args.at(-1) ?? "", /ephemeral Integral-managed container/);
   const historyMount = spec?.mounts.find(
     (mount) => mount.target === "/home/pi/history",
   );
@@ -388,6 +401,7 @@ test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-A4C19E72] runner
       },
       ensureCa: async () => ({ key: "key", cert: "cert", bundle: "bundle" }),
       freshSessionHome: async () => "/test/session",
+      prepareResourceProjection: async () => emptyProjection("session-2"),
       newSessionIdentity: () => ({
         sessionId: "session-2",
         sessionToken: "token-2",
@@ -792,6 +806,8 @@ test("[CONNECTION-12C87631] runner recycles a Pi session after GitHub is connect
         },
         ensureCa: async () => ({ key: "key", cert: "cert", bundle: "bundle" }),
         freshSessionHome: async () => "/test/replacement-session",
+        prepareResourceProjection: async () =>
+          emptyProjection("replacement-session"),
         newSessionIdentity: () => ({
           sessionId: "replacement-session",
           sessionToken: "replacement-token",
@@ -972,6 +988,7 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] [RUN-B1D837E0]
       },
       ensureCa: async () => ({ key: "key", cert: "cert", bundle: "bundle" }),
       freshSessionHome: async () => "/test/task-home",
+      prepareResourceProjection: async () => emptyProjection("task-session"),
       newSessionIdentity: () => ({
         sessionId: "task-session",
         sessionToken: "task-token",

@@ -46,6 +46,11 @@ export interface ContainerBackend {
   ensureImage(
     config: EffectiveConfig,
     piVersion: string,
+    options?: {
+      systemPackages?: readonly string[];
+      rebuild?: boolean;
+      expectedImage?: string;
+    },
   ): string | Promise<string>;
   ensureNetwork(name: string): Promise<void>;
   networkGateway(name: string): string | Promise<string>;
@@ -304,7 +309,8 @@ export default function (pi) {
     pi.registerTool({ name: kind + "_delete", label: "Soft-delete governed " + kind, description: "Remove this resource from future sessions while the current session keeps its mount", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/" + kind + "s/" + encodeURIComponent(params.id), "DELETE", params, signal)); } });
     pi.registerTool({ name: kind + "_restore", label: "Restore governed " + kind, description: "Restore a soft-deleted resource at a mount path; the current session is replaced after success", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer(), mount: Type.String() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/" + kind + "s/" + encodeURIComponent(params.id) + "/restore", "POST", params, signal)); } });
   }
-  pi.registerTool({ name: "repo_push", label: "Push governed repository", description: "Commit changes first, then land the current commit through Integral's validated host boundary", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { const repository = repositories.find(value => value.id === params.id || value.name === params.id); if (!repository) throw new Error("repository is not mounted in this session"); const checkout = repository.mount, proposed = (await run("git", ["rev-parse", "HEAD"], { cwd: checkout, signal })).stdout.trim(), bundle = join(tmpdir(), "integral-" + crypto.randomUUID() + ".bundle"); try { await run("git", ["bundle", "create", bundle, "HEAD"], { cwd: checkout, signal }); const encoded = (await readFile(bundle)).toString("base64"); return result(await call("/integral/control/resources/repos/" + encodeURIComponent(repository.id) + "/push", "POST", { proposed, bundle: encoded }, signal)); } finally { await rm(bundle, { force: true }); } } });
+  pi.registerTool({ name: "repo_push", label: "Push governed repository", description: "Commit changes first, then land the current commit through Integral's validated host boundary; the protected image-recipe repository requires human approval", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { const repository = repositories.find(value => value.id === params.id || value.name === params.id); if (!repository) throw new Error("repository is not mounted in this session"); const checkout = repository.mount, proposed = (await run("git", ["rev-parse", "HEAD"], { cwd: checkout, signal })).stdout.trim(), bundle = join(tmpdir(), "integral-" + crypto.randomUUID() + ".bundle"); try { await run("git", ["bundle", "create", bundle, "HEAD"], { cwd: checkout, signal }); const encoded = (await readFile(bundle)).toString("base64"); return result(await call("/integral/control/resources/repos/" + encodeURIComponent(repository.id) + "/push", "POST", { proposed, bundle: encoded }, signal)); } finally { await rm(bundle, { force: true }); } } });
+  pi.registerTool({ name: "container_image_rebuild", label: "Rebuild managed Pi image", description: "Request a fresh pull and no-cache rebuild of the active Dockerfile; this requires human approval and replaces the container after resolution", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await call("/integral/control/image-rebuild", "POST", {}, signal)); } });
   pi.registerTool({ name: "store_snapshot_list", label: "List store snapshots", description: "List retained snapshots for a governed store", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/stores/" + encodeURIComponent(params.id) + "/snapshots", "GET", undefined, signal)); } });
   pi.registerTool({ name: "store_snapshot_restore", label: "Restore store snapshot", description: "Restore retained store bytes using the current lifecycle revision", parameters: Type.Object({ id: Type.String(), snapshotId: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/stores/" + encodeURIComponent(params.id) + "/snapshots/" + encodeURIComponent(params.snapshotId) + "/restore", "POST", params, signal)); } });
 }
@@ -415,8 +421,13 @@ export function ensureContainerImage(
   options: {
     systemPackages?: readonly string[];
     rebuild?: boolean;
+    expectedImage?: string;
   } = {},
 ): string {
+  if (options.expectedImage) {
+    const selected = inspectImage(options.expectedImage);
+    if (selected) return selected;
+  }
   const systemPackages = [
     ...(options.systemPackages ?? DEFAULT_CONTAINER_PACKAGES),
   ].sort();

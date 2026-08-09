@@ -512,6 +512,76 @@ test("[BOX-40521095] [GATEWAY-846B1000] authenticated package controls bind sess
   });
 });
 
+test("[BOX-6A91C3E7] [REPO-7B0E2F4A] image recipe pushes cross into approval with authenticated lineage", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  let forwarded: Record<string, unknown> | undefined;
+  const gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path, init) {
+          assert.equal(target, "coordinator");
+          assert.equal(path, "/integral/internal/image-recipe");
+          const serialized = init?.body;
+          if (typeof serialized !== "string")
+            throw new Error("expected serialized image proposal");
+          forwarded = JSON.parse(serialized) as Record<string, unknown>;
+          return Response.json({ id: "approval-image", status: "pending" });
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          proposed: "b".repeat(40),
+          bundle: "encoded-bundle",
+          originSessionId: "forged",
+        }),
+      ),
+    ]) as unknown as IncomingMessage;
+  let status = 0;
+  const response = {
+    once() {
+      return response;
+    },
+    writeHead(value: number) {
+      status = value;
+      return response;
+    },
+    end() {
+      return response;
+    },
+  } as unknown as ServerResponse;
+  request.url = "/integral/control/resources/repos/integral-image-recipe/push";
+  request.method = "POST";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:image-token").toString("base64")}`,
+  };
+  gateway.sessions.set("image-token", "session-image");
+  gateway.sessionRunIds.set("session-image", "run-image");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  assert.equal(status, 200);
+  assert.deepEqual(forwarded, {
+    operation: "proposal",
+    proposed: "b".repeat(40),
+    bundle: "encoded-bundle",
+    originSessionId: "session-image",
+    originRunId: "run-image",
+  });
+});
+
 test("[SCHEDULE-930581F7] task outcome declarations derive execution identity from the authenticated gateway session", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
@@ -988,6 +1058,7 @@ test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticat
     "store_delete",
     "store_restore",
     "repo_push",
+    "container_image_rebuild",
     "store_snapshot_list",
     "store_snapshot_restore",
   ]);

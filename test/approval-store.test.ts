@@ -77,3 +77,33 @@ test("[GATEWAY-846B1000] the first human decision wins and approved execution is
   await restored.load();
   assert.equal(restored.get(created.id).execution?.result?.revision, 1);
 });
+
+test("[BOX-6A91C3E7] image recipe approvals retain the exact public diff and private proposal ref across restart", async (t) => {
+  const paths = await fixture(t),
+    store = new ApprovalStore(paths, Date.now, () => "approval-image"),
+    created = await store.create({
+      request: {
+        kind: "image-recipe",
+        operation: "proposal",
+        baseCommit: "a".repeat(40),
+        proposedCommit: "b".repeat(40),
+        proposalRef: "refs/integral/proposals/private-ref",
+        treeDigest: "c".repeat(40),
+        changedPaths: ["Dockerfile"],
+        diff: "+RUN npm install package@latest",
+        priorImage: "sha256:prior",
+      },
+      sessionId: "session-image",
+      runId: "run-image",
+      selection,
+    });
+  assert.match(String(store.snapshot()[0]?.details?.diff), /package@latest/);
+  assert.doesNotMatch(JSON.stringify(store.snapshot()[0]), /private-ref/);
+  const restored = new ApprovalStore(paths);
+  await restored.load();
+  const request = restored.get(created.id).request;
+  assert.equal(
+    request.kind === "image-recipe" ? request.proposalRef : undefined,
+    "refs/integral/proposals/private-ref",
+  );
+});

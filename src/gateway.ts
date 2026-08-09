@@ -55,6 +55,12 @@ import {
   type ResourceKind,
   type ResourceRecord,
 } from "./resources.ts";
+import {
+  IMAGE_RECIPE_ID,
+  IMAGE_RECIPE_MOUNT,
+  IMAGE_RECIPE_NAME,
+  ensureImageRecipeRepository,
+} from "./image-recipe.ts";
 
 function modelBoundary(connection: Connection): Connection {
   if (connection.kind !== "model") return connection;
@@ -436,6 +442,7 @@ export class Gateway {
     if (
       req.url?.startsWith("/integral/control/schedules") ||
       req.url === "/integral/control/container-packages" ||
+      req.url === "/integral/control/image-rebuild" ||
       req.url?.startsWith("/integral/control/resources/")
     ) {
       try {
@@ -483,6 +490,12 @@ export class Gateway {
   ): Promise<void> {
     if (target.pathname === "/integral/control/container-packages") {
       await this.containerPackageControl(req, res, sessionId);
+      return;
+    }
+    if (target.pathname === "/integral/control/image-rebuild") {
+      if ((req.method ?? "POST") !== "POST")
+        throw new IntegralError("unsupported image rebuild operation", 405);
+      await this.imageApprovalControl(res, sessionId, { operation: "rebuild" });
       return;
     }
     if (target.pathname.startsWith("/integral/control/resources/")) {
@@ -582,7 +595,7 @@ export class Gateway {
           .filter((value) => value.kind === kind)
           .map((value) => refreshResource(this.paths, value)),
       );
-      const inventory = await Promise.all(
+      const inventory: Array<Record<string, unknown>> = await Promise.all(
         records.map(async (value) => ({
           ...publicResource(value),
           ...(kind === "host-store"
@@ -598,6 +611,24 @@ export class Gateway {
               }),
         })),
       );
+      if (kind === "host-repo") {
+        const head = await ensureImageRecipeRepository(this.paths);
+        inventory.unshift({
+          id: IMAGE_RECIPE_ID,
+          name: IMAGE_RECIPE_NAME,
+          kind: "host-repo",
+          state: "active",
+          revision: 0,
+          branch: "main",
+          mount: IMAGE_RECIPE_MOUNT,
+          writePolicy: "approval-required",
+          head,
+          recoveryArtifacts: await listRepositoryRecovery(
+            this.paths,
+            IMAGE_RECIPE_ID,
+          ),
+        });
+      }
       respondJson(res, inventory);
       return;
     }
@@ -627,8 +658,59 @@ export class Gateway {
       respondJson(res, publicResource(value), 201);
       return;
     }
-    const id = parts[1],
-      resource = id ? await resourceForId(this.paths, id) : undefined;
+    const id = parts[1];
+    if (kind === "host-repo" && id === IMAGE_RECIPE_ID && parts[2] === "git") {
+      await ensureImageRecipeRepository(this.paths);
+      if (
+        method === "GET" &&
+        parts[3] === "info" &&
+        parts[4] === "refs" &&
+        target.searchParams.get("service") === "git-upload-pack"
+      ) {
+        const advertised = await gitUploadPack(
+            this.paths.imageRecipe,
+            undefined,
+            true,
+          ),
+          prefix = Buffer.from("001e# service=git-upload-pack\n0000");
+        res.writeHead(200, {
+          "content-type": "application/x-git-upload-pack-advertisement",
+          "cache-control": "no-cache",
+        });
+        res.end(Buffer.concat([prefix, advertised]));
+        return;
+      }
+      if (method === "POST" && parts[3] === "git-upload-pack") {
+        const request = await bodyBuffer(req, 16 * 1024 * 1024),
+          response = await gitUploadPack(
+            this.paths.imageRecipe,
+            request,
+            false,
+          );
+        res.writeHead(200, {
+          "content-type": "application/x-git-upload-pack-result",
+          "cache-control": "no-cache",
+        });
+        res.end(response);
+        return;
+      }
+      throw new IntegralError("unknown image recipe Git operation", 404);
+    }
+    if (
+      kind === "host-repo" &&
+      id === IMAGE_RECIPE_ID &&
+      parts[2] === "push" &&
+      method === "POST"
+    ) {
+      const body = await bodyJson(req, 45 * 1024 * 1024);
+      await this.imageApprovalControl(res, sessionId, {
+        operation: "proposal",
+        proposed: stringValue(body.proposed),
+        bundle: stringValue(body.bundle),
+      });
+      return;
+    }
+    const resource = id ? await resourceForId(this.paths, id) : undefined;
     if (!resource || resource.kind !== kind)
       throw new IntegralError("resource not found", 404);
     if (kind === "host-store" && parts[2] === "locks" && parts.length === 4) {
@@ -774,6 +856,50 @@ export class Gateway {
       }
     }
     throw new IntegralError("unknown resource operation", 404);
+  }
+
+  private async imageApprovalControl(
+    res: ServerResponse,
+    sessionId: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    delete body.originSessionId;
+    delete body.originRunId;
+    body.originSessionId = sessionId;
+    const runId = this.sessionRunIds.get(sessionId);
+    if (runId) body.originRunId = runId;
+    const abort = new AbortController();
+    res.once("close", () => {
+      if (!res.writableEnded) abort.abort();
+    });
+    const upstream = await this.dependencies.internalFetch(
+        this.paths,
+        "gateway",
+        "coordinator",
+        "/integral/internal/image-recipe",
+        {
+          method: "POST",
+          signal: abort.signal,
+          body: JSON.stringify(body),
+        },
+      ),
+      responseBody = await upstream.text();
+    if (upstream.ok)
+      this.logger.event(
+        "info",
+        "gateway.image_recipe",
+        "image recipe request resolved",
+        {
+          operation: stringValue(body.operation),
+          session_id: sessionId,
+          request_id: randomUUID(),
+        },
+      );
+    res.writeHead(upstream.status, {
+      "content-type":
+        upstream.headers.get("content-type") ?? "application/json",
+    });
+    res.end(responseBody);
   }
   async scheduleControl(
     sessionId: string,
@@ -1105,6 +1231,7 @@ function publicResource(value: ResourceRecord): Record<string, unknown> {
     kind: value.kind,
     state: value.state,
     revision: value.revision,
+    writePolicy: value.writePolicy ?? "direct",
     mount: value.mount,
     ...(value.branch ? { branch: value.branch } : {}),
     ...(value.availabilityReason

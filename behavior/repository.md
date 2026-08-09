@@ -18,7 +18,7 @@ bare repositories may enter the same lifecycle through a host connection.
 <!-- Automation note (REPO-D987932B): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 <!-- Automation note (REPO-D1865075): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 <!-- Automation note (REPO-1C3B9872): This behavior defines planned governed-repository availability functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-7B0E2F4A): Selective approval-gated repository landing is specified for the image-recipe increment; executable coverage will land with implementation. -->
+<!-- Automation note (REPO-7B0E2F4A): Selective approval-gated repository landing, exact proposal review, stale-ref refusal, denied writes, and direct local image editing are automated. -->
 
 ## REPO-D1865075 — Give Pi authenticated repository lifecycle tools
 

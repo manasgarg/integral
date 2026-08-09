@@ -409,6 +409,7 @@ export class Runner {
     const resolvedImage = await this.dependencies.containers.ensureImage(
       this.config,
       task.profile.piVersion,
+      { expectedImage: task.profile.piImage },
     );
     if (resolvedImage !== task.profile.piImage)
       throw new IntegralError(
@@ -695,6 +696,7 @@ export class Runner {
     const resolvedImage = await this.dependencies.containers.ensureImage(
       this.config,
       selection.piVersion,
+      { expectedImage: selection.piImage },
     );
     if (resolvedImage !== selection.piImage)
       throw new IntegralError(
@@ -856,6 +858,10 @@ export class Runner {
       mcp,
       connections: active,
     });
+    spec.args.push(
+      "--append-system-prompt",
+      "You run in an ephemeral Integral-managed container. The active image Dockerfile is in /home/pi/image. You may edit and commit it, then call repo_push for image-recipe; that proposal requires human approval and affects a replacement container, not this running filesystem. Use container_image_rebuild to request an approval-gated fresh rebuild of the unchanged recipe.",
+    );
     spec.mounts.push(...resources.mounts);
     if (resources.unavailable.length)
       spec.args.push(

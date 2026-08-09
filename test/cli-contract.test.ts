@@ -5,11 +5,13 @@ import {
   completeEmailOptions,
   createTalkTerminal,
   explicitConnection,
+  imageCommand,
   main,
   queueCommand,
   selectAuthentication,
   talkCommand,
 } from "../src/cli.ts";
+import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
 import { saveConnection } from "../src/connections.ts";
 
@@ -1123,4 +1125,39 @@ test("[CHAT-6E91B4C7] integral talk refuses attachment when no active provider a
     }),
     /no provider and model choices.*integral connection add/,
   );
+});
+
+test("[CLI-5D8A1C72] local image edit and rebuild commands execute directly without creating approvals", async (t) => {
+  const paths = await fixture(t),
+    calls: string[] = [],
+    output: string[] = [],
+    dependencies = {
+      resolvePaths: () => paths,
+      loadConfig: () => loadConfig(paths, {}),
+      actor: () => "local-human",
+      writeOutput: (text: string) => output.push(text),
+      async edit(_paths: typeof paths, actor: string) {
+        calls.push(`edit:${actor}`);
+        return { prior: "old", landed: "new" };
+      },
+      async rebuild(_paths: typeof paths, _config: unknown, actor: string) {
+        calls.push(`rebuild:${actor}`);
+        return {
+          recipeCommit: "new",
+          piVersion: "0.85.0",
+          image: "sha256:new-image",
+        };
+      },
+    };
+  assert.equal(await imageCommand(["edit"], dependencies), 0);
+  assert.equal(await imageCommand(["rebuild"], dependencies), 0);
+  assert.deepEqual(calls, ["edit:local-human", "rebuild:local-human"]);
+  assert.match(output.join(""), /Updated image Dockerfile to new/);
+  assert.match(output.join(""), /Built Pi 0\.85\.0/);
+  assert.doesNotMatch(output.join(""), /approval/i);
+
+  output.length = 0;
+  assert.equal(await imageCommand(["--help"], dependencies), 0);
+  assert.match(output.join(""), /privileged local operator actions/);
+  assert.match(output.join(""), /do not create approval requests/);
 });
