@@ -28,8 +28,11 @@ export interface Connection {
   authorizationUrl?: string;
   tokenUrl?: string;
   deviceAuthorizationUrl?: string;
+  registrationUrl?: string;
   clientId?: string;
   scopes?: string[];
+  oauthIssuer?: string;
+  oauthResource?: string;
   transport?: McpTransport;
   command?: string;
   args?: string[];
@@ -96,8 +99,11 @@ const knownKeys = new Set([
   "authorization_url",
   "token_url",
   "device_authorization_url",
+  "registration_url",
   "client_id",
   "scopes",
+  "oauth_issuer",
+  "oauth_resource",
   "transport",
   "command",
   "args",
@@ -304,14 +310,25 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
       const explicit =
         value.authorization_url !== undefined ||
         value.token_url !== undefined ||
-        value.client_id !== undefined;
+        value.client_id !== undefined ||
+        value.registration_url !== undefined;
       if (kind === "http" || explicit) {
         result.authorizationUrl = oauthUrl(
           value.authorization_url,
           "authorization_url",
         );
         result.tokenUrl = oauthUrl(value.token_url, "token_url");
-        result.clientId = requiredString(value.client_id, "client_id");
+        if (value.client_id !== undefined)
+          result.clientId = requiredString(value.client_id, "client_id");
+        if (value.registration_url !== undefined)
+          result.registrationUrl = oauthUrl(
+            value.registration_url,
+            "registration_url",
+          );
+        if (!result.clientId && !result.registrationUrl)
+          throw new IntegralError(
+            "OAuth requires client_id or registration_url",
+          );
       }
       if (auth === "device-code")
         result.deviceAuthorizationUrl = oauthUrl(
@@ -320,6 +337,13 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
         );
       const scopes = optionalStrings(value.scopes, "scopes");
       if (scopes) result.scopes = scopes;
+      if (value.oauth_issuer !== undefined)
+        result.oauthIssuer = oauthUrl(value.oauth_issuer, "oauth_issuer");
+      if (value.oauth_resource !== undefined)
+        result.oauthResource = secureUrl(
+          value.oauth_resource,
+          "oauth_resource",
+        );
     }
   }
   if (kind === "mcp") {
@@ -361,8 +385,11 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
         "authorization_url",
         "token_url",
         "device_authorization_url",
+        "registration_url",
         "client_id",
         "scopes",
+        "oauth_issuer",
+        "oauth_resource",
         "header",
         "scheme",
         "methods",
@@ -535,7 +562,10 @@ export function connectionToml(c: Connection): string {
     ["authorization_url", c.authorizationUrl],
     ["token_url", c.tokenUrl],
     ["device_authorization_url", c.deviceAuthorizationUrl],
+    ["registration_url", c.registrationUrl],
     ["client_id", c.clientId],
+    ["oauth_issuer", c.oauthIssuer],
+    ["oauth_resource", c.oauthResource],
     ["transport", c.transport],
     ["command", c.command],
     ["account", c.account],
@@ -575,7 +605,10 @@ export function connectionToml(c: Connection): string {
 export function connectionBoundaries(connection: Connection): URL[] {
   if (connection.provider === "github")
     return (connection.hosts ?? []).map((host) => new URL(`https://${host}/`));
-  return connection.url ? [new URL(connection.url)] : [];
+  return [
+    ...(connection.url ? [new URL(connection.url)] : []),
+    ...(connection.allowedUrls ?? []).map((url) => new URL(url)),
+  ];
 }
 
 export async function loadConnections(

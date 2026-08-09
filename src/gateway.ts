@@ -40,6 +40,7 @@ import {
 } from "./runtime.ts";
 import { executeEmail, parseEmailOperation } from "./email.ts";
 import { internalFetch } from "./http-client.ts";
+import { callRemoteMcp } from "./mcp.ts";
 import {
   createResource,
   listRepositoryRecovery,
@@ -435,6 +436,60 @@ export class Gateway {
             request_id: requestId,
           },
         );
+        respondError(res, error);
+      }
+      return;
+    }
+    if (req.url === "/integral/mcp" && req.method === "POST") {
+      try {
+        const body = await bodyJson(req, 1_000_000),
+          name = stringValue(body.connection),
+          tool = stringValue(body.tool),
+          args =
+            body.arguments &&
+            typeof body.arguments === "object" &&
+            !Array.isArray(body.arguments)
+              ? (body.arguments as Record<string, unknown>)
+              : {};
+        const candidate = this.candidates.find(
+          ({ connection }) =>
+            connection.kind === "mcp" && connection.name === name,
+        );
+        if (!candidate)
+          throw new IntegralError(`MCP connection not found: ${name}`, 404);
+        if (!tool) throw new IntegralError("MCP tool name is required", 400);
+        if (candidate.connection.transport === "stdio") {
+          const upstream = await this.dependencies.internalFetch(
+            this.paths,
+            "gateway",
+            "runner",
+            "/integral/internal/mcp",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                sessionId,
+                connection: name,
+                tool,
+                arguments: args,
+              }),
+            },
+          );
+          res.writeHead(upstream.status, {
+            "content-type":
+              upstream.headers.get("content-type") ?? "application/json",
+          });
+          res.end(await upstream.text());
+          return;
+        }
+        const result = await this.dependencies.callRemoteMcp(
+          candidate.connection,
+          candidate.credential,
+          tool,
+          args,
+        );
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(result));
+      } catch (error) {
         respondError(res, error);
       }
       return;
@@ -1077,6 +1132,7 @@ export interface GatewayDependencies {
   certificateFor: typeof certificateFor;
   refreshOAuth: typeof refreshOAuth;
   executeEmail: typeof executeEmail;
+  callRemoteMcp: typeof callRemoteMcp;
   request(
     target: URL,
     options: http.RequestOptions,
@@ -1092,6 +1148,7 @@ const productionDependencies: GatewayDependencies = {
   certificateFor,
   refreshOAuth,
   executeEmail,
+  callRemoteMcp,
   internalFetch,
   request(target, options, response) {
     return (target.protocol === "https:" ? https : http).request(

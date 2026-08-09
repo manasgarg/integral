@@ -182,6 +182,85 @@ test("[CONNECTION-6D2A9F84] generic OAuth prints its URL and completes from a pa
   );
 });
 
+test("[MCP-948B2522] MCP OAuth dynamically registers its exact callback and binds authorization and tokens to the resource", async () => {
+  const connection = validateConnection({
+    name: "mcp",
+    kind: "mcp",
+    url: "https://mcp.test/mcp",
+    auth: "oauth",
+    authorization_url: "https://login.test/authorize",
+    token_url: "https://login.test/token",
+    registration_url: "https://login.test/register",
+    oauth_issuer: "https://login.test/tenant",
+    oauth_resource: "https://mcp.test/mcp",
+    scopes: ["mcp.read"],
+  });
+  const shown: string[] = [];
+  let calls = 0;
+  const request: typeof fetch = async (input, init = {}) => {
+    calls++;
+    if (calls === 1) {
+      assert.equal(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url,
+        "https://login.test/register",
+      );
+      if (typeof init.body !== "string")
+        throw new Error("expected string registration body");
+      const registration = JSON.parse(init.body) as {
+        redirect_uris: string[];
+        application_type: string;
+      };
+      assert.deepEqual(registration.redirect_uris, [
+        "http://127.0.0.1:7654/callback",
+      ]);
+      assert.equal(registration.application_type, "native");
+      return Response.json({
+        client_id: "dynamic-client",
+        client_secret: "dynamic-secret",
+      });
+    }
+    const form = init.body as URLSearchParams;
+    assert.equal(form.get("client_id"), "dynamic-client");
+    assert.equal(form.get("client_secret"), "dynamic-secret");
+    assert.equal(form.get("resource"), "https://mcp.test/mcp");
+    return Response.json({
+      access_token: "access",
+      refresh_token: "refresh",
+      expires_in: 3600,
+    });
+  };
+  const stored = JSON.parse(
+    await runGenericOAuth(
+      connection,
+      {
+        show: (message) => shown.push(message),
+        prompt: async () => {
+          const authorization = new URL(shown[0]!.split("\n").at(-1)!);
+          assert.equal(
+            authorization.searchParams.get("resource"),
+            "https://mcp.test/mcp",
+          );
+          return `http://127.0.0.1:7654/callback?code=code&state=${authorization.searchParams.get("state")}&iss=${encodeURIComponent("https://login.test/tenant")}`;
+        },
+      },
+      request,
+      async () => ({
+        redirect: "http://127.0.0.1:7654/callback",
+        code: new Promise<string>(() => undefined),
+        close: async () => undefined,
+      }),
+    ),
+  ) as Record<string, unknown>;
+  assert.equal(stored.clientId, "dynamic-client");
+  assert.equal(stored.clientSecret, "dynamic-secret");
+  assert.equal(stored.issuer, "https://login.test/tenant");
+  assert.equal(stored.resource, "https://mcp.test/mcp");
+});
+
 test("[EMAIL-B765A312] Gmail OAuth requests offline consent and provider-derived scopes", async () => {
   const connection = validateConnection({
       name: "gmail",

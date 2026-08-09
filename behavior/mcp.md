@@ -5,13 +5,13 @@ acts as the MCP client, while credentials and unrestricted network access remain
 outside Pi containers. MCP Apps, prompts, resources, and per-conversation enable
 switches are outside this scope.
 
-<!-- Automation note (MCP-948B2522): This behavior defines planned generalized MCP authorization functionality; executable coverage will land with implementation. -->
-<!-- Automation note (MCP-DB6BD516): This behavior defines planned generalized MCP protocol compatibility; executable coverage will land with implementation. -->
-<!-- Automation note (MCP-007BCE08): This behavior defines planned generalized MCP tool discovery; executable coverage will land with implementation. -->
-<!-- Automation note (MCP-2F0F5CB5): This behavior defines planned generalized MCP tool invocation; executable coverage will land with implementation. -->
+<!-- Automation note (MCP-948B2522): OAuth metadata discovery, dynamic registration, issuer/resource binding, and refresh are covered by MCP, OAuth, connection, and gateway tests. -->
+<!-- Automation note (MCP-DB6BD516): Stateless, sessionful, and legacy SSE negotiation are covered by MCP protocol tests. -->
+<!-- Automation note (MCP-007BCE08): Paginated discovery, malformed-tool isolation, deterministic first-class tool generation, and schema bounds are covered by MCP and container tests. -->
+<!-- Automation note (MCP-2F0F5CB5): Named remote invocation and stdio gateway brokering are covered by MCP and gateway/container tests. -->
 <!-- Automation note (MCP-5751370A): This behavior defines planned generalized MCP catalog refresh functionality; executable coverage will land with implementation. -->
 <!-- Automation note (MCP-6F5CFA0E): This behavior defines planned generalized MCP failure isolation; executable coverage will land with implementation. -->
-<!-- Automation note (MCP-0A804DA4): This behavior defines planned stdio MCP sidecar isolation and lifecycle; executable coverage will land with implementation. -->
+<!-- Automation note (MCP-0A804DA4): Stdio configuration, secret handling, locked sidecar construction, protocol supervision, and session cleanup are covered by connection, CLI, container, and runner tests. -->
 
 ## MCP-948B2522 — Discover and complete MCP authorization
 

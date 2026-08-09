@@ -27,6 +27,11 @@ import { serverStatus, startComponents } from "./server.ts";
 import { componentEndpoint, verifiedFetch } from "./http-client.ts";
 import { oauthAccess, runGenericOAuth, runModelOAuth } from "./oauth.ts";
 import type { IntegralPaths } from "./paths.ts";
+import {
+  discoverMcpAuthorization,
+  discoverRemoteMcp,
+  type McpCatalog,
+} from "./mcp.ts";
 import { addHostResource, softDeleteResource } from "./resources.ts";
 import {
   matchModelChoices,
@@ -548,9 +553,15 @@ async function connectionCommand(args: string[]): Promise<number> {
   }
   if (command === "add") {
     await prepareStorage(paths);
-    const setup = args[1]
+    let setup = args[1]
       ? await explicitConnection(args.slice(1))
       : await guidedConnection();
+    if (
+      setup.kind === "mcp" &&
+      setup.transport !== "stdio" &&
+      !flag(args, "--auth")
+    )
+      setup = (await discoverMcpAuthorization(setup)) ?? setup;
     const entry = CATALOG.find(
       (e) => e.name === (setup.provider ?? setup.kind),
     );
@@ -569,7 +580,7 @@ async function connectionCommand(args: string[]): Promise<number> {
       );
       return 0;
     }
-    let credential: string | undefined;
+    let credential: string | undefined, catalog: McpCatalog | undefined;
     if (setup.transport === "stdio" && setup.secretEnv?.length)
       credential = await readStdioCredentials(
         setup.secretEnv,
@@ -579,10 +590,15 @@ async function connectionCommand(args: string[]): Promise<number> {
       credential = await readCredential(has(args, "--credential-stdin"));
     else if (setup.auth === "oauth" || setup.auth === "device-code")
       credential = await authenticateOAuth(paths, setup);
+    if (setup.kind === "mcp" && setup.transport !== "stdio")
+      catalog = await discoverRemoteMcp(
+        setup,
+        credential ? (oauthAccess(credential) ?? credential) : undefined,
+      );
     if (has(args, "--verify")) await verifySetup(setup, credential);
     const result = await saveConnection(paths, setup, credential);
     process.stdout.write(
-      `${result.rotated ? "Rotated" : "Added"} ${setup.name} (${setup.provider ?? setup.kind}, ${setup.auth})\n`,
+      `${result.rotated ? "Rotated" : "Added"} ${setup.name} (${setup.provider ?? setup.kind}, ${setup.auth}${catalog ? `, ${catalog.protocolVersion}, ${catalog.tools.length} tools` : ""})\n`,
     );
     return 0;
   }
