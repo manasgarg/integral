@@ -1186,7 +1186,7 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
     "--mode",
     "rpc",
     "--no-session",
-    "--no-approve",
+    "--approve",
     "--offline",
   ]);
   assert.deepEqual(spec.args.slice(5, 9), [
@@ -1499,6 +1499,14 @@ test("[BOX-AB639757] OAuth model connections receive only a temporary sentinel O
     },
   });
   assert.doesNotMatch(credential, /actual-secret/);
+  assert.equal(
+    await import("node:fs/promises").then((fs) =>
+      fs
+        .stat(join(paths.root, ".pi", "agent"))
+        .then((value) => value.isDirectory()),
+    ),
+    true,
+  );
   assert.equal(spec.args.includes("--api-key"), false);
   assert.equal(spec.environment.PI_CODING_AGENT_DIR, "/home/pi/.pi/agent");
   assert.deepEqual(

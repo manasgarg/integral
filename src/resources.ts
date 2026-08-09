@@ -26,6 +26,7 @@ import {
 import { promisify } from "node:util";
 import type { EffectiveConfig } from "./config.ts";
 import {
+  migratePiProfileConnection,
   removeConnection,
   saveConnection,
   type Connection,
@@ -45,7 +46,17 @@ import {
 const run = promisify(execFile);
 
 export const PI_PROFILE_NAME = "pi-profile";
-export const PI_PROFILE_MOUNT = "/home/pi/.pi/agent";
+export const PI_PROFILE_MOUNT = "/home/pi/.pi";
+const LEGACY_PI_PROFILE_MOUNT = "/home/pi/.pi/agent";
+const PI_PROFILE_CHECKOUT_EXCLUDES = [
+  "/agent/auth.json",
+  "/agent/sessions/",
+  "/agent/npm/",
+  "/agent/git/",
+  "/agent/trust.json",
+  "/npm/",
+  "/git/",
+];
 
 export type ResourceKind = "host-repo" | "host-store";
 export type ResourceState = "active" | "unavailable" | "soft-deleted";
@@ -471,11 +482,12 @@ export async function ensurePiProfileRepository(
     paths,
     `connection:${PI_PROFILE_NAME}`,
     async () => {
-      const existing = await readResource(paths, PI_PROFILE_NAME);
+      let existing = await readResource(paths, PI_PROFILE_NAME);
       if (existing) {
         if (
           existing.kind !== "host-repo" ||
-          existing.mount !== PI_PROFILE_MOUNT ||
+          (existing.mount !== PI_PROFILE_MOUNT &&
+            existing.mount !== LEGACY_PI_PROFILE_MOUNT) ||
           existing.branch !== "main" ||
           existing.writePolicy !== "direct" ||
           !inside(paths.repositories, existing.path)
@@ -483,6 +495,25 @@ export async function ensurePiProfileRepository(
           throw new IntegralError(
             `${PI_PROFILE_NAME} has invalid host metadata`,
           );
+        if (existing.mount === LEGACY_PI_PROFILE_MOUNT) {
+          const migrated: ResourceRecord = {
+            ...existing,
+            mount: PI_PROFILE_MOUNT,
+            revision: existing.revision + 1,
+            ...(existing.tombstone
+              ? {
+                  tombstone: {
+                    ...existing.tombstone,
+                    priorMount: PI_PROFILE_MOUNT,
+                  },
+                }
+              : {}),
+          };
+          if (existing.state !== "soft-deleted")
+            await migratePiProfileConnection(paths, existing.path);
+          await writeResource(paths, migrated);
+          existing = migrated;
+        }
         return existing;
       }
 
@@ -725,6 +756,14 @@ async function materializeRepository(
     ],
     checkout,
   );
+  if (record.connection === PI_PROFILE_NAME) {
+    const info = join(checkout, ".git", "info");
+    await ensureDir(info);
+    await atomicWrite(
+      join(info, "exclude"),
+      `${PI_PROFILE_CHECKOUT_EXCLUDES.join("\n")}\n`,
+    );
+  }
   return {
     resource: record,
     checkout,

@@ -172,7 +172,7 @@ export function buildContainerSpec(options: {
     "--mode",
     "rpc",
     "--no-session",
-    "--no-approve",
+    "--approve",
     "--offline",
     "--provider",
     provider,
@@ -750,6 +750,7 @@ export async function writePiCredential(
 ): Promise<void> {
   const directory = join(sessionHome, ".integral");
   await ensureDir(directory);
+  await ensureDir(join(sessionHome, ".pi", "agent"));
   const credential =
     model.auth === "oauth" || model.auth === "device-code"
       ? {

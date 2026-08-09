@@ -509,9 +509,13 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
       throw new IntegralError("mount must be below /home/pi");
     const relativeMount = mount.slice("/home/pi/".length);
     const piProfile = name === "pi-profile";
-    if (piProfile && (kind !== "host-repo" || mount !== "/home/pi/.pi/agent"))
+    if (
+      piProfile &&
+      (kind !== "host-repo" ||
+        (mount !== "/home/pi/.pi" && mount !== "/home/pi/.pi/agent"))
+    )
       throw new IntegralError(
-        "pi-profile must be a host repository mounted at /home/pi/.pi/agent",
+        "pi-profile must be a host repository mounted at /home/pi/.pi",
       );
     if (
       !piProfile &&
@@ -824,6 +828,30 @@ export async function saveConnection(
     rotated: existed !== undefined,
     generation: await bumpGeneration(paths),
   };
+}
+
+export async function migratePiProfileConnection(
+  paths: IntegralPaths,
+  expectedPath: string,
+): Promise<void> {
+  const declaration = join(paths.connections, "pi-profile.toml"),
+    raw = await readText(declaration);
+  if (raw === undefined)
+    throw new IntegralError("pi-profile connection is missing");
+  const current = validateConnection(parse(raw), "pi-profile");
+  if (
+    current.kind !== "host-repo" ||
+    current.auth !== "none" ||
+    current.path !== expectedPath ||
+    current.mount !== "/home/pi/.pi/agent" ||
+    current.branch !== "main"
+  )
+    throw new IntegralError("pi-profile connection cannot be migrated");
+  await atomicWrite(
+    declaration,
+    connectionToml({ ...current, mount: "/home/pi/.pi" }),
+  );
+  await bumpGeneration(paths);
 }
 
 export async function removeCredential(

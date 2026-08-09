@@ -75,10 +75,31 @@ test("[PROFILE-6A93810F] the host initializes the opaque Pi profile repository e
   ).stdout.trim();
   assert.match(head, /^[0-9a-f]{40,64}$/);
 
+  await writeFile(
+    join(paths.resources, `${PI_PROFILE_NAME}.json`),
+    `${JSON.stringify({ ...first, mount: "/home/pi/.pi/agent" })}\n`,
+  );
+  const declaration = join(paths.connections, `${PI_PROFILE_NAME}.toml`);
+  await writeFile(
+    declaration,
+    (await readFile(declaration, "utf8")).replace(
+      'mount = "/home/pi/.pi"',
+      'mount = "/home/pi/.pi/agent"',
+    ),
+  );
+  const migrated = await ensurePiProfileRepository(paths, config);
+  assert.equal(migrated.id, first.id);
+  assert.equal(migrated.mount, PI_PROFILE_MOUNT);
+  assert.equal(migrated.revision, first.revision + 1);
+  assert.match(
+    await readFile(declaration, "utf8"),
+    /mount = "\/home\/pi\/\.pi"/,
+  );
+
   const deleted = await softDeleteResource(
     paths,
-    first.connection,
-    first.revision,
+    migrated.connection,
+    migrated.revision,
     "pi:test",
   );
   const afterDeletion = await ensurePiProfileRepository(paths, config);
@@ -118,7 +139,7 @@ test("[PROFILE-3083AEEE] each run checks out the Pi profile at its native writab
     ({ resource }) => resource.connection === PI_PROFILE_NAME,
   );
   assert.ok(mounted);
-  assert.equal(mounted.checkout, join(home, ".pi", "agent"));
+  assert.equal(mounted.checkout, join(home, ".pi"));
   assert.equal(
     mounted.initialHead,
     (
@@ -129,6 +150,27 @@ test("[PROFILE-3083AEEE] each run checks out the Pi profile at its native writab
   assert.equal(
     await readFile(join(mounted.checkout, "pi-owned.txt"), "utf8"),
     "opaque\n",
+  );
+  for (const ignored of [
+    "agent/auth.json",
+    "agent/sessions/session.jsonl",
+    "agent/npm/package/package.json",
+    "agent/git/github.com/example/repo/config",
+    "agent/trust.json",
+    "npm/package/package.json",
+    "git/github.com/example/repo/config",
+  ]) {
+    const file = join(mounted.checkout, ignored);
+    await mkdir(join(file, ".."), { recursive: true });
+    await writeFile(file, "derived\n");
+    await run("git", ["check-ignore", "--quiet", ignored], {
+      cwd: mounted.checkout,
+    });
+  }
+  assert.equal(
+    (await run("git", ["status", "--porcelain"], { cwd: mounted.checkout }))
+      .stdout,
+    "?? pi-owned.txt\n",
   );
 
   const deleted = await softDeleteResource(

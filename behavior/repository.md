@@ -57,7 +57,7 @@ Given Pi or the connection CLI creates, adds, or restores a governed repository 
 	When integral validates the requested mount path
 		Then it requires an absolute normalized path below `/home/pi`
 			And rejects `/home/pi` itself
-			And rejects `.pi`, `history`, Integral control paths, and their descendants except the exact host-designated `pi-profile` mount at `/home/pi/.pi/agent`
+			And rejects `.pi`, `history`, Integral control paths, and their descendants except the exact host-designated `pi-profile` mount at `/home/pi/.pi`
 			And rejects every other repository or store at, above, or below the reserved profile mount
 			And rejects traversal, a symlink escape, or a target outside the current session home
 			And rejects a path equal to, above, or below another governed resource mount
