@@ -18,6 +18,7 @@ bare repositories may enter the same lifecycle through a host connection.
 <!-- Automation note (REPO-D987932B): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 <!-- Automation note (REPO-D1865075): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 <!-- Automation note (REPO-1C3B9872): This behavior defines planned governed-repository availability functionality; executable coverage will land with implementation. -->
+<!-- Automation note (REPO-7B0E2F4A): Selective approval-gated repository landing is specified for the image-recipe increment; executable coverage will land with implementation. -->
 
 ## REPO-D1865075 — Give Pi authenticated repository lifecycle tools
 
@@ -80,9 +81,10 @@ Given one or more governed repository connections are active and have mount path
 			And provisions the session with the remaining active resources
 			And tells Pi which named repository is unavailable without exposing its host path
 
-## REPO-CDA4609A — Land committed repository work through the host boundary
+## REPO-CDA4609A — Land directly writable repository work through the host boundary
 
 Given Pi has committed work on a current-run governed repository branch
+	And that repository's host-managed write policy is `direct`
 	When Pi calls `repo_push` for that repository
 		Then the container sends a Git bundle and proposed full commit ID through the authenticated gateway control boundary
 			And the host derives the repository and run identity from the authenticated session
@@ -97,6 +99,34 @@ Given Pi has committed work on a current-run governed repository branch
 			And preserves Pi's commits without creating a host merge commit
 			And records the repository ID, prior head, landed head, run ID, and changed paths in the host-attested run history
 			And reports success only after the canonical ref update is durable
+
+## REPO-7B0E2F4A — Approval-gate selected host-managed repositories
+
+Given every governed repository has a host-managed write policy of `direct`, `approval-required`, or `denied`
+	And Pi cannot change that policy
+	When Pi calls `repo_push`
+		Then integral derives the repository ID and policy from the authenticated session
+			And never trusts a policy, host path, approval status, or repository identity supplied by Pi
+	When Pi calls `repo_push` for an `approval-required` repository
+		Then integral receives and validates the proposed commit through the ordinary quarantine boundary
+			And stores the valid proposal under an approval-specific ref without advancing the canonical branch
+			And binds the approval to the repository ID, current canonical base commit, proposed commit, complete tree digest, changed paths, originating session and run, and repository lifecycle revision
+			And shows the exact commit diff and safe validation summary to the approving human
+			And does not expose unvalidated Git objects to the canonical repository
+	When a human approves that exact repository proposal
+		Then integral revalidates the quarantined objects, complete proposed tree, repository lifecycle revision, and canonical base commit
+			And invokes the repository's idempotent approved-mutation executor for that exact proposal
+			And refuses any file, commit, tree, ref, or policy change made after approval was requested
+	When the canonical branch or lifecycle revision changed after the proposal was created
+		Then integral records a stale approval outcome without advancing the canonical branch
+			And lets Pi fetch, rebase, and submit a new proposal requiring a new approval
+	When a human denies the proposal or its approval expires
+		Then integral leaves the canonical branch unchanged
+			And retains only the bounded proposal and audit material required by policy
+	When Pi calls `repo_push` for a `denied` repository
+		Then integral rejects the request without accepting a proposal or changing repository state
+	When Pi calls a read-only repository operation
+		Then integral permits it according to ordinary session and repository policy without mutation approval
 
 ## REPO-37441347 — Refuse stale or malformed repository landings safely
 

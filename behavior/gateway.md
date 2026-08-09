@@ -79,14 +79,16 @@ Given a chat container is running
 
 Given the gateway classifies a control operation as requiring human approval
 	And container package installation and upgrade are approval-required
+	And writes to repositories with host-managed `approval-required` policy are approval-required
 	And read-only package inventory is not approval-required
+	And read-only repository operations are not approval-required
 	When an authenticated Pi session submits an approval-required request
 		Then Integral validates it without executing it
 			And durably records an unpredictable approval ID, safe summary, canonical request digest, originating session and run, model selection, current revision, and deadline
 			And broadcasts the pending approval to every attached human terminal
 			And includes it in snapshots for terminals that attach later
 			And keeps the originating tool call pending while its connection remains active
-			And does not build an image or modify package state before approval
+			And does not build an image, advance a protected repository ref, or modify package state before approval
 Given an approval request is pending
 	When an attached human runs `/approve <approval-id>`
 		Then Integral binds the decision to that terminal attachment
@@ -125,7 +127,7 @@ Given Integral restarts with unresolved approvals
 			And republishes it to attached human terminals
 	When it recovers a durably approved operation without a durable execution result
 		Then it resumes execution using the approval ID
-			And prevents duplicate package-state changes
+			And prevents duplicate package-state or protected-repository changes
 Given an unresolved approval reaches its ten-minute deadline
 	When Integral expires it
 		Then Integral records and broadcasts an expired outcome without executing the request
