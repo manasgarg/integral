@@ -9,6 +9,11 @@ export type ConnectionKind =
   "model" | "http" | "mcp" | "email" | "host-repo" | "host-store";
 export type AuthMethod = "oauth" | "device-code" | "key" | "none";
 export type EmailCapability = "read" | "search" | "send";
+export type McpTransport = "streamable-http" | "sse" | "stdio";
+export interface StdioCredential {
+  type: "stdio-env";
+  values: Record<string, string>;
+}
 export interface Connection {
   name: string;
   kind: ConnectionKind;
@@ -23,9 +28,17 @@ export interface Connection {
   authorizationUrl?: string;
   tokenUrl?: string;
   deviceAuthorizationUrl?: string;
+  registrationUrl?: string;
   clientId?: string;
   scopes?: string[];
-  transport?: "streamable-http" | "sse";
+  oauthIssuer?: string;
+  oauthResource?: string;
+  transport?: McpTransport;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  secretEnv?: string[];
+  allowedUrls?: string[];
   capabilities?: EmailCapability[];
   account?: string;
   domain?: string;
@@ -86,9 +99,17 @@ const knownKeys = new Set([
   "authorization_url",
   "token_url",
   "device_authorization_url",
+  "registration_url",
   "client_id",
   "scopes",
+  "oauth_issuer",
+  "oauth_resource",
   "transport",
+  "command",
+  "args",
+  "env",
+  "secret_env",
+  "allowed_urls",
   "capabilities",
   "account",
   "domain",
@@ -119,6 +140,23 @@ function optionalStrings(raw: unknown, key: string): string[] | undefined {
   if (!Array.isArray(raw) || raw.some((v) => typeof v !== "string" || !v))
     throw new IntegralError(`${key} must be a list of strings`);
   return raw as string[];
+}
+function optionalStringTable(
+  raw: unknown,
+  key: string,
+): Record<string, string> | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    throw new IntegralError(`${key} must be a table of strings`);
+  const result: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+      throw new IntegralError(`${key} contains an invalid environment name`);
+    if (typeof value !== "string")
+      throw new IntegralError(`${key} must be a table of strings`);
+    result[name] = value;
+  }
+  return result;
 }
 function secureUrl(raw: unknown, key: string): string {
   const value = requiredString(raw, key);
@@ -204,8 +242,10 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
   const hostResource = kind === "host-repo" || kind === "host-store";
   if (hostResource && auth !== "none")
     throw new IntegralError("host resources use no authentication");
+  const requestedTransport = value.transport as McpTransport | undefined;
+  const stdio = kind === "mcp" && requestedTransport === "stdio";
   const url =
-    (kind === "http" || kind === "mcp") && provider !== "github"
+    (kind === "http" || (kind === "mcp" && !stdio)) && provider !== "github"
       ? secureUrl(value.url, "url")
       : undefined;
   const hosts = optionalStrings(value.hosts, "hosts")?.map((host) =>
@@ -267,12 +307,29 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
   }
   if (auth === "oauth" || auth === "device-code") {
     if (kind === "http" || kind === "mcp") {
-      result.authorizationUrl = oauthUrl(
-        value.authorization_url,
-        "authorization_url",
-      );
-      result.tokenUrl = oauthUrl(value.token_url, "token_url");
-      result.clientId = requiredString(value.client_id, "client_id");
+      const explicit =
+        value.authorization_url !== undefined ||
+        value.token_url !== undefined ||
+        value.client_id !== undefined ||
+        value.registration_url !== undefined;
+      if (kind === "http" || explicit) {
+        result.authorizationUrl = oauthUrl(
+          value.authorization_url,
+          "authorization_url",
+        );
+        result.tokenUrl = oauthUrl(value.token_url, "token_url");
+        if (value.client_id !== undefined)
+          result.clientId = requiredString(value.client_id, "client_id");
+        if (value.registration_url !== undefined)
+          result.registrationUrl = oauthUrl(
+            value.registration_url,
+            "registration_url",
+          );
+        if (!result.clientId && !result.registrationUrl)
+          throw new IntegralError(
+            "OAuth requires client_id or registration_url",
+          );
+      }
       if (auth === "device-code")
         result.deviceAuthorizationUrl = oauthUrl(
           value.device_authorization_url,
@@ -280,13 +337,88 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
         );
       const scopes = optionalStrings(value.scopes, "scopes");
       if (scopes) result.scopes = scopes;
+      if (value.oauth_issuer !== undefined)
+        result.oauthIssuer = oauthUrl(value.oauth_issuer, "oauth_issuer");
+      if (value.oauth_resource !== undefined)
+        result.oauthResource = secureUrl(
+          value.oauth_resource,
+          "oauth_resource",
+        );
     }
   }
   if (kind === "mcp") {
-    const transport = value.transport ?? "streamable-http";
-    if (transport !== "streamable-http" && transport !== "sse")
-      throw new IntegralError("transport must be streamable-http or sse");
+    const transport = (value.transport ?? "streamable-http") as McpTransport;
+    if (!(["streamable-http", "sse", "stdio"] as const).includes(transport))
+      throw new IntegralError(
+        "transport must be streamable-http, sse, or stdio",
+      );
     result.transport = transport;
+    if (transport === "stdio") {
+      if (auth !== "none")
+        throw new IntegralError(
+          "stdio MCP connections use no transport authentication",
+        );
+      if (value.url !== undefined)
+        throw new IntegralError(
+          "stdio MCP connections use command instead of url",
+        );
+      result.command = requiredString(value.command, "command");
+      result.args = optionalStrings(value.args, "args") ?? [];
+      result.env = optionalStringTable(value.env, "env") ?? {};
+      result.secretEnv = optionalStrings(value.secret_env, "secret_env") ?? [];
+      if (new Set(result.secretEnv).size !== result.secretEnv.length)
+        throw new IntegralError("secret_env must contain unique names");
+      if (
+        result.secretEnv.some(
+          (name) =>
+            !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+            Object.hasOwn(result.env!, name),
+        )
+      )
+        throw new IntegralError(
+          "secret_env names must be valid and distinct from env",
+        );
+      result.allowedUrls = (
+        optionalStrings(value.allowed_urls, "allowed_urls") ?? []
+      ).map((candidate) => secureUrl(candidate, "allowed_urls"));
+      for (const forbidden of [
+        "authorization_url",
+        "token_url",
+        "device_authorization_url",
+        "registration_url",
+        "client_id",
+        "scopes",
+        "oauth_issuer",
+        "oauth_resource",
+        "header",
+        "scheme",
+        "methods",
+        "path_prefix",
+      ])
+        if (value[forbidden] !== undefined)
+          throw new IntegralError(`${forbidden} is not supported by stdio MCP`);
+    } else {
+      if (
+        value.command !== undefined ||
+        value.args !== undefined ||
+        value.env !== undefined ||
+        value.secret_env !== undefined ||
+        value.allowed_urls !== undefined
+      )
+        throw new IntegralError(
+          "command, args, env, secret_env, and allowed_urls are only for stdio MCP",
+        );
+    }
+  } else if (
+    value.command !== undefined ||
+    value.args !== undefined ||
+    value.env !== undefined ||
+    value.secret_env !== undefined ||
+    value.allowed_urls !== undefined
+  ) {
+    throw new IntegralError(
+      "command, args, env, secret_env, and allowed_urls are only for stdio MCP",
+    );
   }
   if (kind === "email") {
     const supported: readonly EmailCapability[] =
@@ -430,8 +562,12 @@ export function connectionToml(c: Connection): string {
     ["authorization_url", c.authorizationUrl],
     ["token_url", c.tokenUrl],
     ["device_authorization_url", c.deviceAuthorizationUrl],
+    ["registration_url", c.registrationUrl],
     ["client_id", c.clientId],
+    ["oauth_issuer", c.oauthIssuer],
+    ["oauth_resource", c.oauthResource],
     ["transport", c.transport],
+    ["command", c.command],
     ["account", c.account],
     ["domain", c.domain],
     ["from_address", c.fromAddress],
@@ -452,13 +588,27 @@ export function connectionToml(c: Connection): string {
     rows.push(
       `allowed_recipients = [${c.allowedRecipients.map(quote).join(", ")}]`,
     );
+  if (c.args) rows.push(`args = [${c.args.map(quote).join(", ")}]`);
+  if (c.secretEnv)
+    rows.push(`secret_env = [${c.secretEnv.map(quote).join(", ")}]`);
+  if (c.allowedUrls)
+    rows.push(`allowed_urls = [${c.allowedUrls.map(quote).join(", ")}]`);
+  if (c.env && Object.keys(c.env).length)
+    rows.push(
+      `env = { ${Object.entries(c.env)
+        .map(([name, value]) => `${name} = ${quote(value)}`)
+        .join(", ")} }`,
+    );
   return `${rows.join("\n")}\n`;
 }
 
 export function connectionBoundaries(connection: Connection): URL[] {
   if (connection.provider === "github")
     return (connection.hosts ?? []).map((host) => new URL(`https://${host}/`));
-  return connection.url ? [new URL(connection.url)] : [];
+  return [
+    ...(connection.url ? [new URL(connection.url)] : []),
+    ...(connection.allowedUrls ?? []).map((url) => new URL(url)),
+  ];
 }
 
 export async function loadConnections(
@@ -554,7 +704,7 @@ export async function listConnections(
         ...c,
         state: resource
           ? resource.state
-          : c.auth === "none" ||
+          : (c.auth === "none" && !c.secretEnv?.length) ||
               usableCredential(c, await credentialFor(paths, c.name))
             ? "active"
             : "DISABLED (no secret)",
@@ -576,6 +726,20 @@ function usableCredential(
   raw: string | undefined,
 ): boolean {
   if (!raw?.trim()) return false;
+  if (connection.transport === "stdio") {
+    try {
+      const value = JSON.parse(raw) as Partial<StdioCredential>;
+      return (
+        value.type === "stdio-env" &&
+        Boolean(value.values) &&
+        (connection.secretEnv ?? []).every(
+          (name) => typeof value.values?.[name] === "string",
+        )
+      );
+    } catch {
+      return false;
+    }
+  }
   if (connection.auth === "key") return true;
   try {
     const value = JSON.parse(raw) as {
@@ -614,7 +778,10 @@ export async function saveConnection(
   const declaration = join(paths.connections, `${connection.name}.toml`);
   const existed = await readText(declaration);
   const validated = validateConnection(parse(connectionToml(connection)));
-  if (connection.auth !== "none" && !credential)
+  if (
+    (connection.auth !== "none" || connection.secretEnv?.length) &&
+    !credential
+  )
     throw new IntegralError(
       `authentication credential is required for ${connection.auth}`,
     );
@@ -634,10 +801,12 @@ export async function saveConnection(
   } else {
     const current = validateConnection(parse(existed), connection.name);
     if (
-      current.auth === "none" ||
+      (current.auth === "none" && !current.secretEnv?.length) ||
       current.kind !== connection.kind ||
       current.provider !== connection.provider ||
-      current.auth !== connection.auth
+      current.auth !== connection.auth ||
+      JSON.stringify(current.secretEnv ?? []) !==
+        JSON.stringify(connection.secretEnv ?? [])
     )
       throw new IntegralError(
         `connection name already used: ${connection.name}`,

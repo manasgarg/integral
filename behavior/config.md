@@ -239,7 +239,7 @@ Given an integral command creates or replaces a configuration file
 
 ## CONFIG-48C2D7A1 — Validate common connection options
 
-Given a connection file may define `name`, `kind`, `provider`, `url`, `auth`, `path`, `branch`, and `mount`
+Given a connection file may define `name`, `kind`, `provider`, `url`, `auth`, `path`, `branch`, `mount`, `command`, `args`, `env`, `secret_env`, and `allowed_urls`
 	When integral validates the connection
 		Then `name` must contain at most 64 filesystem-safe letters, numbers, dots, underscores, or hyphens
 			And must start with a letter or number
@@ -247,7 +247,9 @@ Given a connection file may define `name`, `kind`, `provider`, `url`, `auth`, `p
 			And `kind` accepts only `model`, `http`, `mcp`, `email`, `host-repo`, or `host-store`
 			And `provider` is required for `model` and must name a catalog provider
 			And `provider` is required for `email` and must name an email provider
-			And `url` is required for `http` and `mcp` and must use HTTP or HTTPS
+			And `url` is required for `http` and remote `mcp` connections and must use HTTP or HTTPS
+			And `command` is required for stdio `mcp` connections
+			And `url` and `command` cannot be used together
 			And `auth` accepts only `oauth`, `device-code`, `key`, or `none`
 			And generic connections must declare `auth` explicitly
 			And `host-repo` requires an absolute `path`, accepts an optional `branch`, and has no authentication metadata
@@ -276,25 +278,51 @@ Given a connection uses `auth = "key"`
 			And neither option may contain carriage returns or newlines
 			And the actual key remains in protected credential storage
 
-## CONFIG-6A90E2D4 — Configure OAuth authentication metadata
+## CONFIG-6A90E2D4 — Configure explicit OAuth authentication metadata
 
-Given a generic connection uses `auth = "oauth"` or `auth = "device-code"`
+Given a generic HTTP connection uses `auth = "oauth"` or `auth = "device-code"`
+	Or an MCP connection supplies explicit OAuth compatibility overrides
 	When integral validates its non-secret authentication metadata
 		Then OAuth requires `authorization_url`, `token_url`, and `client_id`
 			And device-code additionally requires `device_authorization_url`
 			And `scopes` is an optional list of scope strings
 			And endpoint URLs must use HTTPS unless they target loopback
 			And client secrets and tokens remain outside configuration files
+Given an MCP connection does not supply explicit OAuth compatibility overrides
+	When integral validates its non-secret authentication metadata
+		Then OAuth endpoint, client-registration, and scope fields may be absent
+			And integral obtains them through standardized MCP authorization discovery before activating the connection
 
-## CONFIG-3F7A81C6 — Configure a remote MCP transport
+## CONFIG-3F7A81C6 — Configure an MCP transport
 
 Given an `mcp` connection file may define `transport`
 	When integral validates the connection
-		Then `transport` accepts only `streamable-http` or `sse`
-			And defaults to `streamable-http`
-			And integral registers the configured transport and URL with Pi
-			And replaces characters outside letters, numbers, and underscores when forming the Pi tool name
-			And the gateway applies the connection's HTTP boundary and authentication
+		Then `transport` accepts only `streamable-http`, `sse`, or `stdio`
+			And its absence with a URL causes integral to detect the remote transport from the endpoint
+			And `streamable-http` or `sse` forces that remote transport as a compatibility override
+			And `stdio` requires `command` and forbids `url`
+			And integral still negotiates the protocol and discovers tools before activating the connection
+			And integral registers each discovered tool with a deterministic connection namespace
+			And the gateway applies the connection's remote HTTP boundary and authentication when applicable
+
+<!-- Automation note (CONFIG-02905B6E): This behavior defines planned stdio MCP declaration validation; executable coverage will land with implementation. -->
+
+## CONFIG-02905B6E — Configure a stdio MCP process
+
+Given an `mcp` connection uses `transport = "stdio"`
+	When integral validates the connection
+		Then `command` is one non-empty executable name or absolute image path
+			And `args` is an optional ordered list of literal strings
+			And `env` is an optional table of non-secret string values
+			And `secret_env` is an optional list of unique environment-variable names whose values exist only in credential storage
+			And every environment-variable name matches `[A-Za-z_][A-Za-z0-9_]*`
+			And `allowed_urls` is an optional list of normalized HTTP or HTTPS boundaries
+			And `auth` must be `none` because MCP transport authorization does not apply to stdio
+			And OAuth metadata, HTTP header policy, and remote transport options are rejected
+			And missing secret values leave the connection disabled without exposing their names as values
+	When `command` or `args` contain shell syntax
+		Then integral preserves them as literal process arguments or names
+			And never evaluates them through a shell
 
 <!-- Automation note (CONFIG-BAD88353): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 

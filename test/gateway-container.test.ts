@@ -13,6 +13,7 @@ import {
 } from "../src/gateway-policy.ts";
 import {
   buildContainerSpec,
+  dockerMcpSidecarArgs,
   dockerRunArgs,
   isManagedContainerVariable,
   interpretPiProtocol,
@@ -301,6 +302,218 @@ test("[EMAIL-FB2E88EF] email gateway failures log bounded routing context withou
     event,
     /private-recipient|private subject|private body|domain-key/,
   );
+});
+
+test("[MCP-2F0F5CB5] authenticated Pi MCP calls use the named remote connection and host credential", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    connection = validateConnection({
+      name: "docs",
+      kind: "mcp",
+      url: "https://mcp.test/mcp",
+      auth: "key",
+    });
+  await saveConnection(paths, connection, "remote-secret");
+  let called: unknown,
+    responseBody = "",
+    responseStatus = 200;
+  const gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async callRemoteMcp(found, credential, tool, args) {
+          called = { found: found.name, credential, tool, args };
+          return {
+            content: [{ type: "text", text: "result" }],
+            structuredContent: { count: 1 },
+          };
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          connection: "docs",
+          tool: "search",
+          arguments: { query: "integral" },
+        }),
+      ),
+    ]) as unknown as IncomingMessage,
+    response = {
+      setHeader() {},
+      writeHead(status: number) {
+        responseStatus = status;
+        return response;
+      },
+      end(body?: string) {
+        responseBody = body ?? "";
+        return response;
+      },
+    } as unknown as ServerResponse;
+  request.url = "/integral/mcp";
+  request.method = "POST";
+  request.headers = {
+    "content-type": "application/json",
+    "proxy-authorization": `Basic ${Buffer.from("integral:session-token").toString("base64")}`,
+  };
+  await gateway.reload(true);
+  gateway.sessions.set("session-token", "session-1");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  assert.equal(responseStatus, 200);
+  assert.deepEqual(JSON.parse(responseBody), {
+    content: [{ type: "text", text: "result" }],
+    structuredContent: { count: 1 },
+  });
+  assert.deepEqual(called, {
+    found: "docs",
+    credential: "remote-secret",
+    tool: "search",
+    args: { query: "integral" },
+  });
+});
+
+test("[MCP-STDIO-ISOLATION] stdio MCP sidecars keep secrets out of Docker metadata and mount only trust roots", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    connection = validateConnection({
+      name: "local-tools",
+      kind: "mcp",
+      auth: "none",
+      transport: "stdio",
+      command: "/usr/local/bin/server",
+      args: ["--literal", "value with spaces"],
+      env: { PUBLIC_MODE: "safe" },
+      secret_env: ["API_TOKEN"],
+      allowed_urls: ["https://api.example.test/v1"],
+    }),
+    args = dockerMcpSidecarArgs(
+      {
+        connection,
+        image: "sha256:locked",
+        sessionId: "session-1",
+        sessionToken: "gateway-session-token",
+        gatewayUrl: "http://host.integral.internal:7310",
+        gatewayAddress: "172.20.0.1",
+        caCert: "/host/integral-ca.pem",
+        caBundle: "/host/ca-bundle.pem",
+        secretValues: { API_TOKEN: "super-secret-value" },
+      },
+      config,
+      "integral-network",
+    ),
+    rendered = args.join(" "),
+    mounts = args.filter((_value, index) => args[index - 1] === "--mount");
+  assert.doesNotMatch(rendered, /super-secret-value|API_TOKEN/);
+  assert.match(rendered, /--network integral-network/);
+  assert.match(rendered, /--read-only/);
+  assert.match(rendered, /--security-opt no-new-privileges/);
+  assert.match(rendered, /--cap-drop ALL/);
+  assert.match(rendered, /PUBLIC_MODE=safe/);
+  assert.equal(mounts.length, 2);
+  assert.ok(mounts.every((mount) => mount.endsWith(",readonly")));
+  assert.deepEqual(args.slice(-3), [
+    "/usr/local/bin/server",
+    "--literal",
+    "value with spaces",
+  ]);
+});
+
+test("[MCP-2F0F5CB5] authenticated stdio MCP calls are brokered to the owning runner session", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    connection = validateConnection({
+      name: "local-tools",
+      kind: "mcp",
+      auth: "none",
+      transport: "stdio",
+      command: "mcp-server",
+    });
+  await saveConnection(paths, connection);
+  let forwarded: unknown,
+    responseBody = "",
+    responseStatus = 200;
+  const gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, caller, target, path, init) {
+          if (!init || typeof init.body !== "string")
+            throw new Error("expected string MCP broker body");
+          forwarded = {
+            caller,
+            target,
+            path,
+            body: JSON.parse(init.body),
+          };
+          return Response.json({ content: [{ type: "text", text: "local" }] });
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          connection: "local-tools",
+          tool: "lookup",
+          arguments: { id: 7 },
+        }),
+      ),
+    ]) as unknown as IncomingMessage,
+    response = {
+      setHeader() {},
+      writeHead(status: number) {
+        responseStatus = status;
+        return response;
+      },
+      end(body?: string) {
+        responseBody = body ?? "";
+        return response;
+      },
+    } as unknown as ServerResponse;
+  request.url = "/integral/mcp";
+  request.method = "POST";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:session-token").toString("base64")}`,
+  };
+  await gateway.reload(true);
+  gateway.sessions.set("session-token", "session-1");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  assert.equal(responseStatus, 200);
+  assert.deepEqual(JSON.parse(responseBody), {
+    content: [{ type: "text", text: "local" }],
+  });
+  assert.deepEqual(forwarded, {
+    caller: "gateway",
+    target: "runner",
+    path: "/integral/internal/mcp",
+    body: {
+      sessionId: "session-1",
+      connection: "local-tools",
+      tool: "lookup",
+      arguments: { id: 7 },
+    },
+  });
 });
 
 test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only an explicit Basic session token", () => {
@@ -993,13 +1206,32 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi exte
       url: "https://mcp.test/rpc",
       auth: "key",
     });
-  await writeMcpExtension(paths.root, [mcp]);
+  await writeMcpExtension(paths.root, [
+    {
+      connection: mcp,
+      protocolVersion: "2026-07-28",
+      tools: [
+        {
+          name: "search-docs",
+          title: "Search docs",
+          description: "Search the documentation",
+          inputSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          },
+        },
+      ],
+    },
+  ]);
   const source = await import("node:fs/promises").then((fs) =>
     fs.readFile(`${paths.root}/.pi/agent/extensions/integral-mcp.ts`, "utf8"),
   );
-  assert.match(source, /"mcp_" \+ server\.name/);
-  assert.match(source, /"name":"work_docs"/);
-  assert.match(source, /integral-managed-credential/);
+  assert.match(source, /"connection":"work-docs"/);
+  assert.match(source, /"remoteName":"search-docs"/);
+  assert.match(source, /"name":"mcp_work_docs_search_docs_[0-9a-f]{8}"/);
+  assert.match(source, /"properties":\{"query":\{"type":"string"\}\}/);
+  assert.match(source, /\/integral\/mcp/);
   assert.match(source, /schedule_create/);
   assert.match(source, /schedule_update/);
   assert.match(source, /container_package_list/);

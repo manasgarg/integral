@@ -19,7 +19,7 @@ Given the coordinator, runner, and gateway are healthy
 	And the durable queue contains a message ready for delivery
 	When the runner claims the next queued message from the coordinator
 		Then integral creates a fresh temporary session home
-			And starts one non-root Docker container on the locked network
+			And starts one non-root Docker container for Pi on the locked network
 			And runs the immutable Pi image recorded with the conversation selection in RPC mode with session persistence and approval prompts disabled
 			And runs Pi offline so Pi does not perform its own startup network operations
 			And keeps container standard input attached for the lifetime of the RPC session
@@ -80,7 +80,7 @@ Given integral has an active Pi RPC session
 			And sends it to the same Pi session
 			And preserves preceding turns as conversational context
 			And cancels a pending idle shutdown before starting the turn
-			And does not start a second container
+			And does not start a second Pi container or duplicate an existing MCP sidecar
 
 ## BOX-BE26C696 — Bound a stuck turn
 
@@ -91,6 +91,7 @@ Given Pi does not finish a turn within the configured turn timeout
 			And durably returns the in-flight message to the queue
 			And removes temporary session data
 			And revokes temporary session credentials
+			And terminates every MCP sidecar owned by the timed-out session
 			And force-removes the Docker container if it has not exited five seconds after SIGTERM
 
 ## BOX-7D3A19E4 — Recycle an idle Pi session without ending the conversation
@@ -99,6 +100,7 @@ Given the durable queue is empty
 	And the Pi session has no turn in flight
 	When the Pi idle timeout expires
 		Then integral terminates the Pi container
+			And terminates every MCP sidecar owned by that Pi session
 			And revokes its temporary session token
 			And preserves the durable conversation record and queue
 			And keeps attached terminals connected
@@ -109,6 +111,7 @@ Given the durable queue is empty
 Given the runner has claimed a queued message
 	When it cannot provision or start the Pi container
 		Then integral durably returns the message to its prior queue position
+			And terminates every partially started MCP sidecar
 			And records the provisioning failure
 			And reports the failure to every attached terminal
 

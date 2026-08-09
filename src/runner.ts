@@ -1,6 +1,10 @@
 import http from "node:http";
 import type { EffectiveConfig } from "./config.ts";
-import { listConnections, type Connection } from "./connections.ts";
+import {
+  credentialFor,
+  listConnections,
+  type Connection,
+} from "./connections.ts";
 import type { IntegralPaths } from "./paths.ts";
 import type { Logger } from "./logging.ts";
 import {
@@ -15,6 +19,7 @@ import {
   writeResourceExtension,
   writePiCredential,
   type ContainerBackend,
+  type McpSidecarSpec,
   type PiRuntime,
   type TaskRuntime,
 } from "./container.ts";
@@ -25,11 +30,18 @@ import {
 } from "./resources.ts";
 import { ensureCa } from "./ca.ts";
 import { componentEndpoint, internalFetch } from "./http-client.ts";
-import { deploymentId, readComponentState } from "./state.ts";
+import {
+  componentIdentity,
+  deploymentId,
+  readComponentState,
+  verifyInternal,
+} from "./state.ts";
 import { updateComponentState } from "./state.ts";
 import { readText } from "./fs.ts";
 import { join } from "node:path";
 import { IntegralError } from "./errors.ts";
+import { oauthAccess } from "./oauth.ts";
+import { discoverRemoteMcp, type McpCatalog, type McpRuntime } from "./mcp.ts";
 import type {
   ApprovalContinuation,
   ConversationEvent,
@@ -62,6 +74,7 @@ export interface RunnerDependencies {
   freshSessionHome: typeof freshSessionHome;
   newSessionIdentity: typeof newSessionIdentity;
   writeMcpExtension: typeof writeMcpExtension;
+  discoverRemoteMcp: typeof discoverRemoteMcp;
   writeEmailExtension: typeof writeEmailExtension;
   writeTaskExtension: typeof writeTaskExtension;
   writeResourceExtension: typeof writeResourceExtension;
@@ -88,6 +101,7 @@ const productionDependencies: RunnerDependencies = {
   freshSessionHome,
   newSessionIdentity,
   writeMcpExtension,
+  discoverRemoteMcp,
   writeEmailExtension,
   writeTaskExtension,
   writeResourceExtension,
@@ -117,6 +131,8 @@ export class Runner {
   private taskBusy = false;
   private idle: unknown;
   private dockerGateway = "";
+  private token = "";
+  private readonly mcpRuntimes = new Map<string, Map<string, McpRuntime>>();
   private currentMessageId: string | undefined;
   private currentTask:
     { id: string; claimId: string; attemptId?: string } | undefined;
@@ -143,6 +159,7 @@ export class Runner {
   }
   async start(): Promise<http.Server> {
     await this.runs.initialize();
+    this.token = await componentIdentity(this.paths);
     const network = `integral-${deploymentId(this.paths)}`;
     await this.dependencies.containers.ensureNetwork(network);
     this.dockerGateway =
@@ -162,6 +179,11 @@ export class Runner {
             }),
           );
         });
+      } else if (
+        req.url === "/integral/internal/mcp" &&
+        req.method === "POST"
+      ) {
+        void this.routeMcp(req, res);
       } else res.writeHead(404).end();
     });
     this.server = server;
@@ -172,6 +194,54 @@ export class Runner {
     );
     this.schedule(0);
     return server;
+  }
+  private async routeMcp(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    try {
+      if (
+        !verifyInternal(
+          req.headers,
+          "gateway",
+          this.token,
+          deploymentId(this.paths),
+        )
+      ) {
+        res.writeHead(401).end("unauthorized\n");
+        return;
+      }
+      const body = await runnerBodyJson(req),
+        sessionId = typeof body.sessionId === "string" ? body.sessionId : "",
+        connection = typeof body.connection === "string" ? body.connection : "",
+        tool = typeof body.tool === "string" ? body.tool : "",
+        args = body.arguments;
+      if (
+        !sessionId ||
+        !connection ||
+        !tool ||
+        !args ||
+        typeof args !== "object" ||
+        Array.isArray(args)
+      )
+        throw new IntegralError("invalid MCP request", 400);
+      const runtime = this.mcpRuntimes.get(sessionId)?.get(connection);
+      if (!runtime) throw new IntegralError("MCP sidecar not found", 404);
+      const result = await runtime.callTool(
+        tool,
+        args as Record<string, unknown>,
+      );
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(result));
+    } catch (error) {
+      const status =
+        error instanceof IntegralError && error.exitCode >= 400
+          ? error.exitCode
+          : 500;
+      res
+        .writeHead(status)
+        .end(`${error instanceof Error ? error.message : String(error)}\n`);
+    }
   }
   private schedule(ms = 500): void {
     if (!this.stopped)
@@ -384,6 +454,7 @@ export class Runner {
         ...(this.stopped ? {} : { error: "task execution did not complete" }),
       });
       if (runtime) {
+        await this.stopMcpSidecars(runtime.spec.sessionId);
         await this.revoke(runtime.spec.sessionToken);
         if (this.taskResources)
           await this.dependencies
@@ -415,10 +486,8 @@ export class Runner {
       throw new IntegralError(
         `scheduled Pi image ${task.profile.piImage} is unavailable`,
       );
-    const { spec, identity, resources } = await this.preparePiEnvironment(
-      task.profile,
-      task.profile.piImage,
-    );
+    const { spec, identity, resources, catalogs, sidecars } =
+      await this.preparePiEnvironment(task.profile, task.profile.piImage);
     this.taskResources = resources;
     await this.dependencies.writeTaskExtension(spec.home);
     spec.args.push("--append-system-prompt", renderTaskContext(task));
@@ -491,6 +560,7 @@ export class Runner {
         throw new IntegralError(
           `task gateway session unavailable: ${registered.status}`,
         );
+      await this.startMcpSidecars(spec, catalogs, sidecars);
       return runtime;
     } catch (error) {
       await recorder.failure("provisioning-failure", error);
@@ -498,6 +568,7 @@ export class Runner {
         termination: "failed",
         error: error instanceof Error ? error.message : String(error),
       });
+      await this.stopMcpSidecars(identity.sessionId);
       await this.revoke(identity.sessionToken);
       await this.dependencies
         .cleanupResourceProjection(this.paths, this.config, resources)
@@ -702,10 +773,8 @@ export class Runner {
       throw new IntegralError(
         `selected Pi image ${selection.piImage} is unavailable; run /model to refresh the runtime selection`,
       );
-    const { spec, identity, resources } = await this.preparePiEnvironment(
-      selection,
-      selection.piImage,
-    );
+    const { spec, identity, resources, catalogs, sidecars } =
+      await this.preparePiEnvironment(selection, selection.piImage);
     if (context.length)
       spec.args.push("--append-system-prompt", renderContext(context));
     const parent = continuation?.originRunId
@@ -780,6 +849,7 @@ export class Runner {
         throw new IntegralError(
           `gateway session unavailable: ${registered.status}`,
         );
+      await this.startMcpSidecars(spec, catalogs, sidecars);
       await pi.start();
       this.pi = pi;
       this.piSelection = { ...selection };
@@ -813,6 +883,7 @@ export class Runner {
         termination: "failed",
         error: error instanceof Error ? error.message : String(error),
       });
+      await this.stopMcpSidecars(identity.sessionId);
       await this.revoke(identity.sessionToken);
       await this.dependencies
         .cleanupResourceProjection(this.paths, this.config, resources)
@@ -832,18 +903,81 @@ export class Runner {
       identity = this.dependencies.newSessionIdentity(),
       ca = await this.dependencies.ensureCa(this.paths),
       home = await this.dependencies.freshSessionHome();
+    const catalogs: McpCatalog[] = [],
+      stdio: Array<{
+        connection: Connection;
+        secretValues: Record<string, string>;
+      }> = [],
+      unavailableMcp: string[] = [],
+      mcpDiagnostics: string[] = [];
+    for (const connection of mcp) {
+      try {
+        const raw = await credentialFor(this.paths, connection.name),
+          credential = raw ? (oauthAccess(raw) ?? raw) : undefined;
+        if (connection.transport === "stdio") {
+          let parsed: unknown = { type: "stdio-env", values: {} };
+          if (raw?.trim()) parsed = JSON.parse(raw);
+          if (
+            !parsed ||
+            typeof parsed !== "object" ||
+            !("values" in parsed) ||
+            !parsed.values ||
+            typeof parsed.values !== "object" ||
+            Array.isArray(parsed.values)
+          )
+            throw new IntegralError("invalid stdio secret credential");
+          const values = parsed.values as Record<string, unknown>,
+            secretValues: Record<string, string> = {};
+          for (const name of connection.secretEnv ?? []) {
+            if (typeof values[name] !== "string")
+              throw new IntegralError(`missing stdio secret ${name}`);
+            secretValues[name] = values[name];
+          }
+          stdio.push({ connection, secretValues });
+          continue;
+        }
+        const catalog = await this.dependencies.discoverRemoteMcp(
+          connection,
+          credential,
+          this.dependencies.fetch,
+        );
+        catalogs.push(catalog);
+        mcpDiagnostics.push(
+          ...(catalog.diagnostics ?? []).map(
+            (diagnostic) => `${connection.name}: ${diagnostic}`,
+          ),
+        );
+      } catch (error) {
+        unavailableMcp.push(
+          `${connection.name} (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+    }
     const resources = await this.dependencies.prepareResourceProjection(
       this.paths,
       this.config,
       home,
       identity.sessionId,
     );
-    await this.dependencies.writeMcpExtension(home, mcp);
+    await this.dependencies.writeMcpExtension(home, catalogs);
     await this.dependencies.writeEmailExtension(home, email);
     await this.dependencies.writeResourceExtension(home, resources);
     await this.dependencies.writePiCredential(home, model);
     const gatewayUrl = new URL(await componentEndpoint(this.paths, "gateway"));
     gatewayUrl.hostname = "host.integral.internal";
+    const sidecars: McpSidecarSpec[] = stdio.map(
+      ({ connection, secretValues }) => ({
+        connection,
+        image,
+        sessionId: identity.sessionId,
+        sessionToken: identity.sessionToken,
+        gatewayUrl: gatewayUrl.toString(),
+        gatewayAddress: this.dockerGateway,
+        caCert: ca.cert,
+        caBundle: ca.bundle,
+        secretValues,
+      }),
+    );
     const spec = buildContainerSpec({
       config: this.config,
       gatewayUrl: gatewayUrl.toString(),
@@ -863,18 +997,100 @@ export class Runner {
       "You run in an ephemeral Integral-managed container. The active image Dockerfile is in /home/pi/image. You may edit and commit it, then call repo_push for image-recipe; that proposal requires human approval and affects a replacement container, not this running filesystem. Use container_image_rebuild to request an approval-gated fresh rebuild of the unchanged recipe.",
     );
     spec.mounts.push(...resources.mounts);
-    if (resources.unavailable.length)
+    if (
+      resources.unavailable.length ||
+      unavailableMcp.length ||
+      mcpDiagnostics.length
+    )
       spec.args.push(
         "--append-system-prompt",
-        `Unavailable governed resources: ${resources.unavailable
-          .map((value) => `${value.name} (${value.reason})`)
-          .join(", ")}. Host paths are intentionally hidden.`,
+        [
+          ...(resources.unavailable.length
+            ? [
+                `Unavailable governed resources: ${resources.unavailable
+                  .map((value) => `${value.name} (${value.reason})`)
+                  .join(", ")}. Host paths are intentionally hidden.`,
+              ]
+            : []),
+          ...(unavailableMcp.length
+            ? [`Unavailable MCP connections: ${unavailableMcp.join(", ")}.`]
+            : []),
+          ...(mcpDiagnostics.length
+            ? [`Excluded MCP tools: ${mcpDiagnostics.join(", ")}.`]
+            : []),
+        ].join(" "),
       );
     return {
       identity,
       resources,
       spec,
+      catalogs,
+      sidecars,
     };
+  }
+  private async startMcpSidecars(
+    spec: { home: string; args: string[]; sessionId: string },
+    catalogs: McpCatalog[],
+    sidecars: McpSidecarSpec[],
+  ): Promise<void> {
+    const runtimes = new Map<string, McpRuntime>(),
+      unavailable: string[] = [],
+      diagnostics: string[] = [];
+    for (const sidecar of sidecars) {
+      if (!this.dependencies.containers.createMcpSidecar) {
+        unavailable.push(
+          `${sidecar.connection.name} (stdio MCP is unavailable)`,
+        );
+        continue;
+      }
+      const runtime = this.dependencies.containers.createMcpSidecar(
+        sidecar,
+        this.config,
+        `integral-${deploymentId(this.paths)}`,
+        (line) =>
+          this.logger.event("debug", "mcp.stderr", line, {
+            connection: sidecar.connection.name,
+            session_id: spec.sessionId,
+          }),
+      );
+      try {
+        const catalog = await runtime.start();
+        catalogs.push(catalog);
+        diagnostics.push(
+          ...(catalog.diagnostics ?? []).map(
+            (diagnostic) => `${sidecar.connection.name}: ${diagnostic}`,
+          ),
+        );
+        runtimes.set(sidecar.connection.name, runtime);
+      } catch (error) {
+        await runtime.stop().catch(() => undefined);
+        unavailable.push(
+          `${sidecar.connection.name} (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+    }
+    if (runtimes.size) this.mcpRuntimes.set(spec.sessionId, runtimes);
+    await this.dependencies.writeMcpExtension(spec.home, catalogs);
+    if (unavailable.length)
+      spec.args.push(
+        "--append-system-prompt",
+        `Unavailable MCP connections: ${unavailable.join(", ")}.`,
+      );
+    if (diagnostics.length)
+      spec.args.push(
+        "--append-system-prompt",
+        `Excluded MCP tools: ${diagnostics.join(", ")}.`,
+      );
+  }
+  private async stopMcpSidecars(sessionId: string): Promise<void> {
+    const runtimes = this.mcpRuntimes.get(sessionId);
+    this.mcpRuntimes.delete(sessionId);
+    if (runtimes)
+      await Promise.all(
+        [...runtimes.values()].map((runtime) =>
+          runtime.stop().catch(() => undefined),
+        ),
+      );
   }
   private armIdle(): void {
     if (!this.pi || this.idle) return;
@@ -919,6 +1135,7 @@ export class Runner {
         termination,
         ...(error ? { error } : {}),
       });
+      await this.stopMcpSidecars(pi.spec.sessionId);
       await this.revoke(pi.spec.sessionToken);
       if (resources)
         await this.dependencies
@@ -987,6 +1204,7 @@ export class Runner {
         termination: "stopped",
         error: "runner stopped",
       });
+      await this.stopMcpSidecars(taskRuntime.spec.sessionId);
       await this.revoke(taskRuntime.spec.sessionToken);
       await taskRuntime.stop().catch(() => undefined);
       await this.removeHistoryView(this.taskHistoryView);
@@ -1077,4 +1295,26 @@ export function renderContext(events: ConversationEvent[]): string {
 export function renderTaskContext(task: ScheduledTask): string {
   const attempt = task.attempts.length + 1;
   return `You are executing an isolated scheduled task.\nSchedule ID: ${task.scheduleId}\nExecution ID: ${task.executionId}\nAttempt: ${attempt}\nScheduled time: ${task.scheduledFor}\nComplete only the supplied task. Do not assume access to the interactive conversation. Use the execution ID as an idempotency key for external side effects. Before ending, call exactly one of task_complete or task_fail as your final action.`;
+}
+
+async function runnerBodyJson(
+  req: http.IncomingMessage,
+): Promise<Record<string, unknown>> {
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for await (const chunk of req) {
+    const part = Buffer.from(chunk);
+    bytes += part.byteLength;
+    if (bytes > 1_000_000)
+      throw new IntegralError("request body is too large", 413);
+    chunks.push(part);
+  }
+  try {
+    const value: unknown = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }

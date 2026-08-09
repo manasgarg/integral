@@ -34,13 +34,20 @@ export interface StoredOAuth {
   access: string;
   refresh?: string;
   expires: number;
+  clientId?: string;
+  clientSecret?: string;
+  issuer?: string;
+  resource?: string;
 }
 export interface OAuthCallback {
   redirect: string;
   code: Promise<string>;
   close(): Promise<void>;
 }
-export type OAuthCallbackFactory = (state: string) => Promise<OAuthCallback>;
+export type OAuthCallbackFactory = (
+  state: string,
+  expectedIssuer?: string,
+) => Promise<OAuthCallback>;
 
 export async function runModelOAuth(
   paths: IntegralPaths,
@@ -238,17 +245,51 @@ async function authorizationCode(
   const verifier = randomBytes(48).toString("base64url"),
     challenge = createHash("sha256").update(verifier).digest("base64url"),
     state = randomBytes(24).toString("base64url");
-  const callback = await callbackFactory(state);
+  const callback = await callbackFactory(state, connection.oauthIssuer);
   const redirect = callback.redirect;
+  let clientId = connection.clientId,
+    clientSecret: string | undefined;
+  if (!clientId && connection.registrationUrl) {
+    const registration = await request(connection.registrationUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Integral",
+          redirect_uris: [redirect],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+          application_type: "native",
+        }),
+      }),
+      registered = (await registration.json()) as {
+        client_id?: string;
+        client_secret?: string;
+        error?: string;
+      };
+    if (!registration.ok || !registered.client_id)
+      throw new IntegralError(
+        `OAuth client registration failed: ${registered.error ?? registration.status}`,
+      );
+    clientId = registered.client_id;
+    clientSecret = registered.client_secret;
+  }
+  if (!clientId)
+    throw new IntegralError("OAuth authorization requires a client ID");
   const authorization = new URL(connection.authorizationUrl!);
   authorization.searchParams.set("response_type", "code");
-  authorization.searchParams.set("client_id", connection.clientId!);
+  authorization.searchParams.set("client_id", clientId);
   authorization.searchParams.set("redirect_uri", redirect);
   authorization.searchParams.set("state", state);
   authorization.searchParams.set("code_challenge", challenge);
   authorization.searchParams.set("code_challenge_method", "S256");
   if (connection.scopes?.length)
     authorization.searchParams.set("scope", connection.scopes.join(" "));
+  if (connection.oauthResource)
+    authorization.searchParams.set("resource", connection.oauthResource);
   if (connection.kind === "email" && connection.provider === "gmail") {
     authorization.searchParams.set("access_type", "offline");
     authorization.searchParams.set("prompt", "consent");
@@ -262,7 +303,9 @@ async function authorizationCode(
       manualAbort.signal,
     )
     .then((value) =>
-      value.trim() ? authorizationCodeFromInput(value, state) : never(),
+      value.trim()
+        ? authorizationCodeFromInput(value, state, connection.oauthIssuer)
+        : never(),
     )
     .catch((error: unknown) => {
       if (manualAbort.signal.aborted) return never();
@@ -281,23 +324,30 @@ async function authorizationCode(
           )),
       ),
     ]);
-    const response = await postForm(
-      connection.tokenUrl!,
-      {
-        grant_type: "authorization_code",
-        code: authCode,
-        redirect_uri: redirect,
-        client_id: connection.clientId!,
-        code_verifier: verifier,
-      },
-      request,
-    );
+    const tokenValues: Record<string, string> = {
+      grant_type: "authorization_code",
+      code: authCode,
+      redirect_uri: redirect,
+      client_id: clientId,
+      code_verifier: verifier,
+    };
+    if (clientSecret) tokenValues.client_secret = clientSecret;
+    if (connection.oauthResource)
+      tokenValues.resource = connection.oauthResource;
+    const response = await postForm(connection.tokenUrl!, tokenValues, request);
     const token = (await response.json()) as TokenResponse;
     if (!response.ok || !token.access_token)
       throw new IntegralError(
         `OAuth token exchange failed: ${token.error_description ?? token.error ?? response.status}`,
       );
-    return stored(token);
+    return stored(token, {
+      clientId,
+      ...(clientSecret ? { clientSecret } : {}),
+      ...(connection.oauthIssuer ? { issuer: connection.oauthIssuer } : {}),
+      ...(connection.oauthResource
+        ? { resource: connection.oauthResource }
+        : {}),
+    });
   } finally {
     manualAbort.abort();
     if (timeout) clearTimeout(timeout);
@@ -305,7 +355,10 @@ async function authorizationCode(
   }
 }
 
-async function startLocalOAuthCallback(state: string): Promise<OAuthCallback> {
+async function startLocalOAuthCallback(
+  state: string,
+  expectedIssuer?: string,
+): Promise<OAuthCallback> {
   let resolveCode!: (code: string) => void, rejectCode!: (error: Error) => void;
   const code = new Promise<string>((resolve, reject) => {
     resolveCode = resolve;
@@ -315,6 +368,10 @@ async function startLocalOAuthCallback(state: string): Promise<OAuthCallback> {
     const url = new URL(req.url ?? "/", "http://callback");
     if (url.searchParams.get("state") !== state) {
       res.writeHead(400).end("Invalid OAuth state");
+      return;
+    }
+    if (expectedIssuer && url.searchParams.get("iss") !== expectedIssuer) {
+      res.writeHead(400).end("Invalid OAuth issuer");
       return;
     }
     const value = url.searchParams.get("code");
@@ -344,6 +401,7 @@ async function startLocalOAuthCallback(state: string): Promise<OAuthCallback> {
 export function authorizationCodeFromInput(
   input: string,
   expectedState: string,
+  expectedIssuer?: string,
 ): string {
   const value = input.trim();
   if (!value) throw new IntegralError("missing OAuth authorization code");
@@ -357,6 +415,9 @@ export function authorizationCodeFromInput(
     const state = redirect.searchParams.get("state");
     if (state && state !== expectedState)
       throw new IntegralError("OAuth state mismatch");
+    const issuer = redirect.searchParams.get("iss");
+    if (expectedIssuer && issuer !== expectedIssuer)
+      throw new IntegralError("OAuth issuer mismatch");
     const code = redirect.searchParams.get("code");
     if (!code) throw new IntegralError("OAuth redirect URL is missing code");
     return code;
@@ -364,11 +425,15 @@ export function authorizationCodeFromInput(
   return value;
 }
 
-function stored(token: TokenResponse): StoredOAuth {
+function stored(
+  token: TokenResponse,
+  metadata: Partial<StoredOAuth> = {},
+): StoredOAuth {
   const result: StoredOAuth = {
     type: "oauth",
     access: token.access_token!,
     expires: Date.now() + (token.expires_in ?? 3600) * 1000,
+    ...metadata,
   };
   if (token.refresh_token) result.refresh = token.refresh_token;
   return result;
@@ -448,7 +513,11 @@ export async function refreshOAuth(
     {
       grant_type: "refresh_token",
       refresh_token: parsed.refresh,
-      client_id: connection.clientId!,
+      client_id: parsed.clientId ?? connection.clientId!,
+      ...(parsed.clientSecret ? { client_secret: parsed.clientSecret } : {}),
+      ...((parsed.resource ?? connection.oauthResource)
+        ? { resource: (parsed.resource ?? connection.oauthResource)! }
+        : {}),
     },
     request,
   );
@@ -458,7 +527,12 @@ export async function refreshOAuth(
       `OAuth refresh failed for ${connection.name}: ${token.error_description ?? token.error ?? response.status}`,
     );
   if (!token.refresh_token) token.refresh_token = parsed.refresh;
-  const next = stored(token);
+  const next = stored(token, {
+    ...(parsed.clientId ? { clientId: parsed.clientId } : {}),
+    ...(parsed.clientSecret ? { clientSecret: parsed.clientSecret } : {}),
+    ...(parsed.issuer ? { issuer: parsed.issuer } : {}),
+    ...(parsed.resource ? { resource: parsed.resource } : {}),
+  });
   return { access: next.access, serialized: JSON.stringify(next) };
 }
 

@@ -2,7 +2,7 @@
 
 These behaviors preserve the source project's connection CLI ergonomics for a
 single user. Connections may describe model providers, email accounts, generic
-HTTP endpoints, remote MCP servers, governed host Git repositories, or durable
+HTTP endpoints, remote or stdio MCP servers, governed host Git repositories, or durable
 writable host stores. Every active connection is available to Pi; integral has
 no grant or revoke concept.
 
@@ -23,6 +23,7 @@ Given integral is installed
 		Then the command lists `catalog`, `add`, `ls`, and `rm`
 			And describes bare `add` as guided setup
 			And documents `--auth` for explicit setup
+			And documents `--transport`, `--command`, `--arg`, `--env`, `--secret-env`, and `--allow-url` for MCP setup
 			And documents `--path`, `--branch`, and `--mount` for host resources
 			And does not list `grant` or `revoke`
 
@@ -48,6 +49,9 @@ Given an interactive terminal
 			And lets the user name the connection
 			And lets the user select an authentication method when required
 			And collects the endpoint and protocol details required by the type
+			And normally asks only for a name and URL when the selected type is remote MCP
+			And collects a command and arguments when the selected type is stdio MCP
+			And treats MCP authentication and transport choices as advanced compatibility overrides
 			And requires a mount path for a host resource
 			And runs the selected authentication flow
 			And completes the same setup as explicit `connection add <entry>`
@@ -66,6 +70,7 @@ Given no connection exists for the selected provider
 ## CONNECTION-2F7C9A61 — Choose a supported authentication method
 
 Given the selected catalog entry supports more than one authentication method
+	And the selected entry is not MCP
 	When the user runs `integral connection add <entry>` without `--auth`
 		Then integral lists the authentication methods supported by that entry
 			And asks the user to choose one before starting authentication
@@ -75,6 +80,11 @@ Given the selected catalog entry supports more than one authentication method
 			And identifies the supported values
 	When the user supplies a supported method with `--auth <method>`
 		Then integral uses that authentication method without asking
+Given the selected catalog entry is MCP with a remote URL
+	When the user adds it without `--auth`
+		Then integral probes whether the server permits anonymous MCP access
+			And follows standardized MCP authorization discovery when authentication is required
+			And does not ask the user to choose an authentication family
 Given the selected catalog entry supports exactly one authentication method
 	When the user runs `integral connection add <entry>` without `--auth`
 		Then integral selects that method without an echoed authentication prompt
@@ -128,18 +138,18 @@ Given the selected catalog entry supports credential verification
 			And completes setup only when verification succeeds
 			And reports verification failure without printing secret values
 
-## CONNECTION-634C2DA7 — Rotate an existing connection credential
+## CONNECTION-634C2DA7 — Rotate existing connection credentials
 
-Given a credentialed connection already exists
+Given a connection with one or more stored credentials already exists
 	When the user adds the same entry and connection name again
-		And authentication succeeds
-		Then integral replaces the stored credential atomically
+		And authentication or stdio secret collection succeeds
+		Then integral replaces the stored credentials atomically
 			And preserves the connection's name and non-secret configuration
-			And requires the kind, provider, and authentication method to match
-			And new model requests use the replacement credential
+			And requires the kind, provider, authentication method, and declared stdio secret names to match
+			And new model or stdio requests use the replacement credentials
 			And advances the connection generation
 			And the command reports rotation rather than duplicate creation
-	When the existing connection uses no authentication
+	When the existing connection uses no authentication and declares no secret environment values
 		Then integral refuses to treat another add as credential rotation
 
 ## CONNECTION-5833EDC7 — List connections
@@ -153,6 +163,7 @@ Given zero or more connections have been configured
 			And shows `active` for a valid no-auth connection
 			And treats OAuth as usable when its access token is unexpired or it has a refresh token
 			And shows `DISABLED (no secret)` when a credentialed connection has no credential
+			And shows `DISABLED (no secret)` when a stdio connection is missing any declared secret environment value
 			And shows `DISABLED (no secret)` for malformed or expired OAuth without a refresh token
 			And does not print secret values
 
@@ -166,15 +177,15 @@ Given zero or more connections have been configured
 
 ## CONNECTION-741C2F56 — Remove a connection deliberately
 
-Given a credentialed connection exists
+Given a connection with one or more stored credentials exists
 	And the terminal is interactive
 	When the user runs `integral connection rm <name>`
-		Then integral describes the credential and connection record to be removed
-			And asks for confirmation before removing the credential
+		Then integral describes the credentials and connection record to be removed without printing secret values
+			And asks for confirmation before removing the credentials
 	When the user declines credential removal
-		Then integral leaves the credential and connection unchanged
+		Then integral leaves the credentials and connection unchanged
 	When the user confirms credential removal
-		Then integral removes the credential
+		Then integral removes every credential owned by the connection
 			And asks separately whether to remove the connection record
 	When the user declines connection-record removal
 		Then integral retains the connection record
@@ -227,15 +238,57 @@ Given the user has an HTTP or HTTPS endpoint
 
 ## CONNECTION-4B8D73F1 — Add a remote MCP connection
 
-Given the user has a remote MCP server endpoint
+Given the user has the URL of a remote MCP server
 	When the user runs `integral connection add mcp --name <name> --url <url>`
-		And completes the selected authentication setup
-		Then integral records the remote MCP transport and endpoint
-			And registers the named MCP server with Pi for new sessions
-			And supports streamable HTTP and legacy SSE request flows
-			And places only sentinel authentication in the generated Pi extension
-			And configures the gateway to allow only that endpoint boundary
-			And injects its credential only inside that boundary when authentication requires it
+		Then integral contacts the endpoint through trusted host code
+			And automatically detects Streamable HTTP or legacy HTTP+SSE
+			And determines whether the endpoint requires authentication
+			And completes standardized MCP OAuth when authentication is required
+			And completes without authentication when the server permits anonymous access
+			And negotiates a supported MCP protocol version
+			And discovers every available tool before committing the connection
+			And stores the connection only after discovery succeeds
+			And reports the server name, negotiated protocol, transport, authentication state, and tool count
+			And does not require transport, OAuth endpoint, scope, or client-registration flags for a conforming MCP server
+	When discovery, authentication, protocol negotiation, or tool discovery fails
+		Then integral exits non-zero
+			And explains the failing stage without printing credentials
+			And does not store a partial connection or credential
+	When the user explicitly supplies supported authentication or transport options
+		Then integral treats them as compatibility overrides
+			And still verifies the resulting MCP connection before committing it
+
+<!-- Automation note (CONNECTION-0EF2CF89): This behavior defines planned stdio MCP setup; executable coverage will land with implementation. -->
+
+## CONNECTION-0EF2CF89 — Add a stdio MCP connection
+
+Given the user has an MCP server executable available in the configured runner image
+	When the user runs `integral connection add mcp --transport stdio --name <name> --command <executable>`
+		And supplies zero or more `--arg <argument>` values
+		Then integral records the executable and each argument without shell parsing or expansion
+			And treats the argument following `--command` as the exact executable name or absolute image path
+			And uses the arguments in their supplied order
+			And runs setup verification in a short-lived isolated sidecar using the configured runner image
+			And negotiates a supported MCP protocol over standard input and standard output
+			And discovers every available tool before committing the connection
+			And stores the connection only after discovery succeeds
+			And reports the server name, stdio transport, protocol, and tool count
+	When the user supplies `--env <name>=<value>`
+		Then integral stores and supplies the value as non-secret sidecar configuration
+	When the user supplies `--secret-env <name>`
+		Then integral reads the named value without echoing it
+			And stores it only in the host credential area
+			And supplies it only to that MCP sidecar process
+			And never exposes it to Pi, tool declarations, logs, or connection listings
+	When the user supplies one or more `--allow-url <url>` values
+		Then integral gives the sidecar outbound access only within those normalized URL boundaries
+			And does not inject another connection's credential into those requests
+	When no `--allow-url` is supplied
+		Then the sidecar has no external network access
+	When the executable cannot start, emits invalid protocol data, exits during verification, or does not expose a valid tool catalog
+		Then integral exits non-zero
+			And removes the verification sidecar
+			And does not store a partial connection or secret
 
 ## CONNECTION-D20F6A85 — Make active connections available automatically
 
@@ -276,17 +329,17 @@ Given an active GitHub connection exists
 
 ## CONNECTION-8F14C3B7 — Reject an invalid generic connection declaration
 
-Given the user is adding a generic HTTP or MCP connection
+Given the user is adding a generic HTTP or remote MCP connection
 	When its name is missing or already used
 		Then integral rejects setup without changing stored connections
 	When its URL is missing, malformed, or uses an unsupported scheme
 		Then integral rejects setup without changing stored connections
-	When required authentication metadata is incomplete
+	When explicitly configured authentication metadata is incomplete
 		Then integral rejects setup without storing partial credentials
 
 ## CONNECTION-E73B40C6 — Remove a no-auth connection deliberately
 
-Given a no-auth HTTP or MCP connection exists
+Given a no-auth HTTP or MCP connection with no stored secret environment values exists
 	And the terminal is interactive
 	When the user runs `integral connection rm <name>`
 		Then integral describes the connection record to be removed

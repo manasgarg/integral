@@ -18,6 +18,14 @@ import { atomicWrite, ensureDir } from "./fs.ts";
 import { DEFAULT_PI_IMAGE, INTEGRAL_VERSION } from "./constants.ts";
 import { OAUTH_SENTINEL, SENTINEL } from "./gateway-policy.ts";
 import { DEFAULT_CONTAINER_PACKAGES } from "./container-packages.ts";
+import {
+  MCP_PROTOCOL_VERSION,
+  MCP_SESSION_PROTOCOL_VERSION,
+  toolsFromListResult,
+  type McpCatalog,
+  type McpRuntime,
+  type McpToolResult,
+} from "./mcp.ts";
 
 export interface ContainerSpec {
   image: string;
@@ -68,6 +76,24 @@ export interface ContainerBackend {
     onStderr: (line: string) => void,
     onEvent?: (event: PiProtocolEvent) => void,
   ): TaskRuntime;
+  createMcpSidecar?(
+    spec: McpSidecarSpec,
+    config: EffectiveConfig,
+    network: string,
+    onStderr: (line: string) => void,
+  ): McpRuntime;
+}
+
+export interface McpSidecarSpec {
+  connection: Connection;
+  image: string;
+  sessionId: string;
+  sessionToken: string;
+  gatewayUrl: string;
+  gatewayAddress: string;
+  caCert: string;
+  caBundle: string;
+  secretValues: Record<string, string>;
 }
 const managed = new Set([
   "HOME",
@@ -214,36 +240,392 @@ export function dockerRunArgs(
   return [...result, spec.image, "pi", ...spec.args];
 }
 
+const MCP_BOOTSTRAP = `const { spawn } = require("node:child_process"); let buffered = Buffer.alloc(0), started = false; function data(chunk) { if (started) return; buffered = Buffer.concat([buffered, chunk]); const newline = buffered.indexOf(10); if (newline < 0) return; started = true; process.stdin.off("data", data); let secrets; try { secrets = JSON.parse(buffered.subarray(0, newline).toString("utf8")); } catch { process.stderr.write("invalid integral MCP secret bootstrap\\n"); process.exit(70); return; } const child = spawn(process.argv[1], process.argv.slice(2), { env: { ...process.env, ...secrets }, stdio: ["pipe", "pipe", "pipe"] }); child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr); const remaining = buffered.subarray(newline + 1); if (remaining.length) child.stdin.write(remaining); process.stdin.pipe(child.stdin); child.on("exit", (code, signal) => process.exit(code ?? (signal ? 128 : 1))); child.on("error", (error) => { process.stderr.write(error.message + "\\n"); process.exit(70); }); } process.stdin.on("data", data); process.stdin.resume();`;
+
+export function dockerMcpSidecarArgs(
+  spec: McpSidecarSpec,
+  config: EffectiveConfig,
+  network: string,
+): string[] {
+  const proxy = new URL(spec.gatewayUrl);
+  proxy.username = "integral";
+  proxy.password = spec.sessionToken;
+  const proxyUrl = proxy.toString(),
+    name = `integral-mcp-${spec.sessionId}-${spec.connection.name.replace(/[^A-Za-z0-9_.-]/g, "-")}`,
+    caPath = "/integral-ca/integral-ca.pem",
+    bundlePath = "/integral-ca/ca-bundle.pem",
+    environment: Record<string, string> = {
+      HOME: "/tmp",
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      TMPDIR: "/tmp",
+      HTTP_PROXY: proxyUrl,
+      HTTPS_PROXY: proxyUrl,
+      http_proxy: proxyUrl,
+      https_proxy: proxyUrl,
+      NO_PROXY: "",
+      no_proxy: "",
+      NODE_EXTRA_CA_CERTS: caPath,
+      SSL_CERT_FILE: bundlePath,
+      NODE_USE_ENV_PROXY: "1",
+      ...(spec.connection.env ?? {}),
+    },
+    args = [
+      "run",
+      "--rm",
+      "--interactive",
+      "--name",
+      name,
+      "--network",
+      network,
+      "--add-host",
+      `host.integral.internal:${spec.gatewayAddress}`,
+      "--user",
+      "1000:1000",
+      "--security-opt",
+      "no-new-privileges",
+      "--cap-drop",
+      "ALL",
+      "--read-only",
+      "--memory",
+      `${config.runner.memoryMb}m`,
+      "--tmpfs",
+      `/tmp:rw,noexec,nosuid,size=${config.runner.tmpfsMb}m`,
+    ];
+  for (const [key, value] of Object.entries(environment))
+    args.push("--env", `${key}=${value}`);
+  for (const [source, target] of [
+    [spec.caCert, caPath],
+    [spec.caBundle, bundlePath],
+  ])
+    args.push(
+      "--mount",
+      `type=bind,source=${source},target=${target},readonly`,
+    );
+  return [
+    ...args,
+    spec.image,
+    "node",
+    "-e",
+    MCP_BOOTSTRAP,
+    spec.connection.command!,
+    ...(spec.connection.args ?? []),
+  ];
+}
+
+interface PendingMcpRequest {
+  resolve(value: Record<string, unknown>): void;
+  reject(error: Error): void;
+}
+
+export class StdioMcpSidecar implements McpRuntime {
+  readonly connection: Connection;
+  private child: ChildProcessWithoutNullStreams | undefined;
+  private nextId = 1;
+  private protocolVersion = MCP_PROTOCOL_VERSION;
+  private readonly pending = new Map<number, PendingMcpRequest>();
+
+  constructor(
+    private readonly spec: McpSidecarSpec,
+    private readonly config: EffectiveConfig,
+    private readonly network: string,
+    private readonly diagnostic: (line: string) => void = () => undefined,
+  ) {
+    this.connection = spec.connection;
+  }
+
+  async start(): Promise<McpCatalog> {
+    if (this.child)
+      throw new IntegralError(
+        `MCP sidecar ${this.connection.name} is already running`,
+      );
+    const child = spawn(
+      "docker",
+      dockerMcpSidecarArgs(this.spec, this.config, this.network),
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    this.child = child;
+    createInterface({ input: child.stdout }).on("line", (line) =>
+      this.protocol(line),
+    );
+    createInterface({ input: child.stderr }).on("line", (line) =>
+      this.diagnostic(this.sanitize(line)),
+    );
+    child.once("exit", (code) => {
+      const error = new IntegralError(
+        `MCP sidecar ${this.connection.name} exited (${code ?? "signal"})`,
+      );
+      for (const request of this.pending.values()) request.reject(error);
+      this.pending.clear();
+      if (this.child === child) this.child = undefined;
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    child.stdin.write(`${JSON.stringify(this.spec.secretValues)}\n`);
+    try {
+      const discovery = await this.request("server/discover", {});
+      if (discovery.error === undefined) {
+        this.protocolVersion = MCP_PROTOCOL_VERSION;
+      } else {
+        const initialized = await this.request("initialize", {
+          protocolVersion: MCP_SESSION_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "integral", version: INTEGRAL_VERSION },
+        });
+        const result = this.result(initialized, "initialize");
+        if (typeof result.protocolVersion !== "string")
+          throw new IntegralError(
+            "MCP initialize result omitted protocolVersion",
+          );
+        this.protocolVersion = result.protocolVersion;
+        this.notify("notifications/initialized", {});
+      }
+      const tools = [],
+        diagnostics: string[] = [],
+        names = new Set<string>(),
+        seen = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        if (cursor && seen.has(cursor))
+          throw new IntegralError(
+            "MCP tools/list repeated a pagination cursor",
+          );
+        if (cursor) seen.add(cursor);
+        const page = toolsFromListResult(
+          this.result(
+            await this.request("tools/list", cursor ? { cursor } : {}),
+            "tools/list",
+          ),
+        );
+        tools.push(...page.tools);
+        diagnostics.push(...page.diagnostics);
+        cursor = page.nextCursor;
+      } while (cursor);
+      const duplicates = new Set<string>();
+      for (const tool of tools)
+        if (names.has(tool.name)) duplicates.add(tool.name);
+        else names.add(tool.name);
+      for (const name of duplicates)
+        diagnostics.push(`${name}: MCP tool name is duplicated`);
+      return {
+        connection: this.connection,
+        protocolVersion: this.protocolVersion,
+        tools: tools.filter((tool) => !duplicates.has(tool.name)),
+        ...(diagnostics.length ? { diagnostics } : {}),
+      };
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
+  }
+
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<McpToolResult> {
+    return this.result(
+      await this.request(
+        "tools/call",
+        { name, arguments: args },
+        signal,
+        this.config.runner.turnTimeoutSeconds * 1000,
+      ),
+      "tools/call",
+    );
+  }
+
+  private request(
+    method: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+    timeoutMs = 30_000,
+  ): Promise<Record<string, unknown>> {
+    const child = this.child;
+    if (!child)
+      return Promise.reject(
+        new IntegralError(`MCP sidecar ${this.connection.name} is not running`),
+      );
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        signal?.removeEventListener("abort", abort);
+        this.notify("notifications/cancelled", {
+          requestId: id,
+          reason: "timeout",
+        });
+        reject(new IntegralError(`MCP ${method} timed out`));
+      }, timeoutMs);
+      const abort = () => {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        this.notify("notifications/cancelled", {
+          requestId: id,
+          reason: "cancelled",
+        });
+        reject(new IntegralError(`MCP ${method} was cancelled`));
+      };
+      if (signal?.aborted) return abort();
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", abort);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", abort);
+          reject(error);
+        },
+      });
+      signal?.addEventListener("abort", abort, { once: true });
+      child.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
+      );
+    });
+  }
+
+  private notify(method: string, params: Record<string, unknown>): void {
+    this.child?.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`,
+    );
+  }
+
+  private protocol(line: string): void {
+    let value: Record<string, unknown>;
+    try {
+      value = JSON.parse(line) as Record<string, unknown>;
+      if (!value || typeof value !== "object" || value.jsonrpc !== "2.0")
+        throw new Error("invalid JSON-RPC envelope");
+    } catch {
+      const error = new IntegralError(
+        `MCP sidecar ${this.connection.name} wrote non-protocol output to stdout`,
+      );
+      for (const request of this.pending.values()) request.reject(error);
+      this.pending.clear();
+      void this.stop();
+      return;
+    }
+    if (typeof value.id !== "number") return;
+    const request = this.pending.get(value.id);
+    if (!request) return;
+    this.pending.delete(value.id);
+    request.resolve(value);
+  }
+
+  private result(
+    response: Record<string, unknown>,
+    method: string,
+  ): Record<string, unknown> {
+    if (response.error && typeof response.error === "object") {
+      const error = response.error as Record<string, unknown>;
+      const detail =
+        typeof error.message === "string"
+          ? error.message
+          : typeof error.code === "string" || typeof error.code === "number"
+            ? String(error.code)
+            : "unknown error";
+      throw new IntegralError(`MCP ${method} failed: ${detail}`);
+    }
+    if (
+      !response.result ||
+      typeof response.result !== "object" ||
+      Array.isArray(response.result)
+    )
+      throw new IntegralError(`MCP ${method} result must be an object`);
+    return response.result as Record<string, unknown>;
+  }
+
+  private sanitize(line: string): string {
+    let clean = line.replace(/[\r\n]/g, " ");
+    for (const secret of Object.values(this.spec.secretValues))
+      if (secret) clean = clean.split(secret).join("[REDACTED]");
+    return clean;
+  }
+
+  async stop(): Promise<void> {
+    const child = this.child;
+    this.child = undefined;
+    if (!child) return;
+    for (const request of this.pending.values())
+      request.reject(
+        new IntegralError(`MCP sidecar ${this.connection.name} stopped`),
+      );
+    this.pending.clear();
+    const exited = new Promise<boolean>((resolve) =>
+      child.once("exit", () => resolve(true)),
+    );
+    child.stdin.end();
+    const stopped = await Promise.race([
+      exited,
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000)),
+    ]);
+    if (!stopped) {
+      spawnSync(
+        "docker",
+        [
+          "rm",
+          "--force",
+          `integral-mcp-${this.spec.sessionId}-${this.connection.name.replace(/[^A-Za-z0-9_.-]/g, "-")}`,
+        ],
+        { stdio: "ignore" },
+      );
+      await exited;
+    }
+  }
+}
+
 export async function writeMcpExtension(
   sessionHome: string,
-  connections: Connection[],
+  catalogs: McpCatalog[],
 ): Promise<void> {
   const directory = join(sessionHome, ".pi", "agent", "extensions");
   await ensureDir(directory);
-  const declarations = connections.map((connection) => ({
-    name: connection.name.replace(/[^A-Za-z0-9_]/g, "_"),
-    url: connection.url,
-    auth: connection.auth !== "none",
-    transport: connection.transport,
-  }));
-  const source = `import { Type } from "typebox";\nconst servers = ${JSON.stringify(declarations)};\nfunction headers(server) { const value = { "content-type": "application/json", accept: "application/json, text/event-stream" }; if (server.auth) value.authorization = "Bearer integral-managed-credential"; return value; }\nasync function call(server, payload, signal) {\n  if (server.transport !== "sse") { const response = await fetch(server.url, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); const body = await response.text(); if (!response.ok) throw new Error("MCP request failed: " + response.status); const data = body.split("\\n").filter(line => line.startsWith("data:")).at(-1)?.slice(5).trim(); return JSON.parse(data || body); }\n  const events = await fetch(server.url, { headers: headers(server), signal }); if (!events.ok || !events.body) throw new Error("MCP SSE connection failed: " + events.status); const reader = events.body.getReader(), decoder = new TextDecoder(); let buffer = "", endpoint;\n  while (!endpoint) { const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before endpoint"); buffer += decoder.decode(part.value, { stream: true }); const match = buffer.match(/event: endpoint\\r?\\ndata: (.+)\\r?\\n\\r?\\n/); if (match) { endpoint = new URL(match[1].trim(), server.url).toString(); buffer = buffer.slice((match.index || 0) + match[0].length); } }\n  const sent = await fetch(endpoint, { method: "POST", headers: headers(server), signal, body: JSON.stringify(payload) }); if (!sent.ok) throw new Error("MCP SSE send failed: " + sent.status);\n  while (true) { const match = buffer.match(/data: (.+)\\r?\\n\\r?\\n/); if (match) { buffer = buffer.slice((match.index || 0) + match[0].length); const value = JSON.parse(match[1]); if (value.id === payload.id) { await reader.cancel(); return value; } } const part = await reader.read(); if (part.done) throw new Error("MCP SSE ended before response"); buffer += decoder.decode(part.value, { stream: true }); }\n}\nasync function schedule(path, method, body, signal) { const response = await fetch("http://integral.control" + path, { method, headers: { "content-type": "application/json" }, signal, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await response.text(); if (!response.ok) throw new Error("Schedule request failed: " + response.status + " " + text.trim()); return text ? JSON.parse(text) : null; }\nfunction result(value) { return { content: [{ type: "text", text: JSON.stringify(value) }], details: value }; }\nexport default function (pi) {\n  for (const server of servers) pi.registerTool({\n    name: "mcp_" + server.name, label: "MCP " + server.name, description: "Call a tool on the " + server.name + " remote MCP server",\n    parameters: Type.Object({ tool: Type.String(), arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),\n    async execute(_id, params, signal) {\n      const value = await call(server, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: params.tool, arguments: params.arguments || {} } }, signal);\n      return { content: value.result?.content || [{ type: "text", text: JSON.stringify(value.result ?? value) }], details: { server: server.name } };\n    }\n  });\n  pi.registerTool({ name: "schedule_list", label: "List schedules", description: "List schedules managed by Integral", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/schedules", "GET", undefined, signal)); } });\n  pi.registerTool({ name: "schedule_create", label: "Create schedule", description: "Create a recurring cron schedule or one-time task", parameters: Type.Object({ prompt: Type.String(), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : { type: "recurring", cron: params.cron, timezone: params.timezone }; return result(await schedule("/integral/control/schedules", "POST", { prompt: params.prompt, trigger }, signal)); } });\n  for (const action of ["enable", "disable"]) pi.registerTool({ name: "schedule_" + action, label: action + " schedule", description: action + " a schedule", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id) + "/" + action, "POST", { expectedRevision: params.expectedRevision }, signal)); } });\n  pi.registerTool({ name: "schedule_update", label: "Update schedule", description: "Update a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer(), prompt: Type.Optional(Type.String()), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : params.cron || params.timezone ? { type: "recurring", cron: params.cron, timezone: params.timezone } : undefined; return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "PATCH", { expectedRevision: params.expectedRevision, prompt: params.prompt, trigger }, signal)); } });\n  pi.registerTool({ name: "schedule_delete", label: "Delete schedule", description: "Delete a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "DELETE", { expectedRevision: params.expectedRevision }, signal)); } });\n}\n`;
-  const packageTools = `  pi.registerTool({ name: "container_package_list", label: "List container packages", description: "List the governed Debian package set and current revision for the managed Pi image", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/container-packages", "GET", undefined, signal)); } });
-  for (const operation of ["install", "upgrade"]) pi.registerTool({ name: "container_package_" + operation, label: operation + " container packages", description: operation + " Debian packages through Integral's governed immutable-image builder; the current container is replaced after this turn", parameters: Type.Object({ packages: Type.Array(Type.String()), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/container-packages", "POST", { operation, packages: params.packages, expectedRevision: params.expectedRevision }, signal)); } });
-`,
-    extendedSource = source.replace(/\n}\n$/, `\n${packageTools}}\n`),
-    proxiedSource = extendedSource
-      .replace(
-        'import { Type } from "typebox";',
-        'import { request } from "node:http";\nimport { Type } from "typebox";',
-      )
-      .replace(
-        /async function schedule\(path, method, body, signal\) \{.*?\}\nfunction result/s,
-        `function control(path) { const proxy = new URL(process.env.HTTP_PROXY), target = new URL(path, "http://integral.control"), authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = target.pathname; proxy.search = target.search; return { url: proxy.toString(), authorization }; }
+  const declarations = catalogs.flatMap((catalog) =>
+    catalog.tools.map((tool) => ({
+      connection: catalog.connection.name,
+      name: mcpToolName(catalog.connection.name, tool.name),
+      remoteName: tool.name,
+      label: tool.title ?? `${catalog.connection.name}: ${tool.name}`,
+      description:
+        tool.description ??
+        `Call ${tool.name} on the ${catalog.connection.name} MCP server`,
+      parameters: tool.inputSchema,
+    })),
+  );
+  const source = `import { request } from "node:http";
+import { Type } from "typebox";
+const tools = ${JSON.stringify(declarations)};
+function control(path) { const proxy = new URL(process.env.HTTP_PROXY), target = new URL(path, "http://integral.control"), authorization = "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64"); proxy.username = ""; proxy.password = ""; proxy.pathname = target.pathname; proxy.search = target.search; return { url: proxy.toString(), authorization }; }
 function controlRequest(path, method, body, signal) { return new Promise((resolve, reject) => { const target = control(path), payload = body === undefined ? undefined : JSON.stringify(body), chunks = []; let settled = false; const finish = (action) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); action(); }, req = request(target.url, { agent: false, method, headers: { "content-type": "application/json", "proxy-authorization": target.authorization, ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, (res) => { res.on("data", (chunk) => chunks.push(chunk)); res.on("end", () => finish(() => resolve({ status: res.statusCode || 500, text: Buffer.concat(chunks).toString("utf8") }))); res.on("error", (error) => finish(() => reject(error))); }), abort = () => req.destroy(new Error("schedule request was cancelled")); signal?.addEventListener("abort", abort, { once: true }); req.on("error", (error) => finish(() => reject(error))); req.end(payload); }); }
 async function schedule(path, method, body, signal) { const response = await controlRequest(path, method, body, signal), text = response.text; if (response.status < 200 || response.status >= 300) throw new Error("Schedule request failed: " + response.status + " " + text.trim()); return text ? JSON.parse(text) : null; }
-function result`,
-      );
-  await atomicWrite(join(directory, "integral-mcp.ts"), proxiedSource);
+async function mcp(tool, args, signal) { const response = await controlRequest("/integral/mcp", "POST", { connection: tool.connection, tool: tool.remoteName, arguments: args }, signal), text = response.text; if (response.status < 200 || response.status >= 300) throw new Error(text.trim() || "MCP tool call failed"); return text ? JSON.parse(text) : {}; }
+function result(value) { return { content: [{ type: "text", text: JSON.stringify(value) }], details: value }; }
+export default function (pi) {
+  for (const tool of tools) pi.registerTool({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters, async execute(_id, params, signal) { const value = await mcp(tool, params, signal); return { content: value.content || [{ type: "text", text: JSON.stringify(value.structuredContent ?? value) }], details: { connection: tool.connection, tool: tool.remoteName, structuredContent: value.structuredContent, isError: value.isError === true } }; } });
+  pi.registerTool({ name: "schedule_list", label: "List schedules", description: "List schedules managed by Integral", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/schedules", "GET", undefined, signal)); } });
+  pi.registerTool({ name: "schedule_create", label: "Create schedule", description: "Create a recurring cron schedule or one-time task", parameters: Type.Object({ prompt: Type.String(), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : { type: "recurring", cron: params.cron, timezone: params.timezone }; return result(await schedule("/integral/control/schedules", "POST", { prompt: params.prompt, trigger }, signal)); } });
+  for (const action of ["enable", "disable"]) pi.registerTool({ name: "schedule_" + action, label: action + " schedule", description: action + " a schedule", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id) + "/" + action, "POST", { expectedRevision: params.expectedRevision }, signal)); } });
+  pi.registerTool({ name: "schedule_update", label: "Update schedule", description: "Update a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer(), prompt: Type.Optional(Type.String()), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : params.cron || params.timezone ? { type: "recurring", cron: params.cron, timezone: params.timezone } : undefined; return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "PATCH", { expectedRevision: params.expectedRevision, prompt: params.prompt, trigger }, signal)); } });
+  pi.registerTool({ name: "schedule_delete", label: "Delete schedule", description: "Delete a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "DELETE", { expectedRevision: params.expectedRevision }, signal)); } });
+  pi.registerTool({ name: "container_package_list", label: "List container packages", description: "List the governed Debian package set and current revision for the managed Pi image", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/container-packages", "GET", undefined, signal)); } });
+  for (const operation of ["install", "upgrade"]) pi.registerTool({ name: "container_package_" + operation, label: operation + " container packages", description: operation + " Debian packages through Integral's governed immutable-image builder; the current container is replaced after this turn", parameters: Type.Object({ packages: Type.Array(Type.String()), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/container-packages", "POST", { operation, packages: params.packages, expectedRevision: params.expectedRevision }, signal)); } });
+}
+`;
+  await atomicWrite(join(directory, "integral-mcp.ts"), source);
+}
+
+export function mcpToolName(connection: string, tool: string): string {
+  const readable = `mcp_${connection}_${tool}`
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .slice(0, 54);
+  const suffix = createHash("sha256")
+    .update(`${connection}\0${tool}`)
+    .digest("hex")
+    .slice(0, 8);
+  return `${readable}_${suffix}`;
 }
 
 export async function writeEmailExtension(
@@ -794,6 +1176,9 @@ export const dockerContainerBackend: ContainerBackend = {
   },
   createTaskPi(spec, config, network, onStderr, onEvent) {
     return new PiContainer(spec, config, network, onStderr, onEvent);
+  },
+  createMcpSidecar(spec, config, network, onStderr) {
+    return new StdioMcpSidecar(spec, config, network, onStderr);
   },
 };
 
