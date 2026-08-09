@@ -41,6 +41,7 @@ import {
 import { executeEmail, parseEmailOperation } from "./email.ts";
 import { internalFetch } from "./http-client.ts";
 import { callRemoteMcp } from "./mcp.ts";
+import { readJsonObject, readRequestBody, writeJson } from "./http-server.ts";
 import {
   createResource,
   listRepositoryRecovery,
@@ -736,7 +737,7 @@ export class Gateway {
         return;
       }
       if (method === "POST" && parts[3] === "git-upload-pack") {
-        const request = await bodyBuffer(req, 16 * 1024 * 1024),
+        const request = await readRequestBody(req, 16 * 1024 * 1024),
           response = await gitUploadPack(
             this.paths.imageRecipe,
             request,
@@ -841,7 +842,7 @@ export class Gateway {
         return;
       }
       if (method === "POST" && parts[3] === "git-upload-pack") {
-        const request = await bodyBuffer(req, 16 * 1024 * 1024),
+        const request = await readRequestBody(req, 16 * 1024 * 1024),
           response = await gitUploadPack(active.path, request, false);
         res.writeHead(200, {
           "content-type": "application/x-git-upload-pack-result",
@@ -1178,38 +1179,7 @@ async function bodyJson(
   req: IncomingMessage,
   maxBytes = 1_000_000,
 ): Promise<Record<string, unknown>> {
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const part = Buffer.from(chunk);
-    bytes += part.byteLength;
-    if (bytes > maxBytes)
-      throw new IntegralError("request body is too large", 413);
-    chunks.push(part);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString() || "{}") as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    return {};
-  }
-}
-async function bodyBuffer(
-  req: IncomingMessage,
-  maxBytes: number,
-): Promise<Buffer> {
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const part = Buffer.from(chunk);
-    bytes += part.byteLength;
-    if (bytes > maxBytes)
-      throw new IntegralError("request body is too large", 413);
-    chunks.push(part);
-  }
-  return Buffer.concat(chunks);
+  return await readJsonObject(req, { maxBytes, invalidAsEmpty: true });
 }
 async function gitUploadPack(
   gitDir: string,
@@ -1297,8 +1267,7 @@ function publicResource(value: ResourceRecord): Record<string, unknown> {
   };
 }
 function respondJson(res: ServerResponse, value: unknown, status = 200): void {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(value));
+  writeJson(res, status, value, false);
 }
 function respondError(res: ServerResponse, error: unknown): void {
   const status = error instanceof IntegralError ? error.exitCode : 500;

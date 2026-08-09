@@ -22,6 +22,7 @@ import type {
   UpdateSchedule,
 } from "./schedule-types.ts";
 import { componentIdentity, deploymentId, verifyInternal } from "./state.ts";
+import { readJsonObject, writeJson } from "./http-server.ts";
 
 export interface SchedulerDependencies {
   servers: HttpServerRuntime;
@@ -334,13 +335,7 @@ function profile(value: unknown): CreateSchedule["profile"] {
 async function bodyJson(
   request: IncomingMessage,
 ): Promise<Record<string, unknown>> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  try {
-    return record(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
-  } catch {
-    throw new IntegralError("invalid JSON body", 400);
-  }
+  return await readJsonObject(request, { invalidMessage: "invalid JSON body" });
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -370,8 +365,7 @@ function actor(body: Record<string, unknown>): string {
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, { "content-type": "application/json" });
-  response.end(`${JSON.stringify(value)}\n`);
+  writeJson(response, status, value);
 }
 
 function unauthorized(response: ServerResponse): void {

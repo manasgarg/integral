@@ -56,6 +56,7 @@ import {
   type RunRecorder,
   type RunTermination,
 } from "./run-store.ts";
+import { readJsonObject } from "./http-server.ts";
 
 export interface RunnerClock {
   setTimeout(
@@ -1300,21 +1301,5 @@ export function renderTaskContext(task: ScheduledTask): string {
 async function runnerBodyJson(
   req: http.IncomingMessage,
 ): Promise<Record<string, unknown>> {
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const part = Buffer.from(chunk);
-    bytes += part.byteLength;
-    if (bytes > 1_000_000)
-      throw new IntegralError("request body is too large", 413);
-    chunks.push(part);
-  }
-  try {
-    const value: unknown = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
+  return await readJsonObject(req, { invalidAsEmpty: true });
 }

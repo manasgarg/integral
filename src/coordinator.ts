@@ -37,6 +37,7 @@ import type { ScheduledOccurrence } from "./occurrence-store.ts";
 import { DEFAULT_PI_IMAGE, type Component } from "./constants.ts";
 import type { Logger } from "./logging.ts";
 import { ensureContainerImage } from "./container.ts";
+import { readJsonObject, writeJson } from "./http-server.ts";
 import {
   loadContainerPackageState,
   planContainerPackageChange,
@@ -1195,23 +1196,7 @@ async function bodyJson(
   req: IncomingMessage,
   maxBytes = 1_000_000,
 ): Promise<Record<string, unknown>> {
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const value = Buffer.from(chunk);
-    bytes += value.byteLength;
-    if (bytes > maxBytes)
-      throw new IntegralError("request body is too large", 413);
-    chunks.push(value);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString() || "{}") as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    throw new IntegralError("invalid JSON request", 400);
-  }
+  return await readJsonObject(req, { maxBytes });
 }
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -1225,8 +1210,7 @@ function optionalNumber(value: unknown): number | undefined {
   return value === undefined ? undefined : numberValue(value);
 }
 function json(res: ServerResponse, status: number, value: unknown): void {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(`${JSON.stringify(value)}\n`);
+  writeJson(res, status, value);
 }
 function unauthorized(res: ServerResponse): void {
   json(res, 401, { error: "unauthorized component request" });
