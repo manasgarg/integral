@@ -3,6 +3,13 @@ import { appendFile, chmod, cp, mkdir, readdir, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { EffectiveConfig } from "./config.ts";
 import type { PiProtocolEvent } from "./container/pi-protocol.ts";
+import {
+  isFailureEvent,
+  isToolEvent,
+  toolEventType,
+  toolIdentity,
+} from "./runs/pi-events.ts";
+import { redact, redactText } from "./runs/redaction.ts";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
 import type { ModelSelection } from "./model-selection.ts";
 import type { IntegralPaths } from "./paths.ts";
@@ -114,9 +121,6 @@ interface UsageSample {
   normalized: NormalizedUsage;
   provider: unknown;
 }
-
-const sensitiveKey =
-  /authorization|cookie|credential|secret|password|api[_-]?key|oauth.*code|(?:access|refresh|session)[_-]?token/i;
 
 export class RunStore {
   constructor(
@@ -849,61 +853,6 @@ function visit(
     callback(key, candidate);
     visit(candidate, callback);
   }
-}
-
-function isToolEvent(type: string): boolean {
-  return /tool.*(?:start|end|result|execution)|(?:start|end|result).*tool/i.test(
-    type,
-  );
-}
-
-function toolEventType(type: string): string {
-  if (/start/i.test(type)) return "tool-start";
-  if (/end|result/i.test(type)) return "tool-result";
-  return "tool-event";
-}
-
-function toolIdentity(event: PiProtocolEvent): string | undefined {
-  for (const key of ["toolCallId", "tool_call_id", "callId", "id"]) {
-    const value = event[key];
-    if (typeof value === "string" && value) return value;
-  }
-  return undefined;
-}
-
-function isFailureEvent(event: PiProtocolEvent): boolean {
-  return (
-    event.success === false ||
-    typeof event.error === "string" ||
-    (typeof event.type === "string" &&
-      /error|fail|reject|timeout/i.test(event.type))
-  );
-}
-
-function redact(value: unknown, secrets: string[]): unknown {
-  if (typeof value === "string") return redactText(value, secrets);
-  if (Array.isArray(value)) return value.map((item) => redact(item, secrets));
-  if (!isObject(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, candidate]) => [
-      key,
-      sensitiveKey.test(key) ? "[redacted]" : redact(candidate, secrets),
-    ]),
-  );
-}
-
-function redactText(value: string, secrets: string[]): string {
-  let result = value.replace(
-    /([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi,
-    "$1[redacted]@",
-  );
-  result = result.replace(
-    /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
-    "$1 [redacted]",
-  );
-  for (const secret of secrets)
-    if (secret) result = result.split(secret).join("[redacted]");
-  return result;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
