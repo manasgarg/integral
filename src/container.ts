@@ -26,6 +26,15 @@ import {
   type McpRuntime,
   type McpToolResult,
 } from "./mcp.ts";
+import {
+  interpretPiEvent,
+  type PiProtocolEvent,
+} from "./container/pi-protocol.ts";
+export {
+  interpretPiProtocol,
+  type PiProtocolEvent,
+  type PiProtocolResult,
+} from "./container/pi-protocol.ts";
 
 export interface ContainerSpec {
   image: string;
@@ -37,8 +46,6 @@ export interface ContainerSpec {
   home: string;
   gatewayAddress: string;
 }
-
-export type PiProtocolEvent = Record<string, unknown>;
 
 export interface PiRuntime {
   readonly spec: ContainerSpec;
@@ -978,46 +985,6 @@ export function dockerNetworkGateway(name: string): string {
   if (result.status !== 0 || !result.stdout.trim())
     throw new IntegralError("cannot discover locked Docker network gateway");
   return result.stdout.trim();
-}
-
-export type PiProtocolResult =
-  | { type: "text"; text: string }
-  | { type: "complete" }
-  | { type: "rejected"; error: string }
-  | { type: "ignored" };
-
-export function interpretPiProtocol(line: string): PiProtocolResult {
-  let event: PiProtocolEvent;
-  try {
-    event = JSON.parse(line) as PiProtocolEvent;
-  } catch {
-    return { type: "ignored" };
-  }
-  return interpretPiEvent(event);
-}
-
-function interpretPiEvent(event: PiProtocolEvent): PiProtocolResult {
-  if (
-    event.type === "response" &&
-    event.command === "prompt" &&
-    event.success === false
-  )
-    return {
-      type: "rejected",
-      error:
-        typeof event.error === "string"
-          ? `Pi rejected prompt: ${event.error}`
-          : "Pi rejected prompt",
-    };
-  if (event.type === "message_update") {
-    const delta = event.assistantMessageEvent as
-      Record<string, unknown> | undefined;
-    if (delta?.type === "text_delta" && typeof delta.delta === "string")
-      return { type: "text", text: delta.delta };
-  }
-  return event.type === "agent_end"
-    ? { type: "complete" }
-    : { type: "ignored" };
 }
 
 export class PiContainer {

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, chmod, cp, mkdir, readdir, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { EffectiveConfig } from "./config.ts";
-import type { PiProtocolEvent } from "./container.ts";
+import type { PiProtocolEvent } from "./container/pi-protocol.ts";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
 import type { ModelSelection } from "./model-selection.ts";
 import type { IntegralPaths } from "./paths.ts";
