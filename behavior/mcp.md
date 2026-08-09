@@ -1,9 +1,9 @@
-# Remote MCP behaviors
+# MCP behaviors
 
-These behaviors define generalized remote MCP connections. Integral acts as the
-MCP client, while credentials and unrestricted network access remain outside Pi
-containers. Local `stdio` servers, MCP Apps, prompts, resources, and
-per-conversation enable switches are outside this scope.
+These behaviors define generalized remote and stdio MCP connections. Integral
+acts as the MCP client, while credentials and unrestricted network access remain
+outside Pi containers. MCP Apps, prompts, resources, and per-conversation enable
+switches are outside this scope.
 
 <!-- Automation note (MCP-948B2522): This behavior defines planned generalized MCP authorization functionality; executable coverage will land with implementation. -->
 <!-- Automation note (MCP-DB6BD516): This behavior defines planned generalized MCP protocol compatibility; executable coverage will land with implementation. -->
@@ -11,6 +11,7 @@ per-conversation enable switches are outside this scope.
 <!-- Automation note (MCP-2F0F5CB5): This behavior defines planned generalized MCP tool invocation; executable coverage will land with implementation. -->
 <!-- Automation note (MCP-5751370A): This behavior defines planned generalized MCP catalog refresh functionality; executable coverage will land with implementation. -->
 <!-- Automation note (MCP-6F5CFA0E): This behavior defines planned generalized MCP failure isolation; executable coverage will land with implementation. -->
+<!-- Automation note (MCP-0A804DA4): This behavior defines planned stdio MCP sidecar isolation and lifecycle; executable coverage will land with implementation. -->
 
 ## MCP-948B2522 — Discover and complete MCP authorization
 
@@ -75,9 +76,10 @@ Given an active MCP server advertises one or more tools
 Given Pi invokes a tool discovered from an MCP connection
 	When integral handles the invocation
 		Then integral validates the arguments against the advertised input schema
-			And sends `tools/call` to the originating connection and remote tool
-			And sends the request only through the authenticated Integral gateway
-			And injects the real credential only after matching the connection's scheme, host, port, and path boundary
+			And sends `tools/call` to the originating connection and server tool
+			And routes the request over the connection's negotiated remote or stdio transport
+			And sends a remote request only through the authenticated Integral gateway
+			And injects a remote credential only after matching the connection's scheme, host, port, and path boundary
 			And preserves supported text, image, audio, resource-link, embedded-resource, and structured result content
 			And represents an MCP tool execution error as a tool result that Pi can reason about
 			And represents a transport or protocol failure without exposing credentials or unrestricted response data
@@ -109,7 +111,7 @@ Given an active MCP server changes its tool catalog
 ## MCP-6F5CFA0E — Isolate MCP connection failures
 
 Given multiple MCP connections are configured
-	When one server is unreachable, unauthorized, malformed, or protocol-incompatible
+	When one server is unreachable, unauthorized, malformed, protocol-incompatible, or its stdio process exits
 		Then integral marks only that connection unavailable or degraded
 			And identifies the failing stage in `integral connection ls`
 			And keeps its credentials secret
@@ -118,3 +120,31 @@ Given multiple MCP connections are configured
 		Then integral returns the connection to active
 			And makes its tools available no later than the next Pi turn
 			And does not require the connection to be recreated
+
+## MCP-0A804DA4 — Isolate and supervise a stdio MCP server
+
+Given an active stdio MCP connection is available to a Pi session
+	When the runner provisions that session
+		Then integral starts one dedicated MCP sidecar from the configured runner image
+			And runs it as the same non-root numeric user used for Pi
+			And gives it a read-only root filesystem, bounded temporary storage, bounded memory, no Linux capabilities, and no privilege escalation
+			And does not mount the Pi session home, repositories, stores, Docker socket, Integral control-plane files, or host paths into it
+			And supplies only its declared non-secret environment and assigned secret environment values
+			And delivers secret values after sidecar creation without placing them in image configuration, container arguments, or persistent Docker metadata
+			And keeps its network disconnected except for explicitly declared URL boundaries through the authenticated gateway
+			And brokers MCP messages between Pi and the sidecar without exposing the sidecar's standard streams directly to Pi
+			And negotiates the newest mutually supported version from the same MCP versions supported for remote servers
+			And treats newline-delimited standard output as MCP protocol messages
+			And treats standard error as bounded diagnostic output with credential redaction
+	When the sidecar writes non-protocol data to standard output
+		Then integral marks that connection unavailable for the session
+			And terminates the sidecar without interpreting the data as a tool result
+	When the sidecar exits, hangs, exceeds a resource limit, or violates its network policy
+		Then integral fails the affected invocation with a bounded connection error
+			And terminates any remaining sidecar resources
+			And leaves Pi and unrelated MCP connections running
+	When the Pi session ends or is replaced
+		Then integral closes the sidecar's standard input
+			And allows a bounded graceful-exit period
+			And forcibly terminates the sidecar if it remains running
+			And removes all sidecar resources and secret material
