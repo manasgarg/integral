@@ -260,7 +260,7 @@ test("[EMAIL-89334867] email extension contains only enabled semantic tools and 
     home = join(paths.root, "session");
   await writeEmailExtension(home, [gmail(["read", "send"])]);
   const source = await readFile(
-    join(home, ".pi", "agent", "extensions", "integral-email.ts"),
+    join(home, ".integral", "extensions", "integral-email.ts"),
     "utf8",
   );
   assert.match(source, /integral\/email/);
@@ -277,7 +277,7 @@ test("[EMAIL-89334867] email extension contains only enabled semantic tools and 
 test("[EMAIL-89334867] no email extension is installed without an active email connection", async (t) => {
   const paths = await fixture(t),
     home = join(paths.root, "empty-session"),
-    file = join(home, ".pi", "agent", "extensions", "integral-email.ts");
+    file = join(home, ".integral", "extensions", "integral-email.ts");
   await writeEmailExtension(home, []);
   await assert.rejects(stat(file), { code: "ENOENT" });
 });

@@ -14,6 +14,7 @@ import {
   addHostResource,
   cleanupResourceProjection,
   createResource,
+  ensurePiProfileRepository,
   listStoreSnapshots,
   prepareResourceProjection,
   readResource,
@@ -23,6 +24,8 @@ import {
   restoreStoreSnapshot,
   sessionHasResource,
   softDeleteResource,
+  PI_PROFILE_MOUNT,
+  PI_PROFILE_NAME,
   validateMountPath,
 } from "../src/resources.ts";
 import { deploymentId } from "../src/state.ts";
@@ -32,6 +35,12 @@ const run = promisify(execFile);
 
 test("[REPO-515BAAB9] governed mount paths stay below the safe Pi home namespace", () => {
   assert.equal(validateMountPath("/home/pi/work/repo"), "/home/pi/work/repo");
+  assert.equal(
+    validateMountPath(PI_PROFILE_MOUNT, PI_PROFILE_NAME),
+    PI_PROFILE_MOUNT,
+  );
+  assert.throws(() => validateMountPath(PI_PROFILE_MOUNT));
+  assert.throws(() => validateMountPath("/home/pi/profile", PI_PROFILE_NAME));
   for (const path of [
     "relative",
     "/home/pi",
@@ -41,6 +50,108 @@ test("[REPO-515BAAB9] governed mount paths stay below the safe Pi home namespace
     "/tmp/repo",
   ])
     assert.throws(() => validateMountPath(path));
+});
+
+test("[PROFILE-6A93810F] the host initializes the opaque Pi profile repository exactly once", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    [first, concurrent] = await Promise.all([
+      ensurePiProfileRepository(paths, config),
+      ensurePiProfileRepository(paths, config),
+    ]);
+  assert.equal(concurrent.id, first.id);
+  assert.equal(first.connection, PI_PROFILE_NAME);
+  assert.equal(first.kind, "host-repo");
+  assert.equal(first.mount, PI_PROFILE_MOUNT);
+  assert.equal(first.branch, "main");
+  assert.equal(first.writePolicy, "direct");
+  assert.equal(first.state, "active");
+  assert.equal(
+    (await run("git", ["--git-dir", first.path, "ls-tree", "main"])).stdout,
+    "",
+  );
+  const head = (
+    await run("git", ["--git-dir", first.path, "rev-parse", "main"])
+  ).stdout.trim();
+  assert.match(head, /^[0-9a-f]{40,64}$/);
+
+  const deleted = await softDeleteResource(
+    paths,
+    first.connection,
+    first.revision,
+    "pi:test",
+  );
+  const afterDeletion = await ensurePiProfileRepository(paths, config);
+  assert.equal(afterDeletion.id, first.id);
+  assert.equal(afterDeletion.state, "soft-deleted");
+  assert.equal(afterDeletion.revision, deleted.revision);
+  const laterHome = join(paths.root, "deleted-profile-home");
+  await mkdir(laterHome);
+  const later = await prepareResourceProjection(
+    paths,
+    config,
+    laterHome,
+    "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+  );
+  assert.deepEqual(later.unavailable, [
+    {
+      name: PI_PROFILE_NAME,
+      kind: "host-repo",
+      reason: "soft_deleted",
+    },
+  ]);
+});
+
+test("[PROFILE-3083AEEE] each run checks out the Pi profile at its native writable path", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    profile = await ensurePiProfileRepository(paths, config),
+    home = join(paths.root, "profile-home");
+  await mkdir(home);
+  const projection = await prepareResourceProjection(
+    paths,
+    config,
+    home,
+    "abababab-abab-4bab-8bab-abababababab",
+  );
+  const mounted = projection.repositories.find(
+    ({ resource }) => resource.connection === PI_PROFILE_NAME,
+  );
+  assert.ok(mounted);
+  assert.equal(mounted.checkout, join(home, ".pi", "agent"));
+  assert.equal(
+    mounted.initialHead,
+    (
+      await run("git", ["--git-dir", profile.path, "rev-parse", "main"])
+    ).stdout.trim(),
+  );
+  await writeFile(join(mounted.checkout, "pi-owned.txt"), "opaque\n");
+  assert.equal(
+    await readFile(join(mounted.checkout, "pi-owned.txt"), "utf8"),
+    "opaque\n",
+  );
+
+  const deleted = await softDeleteResource(
+    paths,
+    profile.connection,
+    profile.revision,
+    "pi:test",
+  );
+  await assert.rejects(() =>
+    restoreResource(
+      paths,
+      profile.connection,
+      deleted.revision,
+      "/home/pi/profile",
+    ),
+  );
+  const restored = await restoreResource(
+    paths,
+    profile.connection,
+    deleted.revision,
+    PI_PROFILE_MOUNT,
+  );
+  assert.equal(restored.mount, PI_PROFILE_MOUNT);
 });
 
 test("[CONNECTION-717CAD0E] a replacement directory is never silently adopted, while the recorded identity can recover", async (t) => {

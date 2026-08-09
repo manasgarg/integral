@@ -184,6 +184,11 @@ export function buildContainerSpec(options: {
     { source: options.caCert, target: caPath, readonly: true },
     { source: options.caBundle, target: bundlePath, readonly: true },
     { source: options.sessionHome, target: "/home/pi", readonly: false },
+    {
+      source: join(options.sessionHome, ".integral", "auth.json"),
+      target: "/home/pi/.pi/agent/auth.json",
+      readonly: true,
+    },
   ];
   if (options.historyView)
     mounts.push({
@@ -581,7 +586,7 @@ export async function writeMcpExtension(
   sessionHome: string,
   catalogs: McpCatalog[],
 ): Promise<void> {
-  const directory = join(sessionHome, ".pi", "agent", "extensions");
+  const directory = join(sessionHome, ".integral", "extensions");
   await ensureDir(directory);
   const declarations = catalogs.flatMap((catalog) =>
     catalog.tools.map((tool) => ({
@@ -633,7 +638,7 @@ export async function writeEmailExtension(
   connections: Connection[],
 ): Promise<void> {
   if (!connections.length) return;
-  const directory = join(sessionHome, ".pi", "agent", "extensions");
+  const directory = join(sessionHome, ".integral", "extensions");
   await ensureDir(directory);
   const declarations = connections.map((connection) => ({
     name: connection.name,
@@ -661,7 +666,7 @@ export async function writeResourceExtension(
   sessionHome: string,
   projection: ResourceProjection,
 ): Promise<void> {
-  const directory = join(sessionHome, ".pi", "agent", "extensions");
+  const directory = join(sessionHome, ".integral", "extensions");
   await ensureDir(directory);
   const repositories = projection.repositories.map(({ resource }) => ({
     id: resource.id,
@@ -722,7 +727,7 @@ process.exitCode = code;
 }
 
 export async function writeTaskExtension(sessionHome: string): Promise<void> {
-  const directory = join(sessionHome, ".pi", "agent", "extensions");
+  const directory = join(sessionHome, ".integral", "extensions");
   await ensureDir(directory);
   const source = `import { request } from "node:http";
 import { Type } from "typebox";
@@ -743,7 +748,7 @@ export async function writePiCredential(
   sessionHome: string,
   model: Connection,
 ): Promise<void> {
-  const directory = join(sessionHome, ".pi", "agent");
+  const directory = join(sessionHome, ".integral");
   await ensureDir(directory);
   const credential =
     model.auth === "oauth" || model.auth === "device-code"

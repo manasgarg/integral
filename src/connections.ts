@@ -508,7 +508,13 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     if (mount === "/home/pi" || !mount.startsWith("/home/pi/"))
       throw new IntegralError("mount must be below /home/pi");
     const relativeMount = mount.slice("/home/pi/".length);
+    const piProfile = name === "pi-profile";
+    if (piProfile && (kind !== "host-repo" || mount !== "/home/pi/.pi/agent"))
+      throw new IntegralError(
+        "pi-profile must be a host repository mounted at /home/pi/.pi/agent",
+      );
     if (
+      !piProfile &&
       [".pi", "history"].some(
         (reserved) =>
           relativeMount === reserved ||
