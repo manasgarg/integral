@@ -182,6 +182,7 @@ test("[MCP-007BCE08] catalog parsing bounds schemas, rejects duplicate names, an
       },
       { name: "duplicate", inputSchema: { type: "object" } },
       { name: "duplicate", inputSchema: { type: "object" } },
+      { name: "duplicate", inputSchema: { type: "object" } },
       { inputSchema: { type: "object" } },
       {
         name: "huge",
@@ -202,7 +203,7 @@ test("[MCP-007BCE08] catalog parsing bounds schemas, rejects duplicate names, an
     },
   ]);
   assert.equal(catalog.nextCursor, "next");
-  assert.equal(catalog.diagnostics.length, 4);
+  assert.equal(catalog.diagnostics.length, 5);
   assert.ok(catalog.diagnostics.every((value) => value.length <= 500));
 });
 
