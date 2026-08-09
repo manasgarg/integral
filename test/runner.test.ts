@@ -26,6 +26,30 @@ function emptyProjection(sessionId: string): ResourceProjection {
   };
 }
 
+function profileProjection(sessionId: string): ResourceProjection {
+  return {
+    ...emptyProjection(sessionId),
+    repositories: [
+      {
+        resource: {
+          id: "profile-id",
+          connection: "pi-profile",
+          kind: "host-repo",
+          path: "/host/profile.git",
+          mount: "/home/pi/.pi",
+          branch: "main",
+          identity: { device: "1", inode: "2" },
+          state: "active",
+          revision: 1,
+          writePolicy: "direct",
+        },
+        checkout: "/test/session/.pi",
+        initialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    ],
+  };
+}
+
 class ManualClock implements RunnerClock {
   readonly timers: {
     callback: () => void | Promise<void>;
@@ -208,7 +232,12 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
         bundle: "/test/bundle.pem",
       }),
       freshSessionHome: async () => "/test/session",
-      prepareResourceProjection: async () => emptyProjection("session-1"),
+      ensurePiProfileRepository: async () => {
+        calls.push("profile:ensure");
+        return {} as never;
+      },
+      prepareResourceProjection: async () => profileProjection("session-1"),
+      cleanupResourceProjection: async () => undefined,
       newSessionIdentity: () => ({
         sessionId: "session-1",
         sessionToken: "token-1",
@@ -232,11 +261,20 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
   await runner.runOnce();
   await runner.runOnce();
 
+  assert.equal(calls.filter((call) => call === "profile:ensure").length, 1);
   assert.equal(calls.filter((call) => call === "pi:create").length, 1);
   assert.equal(calls.filter((call) => call === "talk:email-tools").length, 1);
   assert.ok(calls.includes("pi:prompt:hello"));
   assert.equal(spec?.image, "sha256:test-pi");
   assert.ok(spec?.args.includes("claude-sonnet-4-6"));
+  for (const extension of [
+    "integral-mcp.ts",
+    "integral-resources.ts",
+    "integral-email.ts",
+  ])
+    assert.ok(
+      spec?.args.includes(`/home/pi/.integral/extensions/${extension}`),
+    );
   assert.match(spec?.args.at(-1) ?? "", /ephemeral Integral-managed container/);
   const historyMount = spec?.mounts.find(
     (mount) => mount.target === "/home/pi/history",
@@ -266,6 +304,10 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
   assert.equal(currentMetadata.status, "running");
   assert.match(currentActivity, /hello/);
   assert.match(currentActivity, /answer/);
+  assert.match(
+    currentActivity,
+    /pi-profile.*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/,
+  );
   assert.equal(currentSignals.usage.inputTokens, 12);
   assert.equal(currentSignals.usage.cacheReadTokens, 8);
   await clock.fire(config.runner.idleTimeoutSeconds * 1000);
