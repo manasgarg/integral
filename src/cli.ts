@@ -39,6 +39,9 @@ import {
 } from "./model-selection.ts";
 import { imageCommand } from "./cli/image.ts";
 export { imageCommand, type ImageCommandDependencies } from "./cli/image.ts";
+import { queueCommand } from "./cli/queue.ts";
+export { queueCommand, type QueueDependencies } from "./cli/queue.ts";
+import { fetchJson, requestJson, requestOk } from "./cli/http.ts";
 
 const TOP_HELP = `integral — a governed, containerized Pi conversation
 
@@ -95,13 +98,6 @@ const SERVER_HELP = `Usage: integral server start [--component <name>]
 
 Combined mode is the default. --component <name> starts one component only.
 Component values: coordinator, runner, gateway, scheduler
-`;
-const QUEUE_HELP = `Usage: integral queue <command>
-
-Commands:
-  ls [--json]             list queued and in-flight messages
-  edit <id> <text>        edit a queued message
-  delete <id>             delete a queued message
 `;
 const SCHEDULE_HELP = `Usage: integral schedule <command>
 
@@ -960,91 +956,6 @@ async function serverCommand(args: string[]): Promise<number> {
     return 0;
   }
   throw new IntegralError(`unknown server command: ${command}`);
-}
-
-interface QueueItem {
-  id: string;
-  text: string;
-  status: string;
-}
-
-export interface QueueDependencies {
-  resolvePaths(): IntegralPaths;
-  componentEndpoint: typeof componentEndpoint;
-  verifiedFetch: typeof verifiedFetch;
-  fetch: typeof globalThis.fetch;
-  writeOutput(text: string): void;
-}
-
-const productionQueueDependencies: QueueDependencies = {
-  resolvePaths,
-  componentEndpoint,
-  verifiedFetch,
-  fetch: globalThis.fetch,
-  writeOutput: (text) => process.stdout.write(text),
-};
-
-export async function queueCommand(
-  args: string[],
-  overrides: Partial<QueueDependencies> = {},
-): Promise<number> {
-  const dependencies = { ...productionQueueDependencies, ...overrides };
-  if (!args[0] || helpRequested(args) || args[0] === "help") {
-    dependencies.writeOutput(QUEUE_HELP);
-    return 0;
-  }
-  const paths = dependencies.resolvePaths();
-  let endpoint: string;
-  try {
-    endpoint = await dependencies.componentEndpoint(paths, "coordinator");
-    await dependencies.verifiedFetch(paths, "coordinator", "/integral/health");
-  } catch {
-    throw new IntegralError(
-      "coordinator is not reachable; start it with integral server start",
-    );
-  }
-  const command = args[0];
-  if (command === "ls") {
-    const snapshot = (await fetchJson(
-      new URL("/integral/snapshot", endpoint),
-      dependencies.fetch,
-    )) as { queue: QueueItem[] };
-    if (has(args, "--json"))
-      dependencies.writeOutput(`${JSON.stringify(snapshot.queue, null, 2)}\n`);
-    else
-      for (const item of snapshot.queue)
-        dependencies.writeOutput(`${item.status}\t${item.id}\t${item.text}\n`);
-    return 0;
-  }
-  if (command === "edit") {
-    const id = args[1],
-      text = args.slice(2).join(" ").trim();
-    if (!id || !text)
-      throw new IntegralError("usage: integral queue edit <id> <text>");
-    await requestOk(
-      new URL(`/integral/queue/${id}`, endpoint),
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text }),
-      },
-      dependencies.fetch,
-    );
-    dependencies.writeOutput(`Edited ${id}.\n`);
-    return 0;
-  }
-  if (command === "delete") {
-    const id = args[1];
-    if (!id) throw new IntegralError("usage: integral queue delete <id>");
-    await requestOk(
-      new URL(`/integral/queue/${id}`, endpoint),
-      { method: "DELETE" },
-      dependencies.fetch,
-    );
-    dependencies.writeOutput(`Deleted ${id}.\n`);
-    return 0;
-  }
-  throw new IntegralError(`unknown queue command: ${command}`);
 }
 
 export interface ScheduleDependencies {
@@ -1969,45 +1880,4 @@ function humanMessage(text: string, colors: boolean): string {
   return colors
     ? `${humanLabel(true)}${text} ${TALK_STYLE_RESET}\n`
     : `${humanLabel(false)}${text}\n`;
-}
-async function fetchJson(
-  url: URL,
-  fetcher: typeof globalThis.fetch = globalThis.fetch,
-  init?: RequestInit,
-): Promise<unknown> {
-  const response = await fetcher(url, init);
-  if (!response.ok)
-    throw new IntegralError(
-      ((await response.json()) as { error?: string }).error ??
-        `request failed: ${response.status}`,
-    );
-  return response.json();
-}
-async function requestOk(
-  url: URL,
-  init: RequestInit,
-  fetcher: typeof globalThis.fetch = globalThis.fetch,
-): Promise<void> {
-  const response = await fetcher(url, init);
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as {
-      error?: string;
-    };
-    throw new IntegralError(body.error ?? `request failed: ${response.status}`);
-  }
-}
-async function requestJson(
-  url: URL,
-  init: RequestInit,
-  fetcher: typeof globalThis.fetch = globalThis.fetch,
-): Promise<unknown> {
-  const response = await fetcher(url, init),
-    body = (await response.json().catch(() => ({}))) as unknown;
-  if (!response.ok)
-    throw new IntegralError(
-      body && typeof body === "object" && "error" in body
-        ? String(body.error)
-        : `request failed: ${response.status}`,
-    );
-  return body;
 }
