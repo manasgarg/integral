@@ -140,7 +140,7 @@ test("[CONFIG-6A90E2D4] OAuth and device-code metadata is complete, HTTPS-only e
   );
 });
 
-test("[CONFIG-3F7A81C6] [CONNECTION-4B8D73F1] MCP connections support only declared remote HTTP transports", () => {
+test("[CONFIG-3F7A81C6] [CONFIG-02905B6E] [CONNECTION-0EF2CF89] MCP declarations support remote and isolated stdio transports", () => {
   assert.equal(
     validateConnection({
       name: "docs",
@@ -160,17 +160,76 @@ test("[CONFIG-3F7A81C6] [CONNECTION-4B8D73F1] MCP connections support only decla
     }).transport,
     "sse",
   );
+  const stdio = validateConnection({
+    name: "local-docs",
+    kind: "mcp",
+    auth: "none",
+    transport: "stdio",
+    command: "node",
+    args: ["server.js", "--literal=$(false)"],
+    env: { CACHE_DIR: "/tmp/cache" },
+    secret_env: ["API_TOKEN"],
+    allowed_urls: ["https://api.example.test/v1"],
+  });
+  assert.deepEqual(stdio, {
+    name: "local-docs",
+    kind: "mcp",
+    auth: "none",
+    transport: "stdio",
+    command: "node",
+    args: ["server.js", "--literal=$(false)"],
+    env: { CACHE_DIR: "/tmp/cache" },
+    secretEnv: ["API_TOKEN"],
+    allowedUrls: ["https://api.example.test/v1"],
+  });
   assert.throws(
     () =>
       validateConnection({
-        name: "docs",
+        name: "bad",
         kind: "mcp",
-        url: "https://mcp.test",
         auth: "none",
         transport: "stdio",
+        command: "server",
+        url: "https://mcp.test",
       }),
-    /transport/,
+    /command instead of url/,
   );
+  assert.throws(
+    () =>
+      validateConnection({
+        name: "bad",
+        kind: "mcp",
+        auth: "key",
+        transport: "stdio",
+        command: "server",
+      }),
+    /no transport authentication/,
+  );
+});
+
+test("[CONNECTION-5833EDC7] [CONNECTION-634C2DA7] stdio secret environments are stored together and required for activation", async (t) => {
+  const paths = await fixture(t),
+    connection = validateConnection({
+      name: "local",
+      kind: "mcp",
+      auth: "none",
+      transport: "stdio",
+      command: "server",
+      secret_env: ["TOKEN", "SECONDARY"],
+    }),
+    credential = JSON.stringify({
+      type: "stdio-env",
+      values: { TOKEN: "one", SECONDARY: "two" },
+    });
+  await saveConnection(paths, connection, credential);
+  assert.equal((await listConnections(paths))[0]?.state, "active");
+  await removeCredential(paths, "local");
+  assert.equal(
+    (await listConnections(paths))[0]?.state,
+    "DISABLED (no secret)",
+  );
+  await saveConnection(paths, connection, credential);
+  assert.equal((await listConnections(paths))[0]?.state, "active");
 });
 
 test("[CONNECTION-8F14C3B7] invalid generic declarations leave storage unchanged", async (t) => {

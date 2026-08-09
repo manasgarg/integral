@@ -87,6 +87,15 @@ test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and
     assert.match(result.stdout, new RegExp(`\\b${command}\\b`));
   assert.match(result.stdout, /guided setup/);
   assert.match(result.stdout, /--auth <method>/);
+  for (const option of [
+    "--transport",
+    "--command",
+    "--arg",
+    "--env",
+    "--secret-env",
+    "--allow-url",
+  ])
+    assert.match(result.stdout, new RegExp(option));
   assert.doesNotMatch(result.stdout, /^\s+(grant|revoke)\b/m);
 });
 
@@ -160,6 +169,41 @@ test("[CONNECTION-12C87631] explicit GitHub setup stores one automatically bound
       state: "active",
     },
   ]);
+});
+
+test("[CONNECTION-0EF2CF89] explicit stdio MCP setup preserves literal process configuration", async () => {
+  assert.deepEqual(
+    await explicitConnection([
+      "mcp",
+      "--name",
+      "local",
+      "--transport",
+      "stdio",
+      "--command",
+      "node",
+      "--arg",
+      "server.js",
+      "--arg",
+      "$(not-a-shell)",
+      "--env",
+      "CACHE_DIR=/tmp/cache",
+      "--secret-env",
+      "API_TOKEN",
+      "--allow-url",
+      "https://api.example.test/v1",
+    ]),
+    {
+      name: "local",
+      kind: "mcp",
+      auth: "none",
+      transport: "stdio",
+      command: "node",
+      args: ["server.js", "$(not-a-shell)"],
+      env: { CACHE_DIR: "/tmp/cache" },
+      secretEnv: ["API_TOKEN"],
+      allowedUrls: ["https://api.example.test/v1"],
+    },
+  );
 });
 
 test("[CONNECTION-89A88F7C] [CONNECTION-857967F4] explicit host resources accept absolute and relative source and mount paths", async () => {

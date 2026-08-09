@@ -78,6 +78,14 @@ Commands:
 
 All active connections are available automatically. There are no grant or revoke commands.
 
+MCP options:
+  --transport <streamable-http|sse|stdio>
+  --command <executable>  stdio executable in the configured runner image
+  --arg <value>           repeat for each literal stdio argument
+  --env <name>=<value>    repeat for non-secret stdio environment values
+  --secret-env <name>     repeat for protected stdio environment values
+  --allow-url <url>       repeat to allow bounded stdio sidecar egress
+
 Email examples:
   integral connection add gmail --auth oauth --account <email> --client-id <id> --capabilities read,search,send --allowed-recipients <addresses>
   integral connection add mailgun --auth key --domain <domain> --from <email> --capabilities send --allowed-recipients <addresses>
@@ -143,6 +151,13 @@ Print the integral, Node.js, and supported Pi versions.
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
+}
+function flags(args: string[], name: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index++)
+    if (args[index] === name && args[index + 1] !== undefined)
+      values.push(args[index + 1]!);
+  return values;
 }
 function has(args: string[], name: string): boolean {
   return args.includes(name);
@@ -555,7 +570,12 @@ async function connectionCommand(args: string[]): Promise<number> {
       return 0;
     }
     let credential: string | undefined;
-    if (setup.auth === "key")
+    if (setup.transport === "stdio" && setup.secretEnv?.length)
+      credential = await readStdioCredentials(
+        setup.secretEnv,
+        has(args, "--credential-stdin"),
+      );
+    else if (setup.auth === "key")
       credential = await readCredential(has(args, "--credential-stdin"));
     else if (setup.auth === "oauth" || setup.auth === "device-code")
       credential = await authenticateOAuth(paths, setup);
@@ -626,7 +646,8 @@ export async function explicitConnection(args: string[]): Promise<Connection> {
     entry = CATALOG.find((e) => e.name === entryName);
   if (!entry) throw new IntegralError(`unknown catalog entry: ${entryName}`);
   const name = flag(args, "--name") ?? entryName;
-  const requestedAuth = flag(args, "--auth");
+  const requestedAuth = flag(args, "--auth"),
+    transport = flag(args, "--transport");
   let ask: ((message: string) => Promise<string>) | undefined;
   let rl: ReturnType<typeof createInterface> | undefined;
   if (!requestedAuth && entry.auth.length > 1 && input.isTTY) {
@@ -635,7 +656,10 @@ export async function explicitConnection(args: string[]): Promise<Connection> {
   }
   let auth: AuthMethod;
   try {
-    auth = await selectAuthentication(entry.auth, requestedAuth, ask);
+    auth =
+      entry.kind === "mcp" && !requestedAuth
+        ? "none"
+        : await selectAuthentication(entry.auth, requestedAuth, ask);
   } finally {
     rl?.close();
   }
@@ -651,6 +675,23 @@ export async function explicitConnection(args: string[]): Promise<Connection> {
     raw.path = path ? resolve(path) : path;
     raw.mount = mount ? resolve("/home/pi", mount) : mount;
     if (entry.kind === "host-repo") raw.branch = flag(args, "--branch");
+  } else if (entry.kind === "mcp" && transport === "stdio") {
+    raw.transport = "stdio";
+    raw.command = flag(args, "--command");
+    raw.args = flags(args, "--arg");
+    const env: Record<string, string> = {};
+    for (const item of flags(args, "--env")) {
+      const separator = item.indexOf("=");
+      if (separator <= 0)
+        throw new IntegralError("--env requires <name>=<value>");
+      const key = item.slice(0, separator);
+      if (Object.hasOwn(env, key))
+        throw new IntegralError(`duplicate --env name: ${key}`);
+      env[key] = item.slice(separator + 1);
+    }
+    raw.env = env;
+    raw.secret_env = flags(args, "--secret-env");
+    raw.allowed_urls = flags(args, "--allow-url");
   } else raw.url = flag(args, "--url");
   const methods = flag(args, "--methods");
   if (methods) raw.methods = methods.split(",");
@@ -781,8 +822,35 @@ async function guidedConnection(): Promise<Connection> {
       entry = CATALOG[selected];
     if (!entry) throw new IntegralError("invalid selection");
     const name =
-        (await rl.question(`Name [${entry.name}]: `)).trim() || entry.name,
-      defaultAuth = "defaultAuth" in entry ? entry.defaultAuth : entry.auth[0],
+      (await rl.question(`Name [${entry.name}]: `)).trim() || entry.name;
+    if (entry.kind === "mcp") {
+      const transport = (
+          await rl.question(
+            "Transport (auto/streamable-http/sse/stdio) [auto]: ",
+          )
+        ).trim(),
+        args = [entry.name, "--name", name, "--auth", "none"];
+      if (transport === "stdio") {
+        args.push(
+          "--transport",
+          "stdio",
+          "--command",
+          await rl.question("Command: "),
+        );
+        while (true) {
+          const argument = await rl.question("Argument [done]: ");
+          if (!argument) break;
+          args.push("--arg", argument);
+        }
+      } else {
+        args.push("--url", await rl.question("URL: "));
+        if (transport && transport !== "auto")
+          args.push("--transport", transport);
+      }
+      return explicitConnection(args);
+    }
+    const defaultAuth =
+        "defaultAuth" in entry ? entry.defaultAuth : entry.auth[0],
       chosenAuth =
         entry.auth.length === 1
           ? entry.auth[0]
@@ -792,16 +860,13 @@ async function guidedConnection(): Promise<Connection> {
               )
             ).trim() || defaultAuth;
     const args = [entry.name, "--name", name, "--auth", chosenAuth];
-    if (
-      (entry.kind === "http" || entry.kind === "mcp") &&
-      entry.name !== "github"
-    ) {
+    if (entry.kind === "http" && entry.name !== "github") {
       args.push("--url", await rl.question("URL: "));
       const path = (await rl.question("Path prefix [URL path]: ")).trim();
       if (path) args.push("--path-prefix", path);
     }
     if (
-      (entry.kind === "http" || entry.kind === "mcp") &&
+      entry.kind === "http" &&
       (chosenAuth === "oauth" || chosenAuth === "device-code")
     ) {
       args.push(
@@ -817,12 +882,6 @@ async function guidedConnection(): Promise<Connection> {
           "--device-authorization-url",
           await rl.question("Device authorization URL: "),
         );
-    }
-    if (entry.kind === "mcp") {
-      const transport = (
-        await rl.question("Transport (streamable-http/sse) [streamable-http]: ")
-      ).trim();
-      if (transport) args.push("--transport", transport);
     }
     if (entry.kind === "email") {
       const defaultCapabilities =
@@ -919,6 +978,31 @@ async function readCredential(fromStdin: boolean): Promise<string> {
   });
   if (!value.trim()) throw new IntegralError("credential must not be empty");
   return value.trim();
+}
+async function readStdioCredentials(
+  names: string[],
+  fromStdin: boolean,
+): Promise<string> {
+  const values: Record<string, string> = {};
+  if (fromStdin) {
+    const rl = createInterface({ input, output });
+    try {
+      for (const name of names) {
+        const value = (await rl.question("")).trim();
+        if (!value)
+          throw new IntegralError(`credential for ${name} must not be empty`);
+        values[name] = value;
+      }
+    } finally {
+      rl.close();
+    }
+  } else {
+    for (const name of names) {
+      process.stdout.write(`${name} (hidden; stored outside configuration): `);
+      values[name] = await readCredential(false);
+    }
+  }
+  return JSON.stringify({ type: "stdio-env", values });
 }
 async function authenticateOAuth(
   paths: IntegralPaths,
