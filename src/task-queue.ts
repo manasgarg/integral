@@ -4,6 +4,7 @@ import type { ModelSelection } from "./model-selection.ts";
 import type { ScheduledOccurrence } from "./occurrence-store.ts";
 import type { IntegralPaths } from "./paths.ts";
 import { IntegralError } from "./errors.ts";
+import { SerialExecutor } from "./persistence/serial-executor.ts";
 
 export type TaskState =
   | "queued"
@@ -76,7 +77,7 @@ function immutableTask(task: ScheduledTask): unknown {
 
 export class DurableTaskQueue {
   private data: TaskFile = { tasks: [], outbox: [] };
-  private chain: Promise<unknown> = Promise.resolve();
+  private readonly operations = new SerialExecutor();
 
   constructor(
     private readonly paths: IntegralPaths,
@@ -118,12 +119,6 @@ export class DurableTaskQueue {
     if (changed) await this.persist();
   }
 
-  private exclusive<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.chain.then(work, work);
-    this.chain = result.catch(() => undefined);
-    return result;
-  }
-
   private async persist(): Promise<void> {
     await atomicWrite(this.paths.taskQueue, `${JSON.stringify(this.data)}\n`);
   }
@@ -137,7 +132,7 @@ export class DurableTaskQueue {
   }
 
   async accept(occurrence: ScheduledOccurrence): Promise<ScheduledTask> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const existing = this.data.tasks.find(
         (item) => item.executionId === occurrence.executionId,
       );
@@ -172,7 +167,7 @@ export class DurableTaskQueue {
   }
 
   async claim(): Promise<ScheduledTask | undefined> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       if (
         this.data.tasks.some(
           (item) => item.state === "claimed" || item.state === "running",
@@ -196,7 +191,7 @@ export class DurableTaskQueue {
   }
 
   async start(executionId: string, claimId: string): Promise<ScheduledTask> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const task = this.find(executionId);
       if (task.state !== "claimed" || task.claimId !== claimId)
         throw new IntegralError(`task claim is not active: ${claimId}`, 409);
@@ -217,7 +212,7 @@ export class DurableTaskQueue {
     claimId: string,
     error: string,
   ): Promise<ScheduledTask> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const task = this.find(executionId);
       if (task.state !== "claimed" || task.claimId !== claimId)
         return structuredClone(task);
@@ -235,7 +230,7 @@ export class DurableTaskQueue {
     result: string,
     exitCode: number,
   ): Promise<ScheduledTask> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const task = this.find(executionId);
       if (task.state === "completed") {
         const attempt = task.attempts.at(-1);
@@ -279,7 +274,7 @@ export class DurableTaskQueue {
     outcome: "complete" | "failed",
     message: string,
   ): Promise<ScheduledTask> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       if (!message.trim())
         throw new IntegralError("task outcome message is required", 400);
       if (message.length > 100_000)
@@ -314,7 +309,7 @@ export class DurableTaskQueue {
     attemptId: string,
     exitCode: number,
   ): Promise<ScheduledTask> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const task = this.find(executionId),
         priorAttempt = task.attempts.find(
           (item) => item.attemptId === attemptId,
@@ -367,7 +362,7 @@ export class DurableTaskQueue {
     error: string,
     exitCode?: number,
   ): Promise<ScheduledTask> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const task = this.find(executionId),
         priorAttempt = task.attempts.find(
           (item) => item.attemptId === attemptId,
@@ -397,7 +392,7 @@ export class DurableTaskQueue {
   }
 
   async cancel(executionId: string): Promise<ScheduledTask> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const task = this.find(executionId);
       if (task.triggerType !== "once")
         throw new IntegralError(
@@ -425,7 +420,7 @@ export class DurableTaskQueue {
   }
 
   async acknowledgeOutbox(executionId: string): Promise<void> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const index = this.data.outbox.findIndex(
         (item) => item.executionId === executionId,
       );

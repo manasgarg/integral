@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
 import { IntegralError } from "./errors.ts";
 import type { ModelSelection } from "./model-selection.ts";
+import { SerialExecutor } from "./persistence/serial-executor.ts";
 
 export type QueueStatus = "queued" | "in-flight";
 export interface ApprovalContinuation {
@@ -77,7 +78,7 @@ function snowflakeWorkerId(file: string): number {
 
 export class DurableQueue {
   private data: QueueFile = { nextOrder: 1, items: [] };
-  private chain: Promise<unknown> = Promise.resolve();
+  private readonly operations = new SerialExecutor();
   private readonly workerId: number;
   constructor(
     private readonly file: string,
@@ -105,11 +106,6 @@ export class DurableQueue {
       if (item.status === "in-flight") item.status = "queued";
     await this.persist();
   }
-  private exclusive<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.chain.then(work, work);
-    this.chain = result.catch(() => undefined);
-    return result;
-  }
   private async persist(): Promise<void> {
     await atomicWrite(this.file, `${JSON.stringify(this.data)}\n`);
   }
@@ -122,7 +118,7 @@ export class DurableQueue {
     text: string,
     approvalContinuation?: ApprovalContinuation,
   ): Promise<QueuedMessage> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       if (!text.trim()) throw new IntegralError("message must not be empty");
       const priorSnowflake = this.data.snowflake
           ? { ...this.data.snowflake }
@@ -159,7 +155,7 @@ export class DurableQueue {
     });
   }
   async edit(id: string, text: string): Promise<QueuedMessage> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       if (!text.trim()) throw new IntegralError("message must not be empty");
       const item = this.find(id);
       if (item.status === "in-flight")
@@ -177,7 +173,7 @@ export class DurableQueue {
     });
   }
   async delete(id: string): Promise<void> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const item = this.find(id);
       if (item.status === "in-flight")
         throw new IntegralError(`message ${id} is in flight`);
@@ -193,7 +189,7 @@ export class DurableQueue {
     });
   }
   async claim(): Promise<QueuedMessage | undefined> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       if (this.data.items.some((item) => item.status === "in-flight"))
         return undefined;
       const item = this.data.items
@@ -214,7 +210,7 @@ export class DurableQueue {
     });
   }
   async complete(id: string): Promise<void> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const item = this.find(id);
       if (item.status !== "in-flight")
         throw new IntegralError(`message ${id} is not in flight`);
@@ -230,7 +226,7 @@ export class DurableQueue {
     });
   }
   async release(id: string, reason?: string): Promise<void> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const item = this.find(id),
         previous = item.status;
       item.status = "queued";

@@ -16,6 +16,7 @@ import type {
   UpdateSchedule,
 } from "./schedule-types.ts";
 import type { ModelSelection } from "./model-selection.ts";
+import { SerialExecutor } from "./persistence/serial-executor.ts";
 
 const execute = promisify(execFile);
 
@@ -89,7 +90,7 @@ function parseDefinition(raw: string, file: string): ScheduleDefinition {
 
 export class ScheduleStore {
   private readonly definitions = new Map<string, ScheduleDefinition>();
-  private chain: Promise<unknown> = Promise.resolve();
+  private readonly operations = new SerialExecutor();
 
   constructor(
     private readonly paths: IntegralPaths,
@@ -97,12 +98,6 @@ export class ScheduleStore {
     private readonly now: () => number = Date.now,
     private readonly newId: () => string = () => randomUUID(),
   ) {}
-
-  private exclusive<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.chain.then(work, work);
-    this.chain = result.catch(() => undefined);
-    return result;
-  }
 
   async load(): Promise<void> {
     await ensureDir(this.paths.schedules);
@@ -184,7 +179,7 @@ export class ScheduleStore {
     input: CreateSchedule,
     actor: string,
   ): Promise<ScheduleDefinition> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       validateActor(actor);
       validatePrompt(input.prompt);
       validateProfile(input.profile);
@@ -211,7 +206,7 @@ export class ScheduleStore {
     input: UpdateSchedule,
     actor: string,
   ): Promise<ScheduleDefinition> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const current = this.current(id, input.expectedRevision);
       validateActor(actor);
       const trigger = input.trigger ?? current.trigger,
@@ -238,7 +233,7 @@ export class ScheduleStore {
     enabled: boolean,
     actor: string,
   ): Promise<ScheduleDefinition> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const current = this.current(id, expectedRevision);
       validateActor(actor);
       const next = {
@@ -257,7 +252,7 @@ export class ScheduleStore {
     expectedRevision: number,
     actor: string,
   ): Promise<ScheduleDefinition> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const current = this.current(id, expectedRevision);
       validateActor(actor);
       const next = {
@@ -278,7 +273,7 @@ export class ScheduleStore {
     expectedRevision: number,
     actor: string,
   ): Promise<ScheduleDefinition> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const current = this.current(id, expectedRevision, true);
       validateActor(actor);
       if (!/^[0-9a-f]{7,64}$/i.test(commit))
