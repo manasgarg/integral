@@ -41,7 +41,7 @@ import { readText } from "./fs.ts";
 import { join } from "node:path";
 import { IntegralError } from "./errors.ts";
 import { oauthAccess } from "./oauth.ts";
-import { discoverRemoteMcp, type McpCatalog, type McpRuntime } from "./mcp.ts";
+import { discoverRemoteMcp, type McpCatalog } from "./mcp.ts";
 import type {
   ApprovalContinuation,
   ConversationEvent,
@@ -57,6 +57,7 @@ import {
   type RunTermination,
 } from "./run-store.ts";
 import { readJsonObject } from "./http-server.ts";
+import { McpSidecarManager } from "./runner/mcp-sidecars.ts";
 
 export interface RunnerClock {
   setTimeout(
@@ -133,7 +134,7 @@ export class Runner {
   private idle: unknown;
   private dockerGateway = "";
   private token = "";
-  private readonly mcpRuntimes = new Map<string, Map<string, McpRuntime>>();
+  private readonly mcpSidecars: McpSidecarManager;
   private currentMessageId: string | undefined;
   private currentTask:
     { id: string; claimId: string; attemptId?: string } | undefined;
@@ -157,6 +158,13 @@ export class Runner {
   ) {
     this.dependencies = { ...productionDependencies, ...overrides };
     this.runs = new RunStore(paths, () => this.dependencies.now());
+    this.mcpSidecars = new McpSidecarManager(
+      this.dependencies.containers,
+      config,
+      `integral-${deploymentId(paths)}`,
+      logger,
+      this.dependencies.writeMcpExtension,
+    );
   }
   async start(): Promise<http.Server> {
     await this.runs.initialize();
@@ -226,9 +234,9 @@ export class Runner {
         Array.isArray(args)
       )
         throw new IntegralError("invalid MCP request", 400);
-      const runtime = this.mcpRuntimes.get(sessionId)?.get(connection);
-      if (!runtime) throw new IntegralError("MCP sidecar not found", 404);
-      const result = await runtime.callTool(
+      const result = await this.mcpSidecars.callTool(
+        sessionId,
+        connection,
         tool,
         args as Record<string, unknown>,
       );
@@ -455,7 +463,7 @@ export class Runner {
         ...(this.stopped ? {} : { error: "task execution did not complete" }),
       });
       if (runtime) {
-        await this.stopMcpSidecars(runtime.spec.sessionId);
+        await this.mcpSidecars.stop(runtime.spec.sessionId);
         await this.revoke(runtime.spec.sessionToken);
         if (this.taskResources)
           await this.dependencies
@@ -561,7 +569,7 @@ export class Runner {
         throw new IntegralError(
           `task gateway session unavailable: ${registered.status}`,
         );
-      await this.startMcpSidecars(spec, catalogs, sidecars);
+      await this.mcpSidecars.start(spec, catalogs, sidecars);
       return runtime;
     } catch (error) {
       await recorder.failure("provisioning-failure", error);
@@ -569,7 +577,7 @@ export class Runner {
         termination: "failed",
         error: error instanceof Error ? error.message : String(error),
       });
-      await this.stopMcpSidecars(identity.sessionId);
+      await this.mcpSidecars.stop(identity.sessionId);
       await this.revoke(identity.sessionToken);
       await this.dependencies
         .cleanupResourceProjection(this.paths, this.config, resources)
@@ -850,7 +858,7 @@ export class Runner {
         throw new IntegralError(
           `gateway session unavailable: ${registered.status}`,
         );
-      await this.startMcpSidecars(spec, catalogs, sidecars);
+      await this.mcpSidecars.start(spec, catalogs, sidecars);
       await pi.start();
       this.pi = pi;
       this.piSelection = { ...selection };
@@ -884,7 +892,7 @@ export class Runner {
         termination: "failed",
         error: error instanceof Error ? error.message : String(error),
       });
-      await this.stopMcpSidecars(identity.sessionId);
+      await this.mcpSidecars.stop(identity.sessionId);
       await this.revoke(identity.sessionToken);
       await this.dependencies
         .cleanupResourceProjection(this.paths, this.config, resources)
@@ -1029,70 +1037,6 @@ export class Runner {
       sidecars,
     };
   }
-  private async startMcpSidecars(
-    spec: { home: string; args: string[]; sessionId: string },
-    catalogs: McpCatalog[],
-    sidecars: McpSidecarSpec[],
-  ): Promise<void> {
-    const runtimes = new Map<string, McpRuntime>(),
-      unavailable: string[] = [],
-      diagnostics: string[] = [];
-    for (const sidecar of sidecars) {
-      if (!this.dependencies.containers.createMcpSidecar) {
-        unavailable.push(
-          `${sidecar.connection.name} (stdio MCP is unavailable)`,
-        );
-        continue;
-      }
-      const runtime = this.dependencies.containers.createMcpSidecar(
-        sidecar,
-        this.config,
-        `integral-${deploymentId(this.paths)}`,
-        (line) =>
-          this.logger.event("debug", "mcp.stderr", line, {
-            connection: sidecar.connection.name,
-            session_id: spec.sessionId,
-          }),
-      );
-      try {
-        const catalog = await runtime.start();
-        catalogs.push(catalog);
-        diagnostics.push(
-          ...(catalog.diagnostics ?? []).map(
-            (diagnostic) => `${sidecar.connection.name}: ${diagnostic}`,
-          ),
-        );
-        runtimes.set(sidecar.connection.name, runtime);
-      } catch (error) {
-        await runtime.stop().catch(() => undefined);
-        unavailable.push(
-          `${sidecar.connection.name} (${error instanceof Error ? error.message : String(error)})`,
-        );
-      }
-    }
-    if (runtimes.size) this.mcpRuntimes.set(spec.sessionId, runtimes);
-    await this.dependencies.writeMcpExtension(spec.home, catalogs);
-    if (unavailable.length)
-      spec.args.push(
-        "--append-system-prompt",
-        `Unavailable MCP connections: ${unavailable.join(", ")}.`,
-      );
-    if (diagnostics.length)
-      spec.args.push(
-        "--append-system-prompt",
-        `Excluded MCP tools: ${diagnostics.join(", ")}.`,
-      );
-  }
-  private async stopMcpSidecars(sessionId: string): Promise<void> {
-    const runtimes = this.mcpRuntimes.get(sessionId);
-    this.mcpRuntimes.delete(sessionId);
-    if (runtimes)
-      await Promise.all(
-        [...runtimes.values()].map((runtime) =>
-          runtime.stop().catch(() => undefined),
-        ),
-      );
-  }
   private armIdle(): void {
     if (!this.pi || this.idle) return;
     this.idle = this.dependencies.clock.setTimeout(
@@ -1136,7 +1080,7 @@ export class Runner {
         termination,
         ...(error ? { error } : {}),
       });
-      await this.stopMcpSidecars(pi.spec.sessionId);
+      await this.mcpSidecars.stop(pi.spec.sessionId);
       await this.revoke(pi.spec.sessionToken);
       if (resources)
         await this.dependencies
@@ -1205,7 +1149,7 @@ export class Runner {
         termination: "stopped",
         error: "runner stopped",
       });
-      await this.stopMcpSidecars(taskRuntime.spec.sessionId);
+      await this.mcpSidecars.stop(taskRuntime.spec.sessionId);
       await this.revoke(taskRuntime.spec.sessionToken);
       await taskRuntime.stop().catch(() => undefined);
       await this.removeHistoryView(this.taskHistoryView);
