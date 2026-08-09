@@ -16,6 +16,13 @@ export interface IntegralPaths {
   modelSelection: string;
   piRuntime: string;
   piRuntimeState: string;
+  containerPackages: string;
+  imageRecipe: string;
+  imageAudit: string;
+  imageState: string;
+  activeImage: string;
+  approvals: string;
+  approvalAudit: string;
   queue: string;
   taskQueue: string;
   scheduler: string;
@@ -87,6 +94,13 @@ export function pathsFor(root: string): IntegralPaths {
     modelSelection: join(data, "conversation-model.json"),
     piRuntime: join(data, "pi-runtime"),
     piRuntimeState: join(state, "pi-runtime.json"),
+    containerPackages: join(data, "container-packages.json"),
+    imageRecipe: join(data, "image-recipe.git"),
+    imageAudit: join(data, "image-audit.jsonl"),
+    imageState: join(data, "image-state.json"),
+    activeImage: join(data, "active-image.json"),
+    approvals: join(data, "approvals.json"),
+    approvalAudit: join(data, "approval-audit.jsonl"),
     queue: join(data, "queue.json"),
     taskQueue: join(data, "task-queue.json"),
     scheduler: join(data, "scheduler"),

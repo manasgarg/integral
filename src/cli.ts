@@ -1,7 +1,10 @@
 import { createInterface } from "node:readline/promises";
 import { clearLine, cursorTo, moveCursor } from "node:readline";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig, initConfig } from "./config.ts";
 import type { EffectiveConfig } from "./config.ts";
@@ -32,6 +35,14 @@ import {
   type ModelChoice,
   type ModelSelection,
 } from "./model-selection.ts";
+import { ModelSelectionStore } from "./queue.ts";
+import { atomicWrite } from "./fs.ts";
+import {
+  buildImageRecipe,
+  commitImageDockerfile,
+  ensureImageRecipeRepository,
+  imageRecipeDockerfile,
+} from "./image-recipe.ts";
 
 const TOP_HELP = `integral — a governed, containerized Pi conversation
 
@@ -43,6 +54,7 @@ Commands:
   queue        inspect or change queued messages
   schedule     manage schedules and inspect task executions
   connection   configure external connections
+  image        edit or rebuild the managed Pi image
   config       inspect and validate configuration
   version      print implementation versions
 
@@ -80,6 +92,15 @@ const SERVER_HELP = `Usage: integral server start [--component <name>]
 Combined mode is the default. --component <name> starts one component only.
 Component values: coordinator, runner, gateway, scheduler
 `;
+const IMAGE_HELP = `Usage: integral image <command>
+
+Commands:
+  edit       edit and directly commit the managed Pi Dockerfile
+  rebuild    directly perform a fresh pull and no-cache image build
+
+These are privileged local operator actions. They do not create approval requests.
+Pi and remote automation image requests still require human approval.
+`;
 const QUEUE_HELP = `Usage: integral queue <command>
 
 Commands:
@@ -106,6 +127,9 @@ const TALK_HELP = `/help                         show this help
 /queue ls                     list queued and in-flight messages
 /queue edit <id> <text>       edit a queued message
 /queue delete <id>            delete a queued message
+/approvals                    list governed requests awaiting a human
+/approve <id>                 approve one governed request
+/deny <id>                    deny one governed request
 /exit                         detach this terminal
 `;
 const TALK_USER_STYLE = "\u001b[48;5;238m\u001b[97m";
@@ -253,6 +277,7 @@ export async function main(args: string[]): Promise<number> {
     }
     if (command === "config") return await configCommand(rest);
     if (command === "connection") return await connectionCommand(rest);
+    if (command === "image") return await imageCommand(rest);
     if (command === "server") return await serverCommand(rest);
     if (command === "queue") return await queueCommand(rest);
     if (command === "schedule") return await scheduleCommand(rest);
@@ -262,6 +287,135 @@ export async function main(args: string[]): Promise<number> {
     process.stderr.write(`integral: ${messageOf(error)}\n`);
     return error instanceof IntegralError ? error.exitCode : 1;
   }
+}
+
+export interface ImageCommandDependencies {
+  resolvePaths(): IntegralPaths;
+  loadConfig(paths: IntegralPaths): Promise<EffectiveConfig>;
+  edit(
+    paths: IntegralPaths,
+    actor: string,
+  ): Promise<{
+    prior: string;
+    landed: string;
+  }>;
+  rebuild(
+    paths: IntegralPaths,
+    config: EffectiveConfig,
+    actor: string,
+  ): Promise<{ recipeCommit: string; piVersion: string; image: string }>;
+  actor(): string;
+  writeOutput(text: string): void;
+}
+
+async function editImageRecipe(
+  paths: IntegralPaths,
+  actor: string,
+): Promise<{ prior: string; landed: string }> {
+  await ensureImageRecipeRepository(paths);
+  const temporary = await mkdtemp(join(tmpdir(), "integral-image-edit-")),
+    file = join(temporary, "Dockerfile");
+  try {
+    await writeFile(
+      file,
+      `${(await imageRecipeDockerfile(paths)).trimEnd()}\n`,
+    );
+    const editor = process.env.EDITOR?.trim() || process.env.VISUAL?.trim();
+    if (!editor)
+      throw new IntegralError(
+        "EDITOR or VISUAL must name the Dockerfile editor",
+      );
+    const edited = spawnSync(editor, [file], { stdio: "inherit" });
+    if (edited.error) throw edited.error;
+    if (edited.status !== 0)
+      throw new IntegralError(
+        `image editor exited with status ${edited.status}`,
+      );
+    return await commitImageDockerfile(
+      paths,
+      await readFile(file, "utf8"),
+      actor,
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+async function rebuildImageRecipe(
+  paths: IntegralPaths,
+  config: EffectiveConfig,
+  actor: string,
+): Promise<{ recipeCommit: string; piVersion: string; image: string }> {
+  const selection = new ModelSelectionStore(paths.modelSelection);
+  await selection.load();
+  const current = selection.get();
+  if (!current)
+    throw new IntegralError(
+      "select a model before rebuilding the Pi image",
+      409,
+    );
+  const recipeCommit = await ensureImageRecipeRepository(paths),
+    result = await buildImageRecipe(paths, config, recipeCommit, actor, {
+      priorImage: current.piImage,
+    });
+  await atomicWrite(
+    paths.activeImage,
+    `${JSON.stringify({ schemaVersion: 1, recipeCommit, result })}\n`,
+  );
+  await selection.set({
+    ...current,
+    piVersion: result.piVersion,
+    piImage: result.image,
+  });
+  const generationFile = join(paths.state, "session-generation"),
+    currentGeneration = Number(
+      (await readFile(generationFile, "utf8").catch(() => "0")).trim() || "0",
+    );
+  await atomicWrite(
+    generationFile,
+    `${Number.isSafeInteger(currentGeneration) ? currentGeneration + 1 : 1}\n`,
+  );
+  return result;
+}
+
+const productionImageDependencies: ImageCommandDependencies = {
+  resolvePaths,
+  loadConfig,
+  edit: editImageRecipe,
+  rebuild: rebuildImageRecipe,
+  actor: () => process.env.USER?.trim() || "local-operator",
+  writeOutput: (text) => process.stdout.write(text),
+};
+
+export async function imageCommand(
+  args: string[],
+  overrides: Partial<ImageCommandDependencies> = {},
+): Promise<number> {
+  const dependencies = { ...productionImageDependencies, ...overrides };
+  if (!args[0] || helpRequested(args) || args[0] === "help") {
+    dependencies.writeOutput(IMAGE_HELP);
+    return 0;
+  }
+  const paths = dependencies.resolvePaths(),
+    config = await dependencies.loadConfig(paths),
+    actor = dependencies.actor();
+  if (args[0] === "edit") {
+    const result = await dependencies.edit(paths, actor);
+    dependencies.writeOutput(
+      result.prior === result.landed
+        ? "Image Dockerfile unchanged.\n"
+        : `Updated image Dockerfile to ${result.landed}.\n`,
+    );
+    return 0;
+  }
+  if (args[0] === "rebuild") {
+    const result = await dependencies.rebuild(paths, config, actor);
+    dependencies.writeOutput(
+      `Built Pi ${result.piVersion} from recipe ${result.recipeCommit}: ${result.image}\n`,
+    );
+    return 0;
+  }
+  throw new IntegralError(`unknown image command: ${args[0]}`);
 }
 
 async function configCommand(args: string[]): Promise<number> {
@@ -1345,6 +1499,11 @@ export async function talkCommand(
     );
     if (!response.ok || !response.body)
       throw new IntegralError("could not attach to coordinator");
+    let attachmentId = response.headers.get("x-integral-attachment-id");
+    if (!attachmentId)
+      throw new IntegralError(
+        "coordinator did not issue a terminal attachment identity",
+      );
     follow = followCoordinatorEvents(
       response,
       paths,
@@ -1354,8 +1513,9 @@ export async function talkCommand(
       terminalId,
       Boolean(rl.colors),
       (working) => rl.setWorking?.(working),
-      (next) => {
+      (next, nextAttachmentId) => {
         endpoint = next;
+        attachmentId = nextAttachmentId;
       },
     );
     while (true) {
@@ -1403,6 +1563,35 @@ export async function talkCommand(
             dependencies.writeOutput(
               `${item.status}\t${item.id}\t${item.text}\n`,
             );
+          continue;
+        }
+        if (text === "/approvals") {
+          const approvals = (await fetchJson(
+            new URL("/integral/approvals", endpoint),
+            dependencies.fetch,
+          )) as Array<Record<string, unknown>>;
+          if (!approvals.length)
+            dependencies.writeOutput("No approval requests.\n");
+          else
+            for (const approval of approvals)
+              dependencies.writeOutput(`${renderApproval(approval)}\n`);
+          continue;
+        }
+        const approvalDecision = text.match(/^\/(approve|deny)\s+(\S+)$/);
+        if (approvalDecision) {
+          const result = (await fetchJson(
+            new URL(
+              `/integral/approvals/${encodeURIComponent(approvalDecision[2]!)}/${approvalDecision[1]}`,
+              endpoint,
+            ),
+            dependencies.fetch,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ attachmentId }),
+            },
+          )) as Record<string, unknown>;
+          dependencies.writeOutput(`${renderApproval(result)}\n`);
           continue;
         }
         const edit = text.match(/^\/queue edit\s+(\S+)\s+(.+)$/);
@@ -1595,7 +1784,7 @@ async function followCoordinatorEvents(
   terminalId: string,
   colors: boolean,
   setWorking: (working: boolean) => void,
-  connected: (endpoint: string) => void,
+  connected: (endpoint: string, attachmentId: string) => void,
 ): Promise<void> {
   const state: TalkEventState = {
     sawSnapshot: false,
@@ -1621,7 +1810,12 @@ async function followCoordinatorEvents(
         );
         if (!response.ok || !response.body)
           throw new IntegralError("could not attach to coordinator");
-        connected(endpoint);
+        const attachmentId = response.headers.get("x-integral-attachment-id");
+        if (!attachmentId)
+          throw new IntegralError(
+            "coordinator did not issue a terminal attachment identity",
+          );
+        connected(endpoint, attachmentId);
         if (reconnecting) writeOutput("integral: coordinator reconnected\n");
       }
       await consumeEvents(
@@ -1700,6 +1894,7 @@ async function consumeEvents(
         const snapshot = value as {
           conversation: { type: string; text?: string; sequence?: number }[];
           queue?: { status: string }[];
+          approvals?: Array<Record<string, unknown>>;
         };
         const latestSession = snapshot.conversation
           .filter((item) => item.type === "session")
@@ -1728,6 +1923,10 @@ async function consumeEvents(
           }
         }
         state.sawSnapshot = true;
+        if (firstSnapshot)
+          for (const approval of snapshot.approvals ?? [])
+            if (approval.status === "pending")
+              writeOutput(`${renderApproval(approval)}\n`);
       } else if (event === "conversation.user") {
         const item = value as {
           type: string;
@@ -1783,9 +1982,30 @@ async function consumeEvents(
         writeOutput(
           `model: ${item.connection} (${item.provider}) / ${item.model}\n`,
         );
+      } else if (
+        event === "approval.requested" ||
+        event === "approval.decided" ||
+        event === "approval.resolved"
+      ) {
+        writeOutput(`${renderApproval(value)}\n`);
       }
     }
   }
+}
+
+function renderApproval(value: Record<string, unknown>): string {
+  const id = typeof value.id === "string" ? value.id : "unknown",
+    status = typeof value.status === "string" ? value.status : "unknown",
+    summary = typeof value.summary === "string" ? value.summary : "request",
+    details =
+      value.details && typeof value.details === "object"
+        ? (value.details as Record<string, unknown>)
+        : undefined,
+    diff = typeof details?.diff === "string" ? details.diff.trim() : "";
+  const floating = details?.floatingResolution === true,
+    priorImage =
+      typeof details?.priorImage === "string" ? details.priorImage : "unknown";
+  return `approval ${id} [${status}] ${summary}${floating ? `\nFloating dependencies will resolve at build time; prior image: ${priorImage}` : ""}${diff ? `\n${diff}` : ""}`;
 }
 
 function humanLabel(colors: boolean): string {
@@ -1800,8 +2020,9 @@ function humanMessage(text: string, colors: boolean): string {
 async function fetchJson(
   url: URL,
   fetcher: typeof globalThis.fetch = globalThis.fetch,
+  init?: RequestInit,
 ): Promise<unknown> {
-  const response = await fetcher(url);
+  const response = await fetcher(url, init);
   if (!response.ok)
     throw new IntegralError(
       ((await response.json()) as { error?: string }).error ??

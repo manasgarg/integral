@@ -1,5 +1,6 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import type { EffectiveConfig } from "./config.ts";
 import type { IntegralPaths } from "./paths.ts";
 import {
@@ -21,7 +22,7 @@ import {
   updateComponentState,
   verifyInternal,
 } from "./state.ts";
-import { readText } from "./fs.ts";
+import { atomicWrite, readText } from "./fs.ts";
 import { join } from "node:path";
 import { IntegralError } from "./errors.ts";
 import {
@@ -33,8 +34,33 @@ import {
 import { internalFetch } from "./http-client.ts";
 import { DurableTaskQueue } from "./task-queue.ts";
 import type { ScheduledOccurrence } from "./occurrence-store.ts";
-import type { Component } from "./constants.ts";
+import { DEFAULT_PI_IMAGE, type Component } from "./constants.ts";
 import type { Logger } from "./logging.ts";
+import { ensureContainerImage } from "./container.ts";
+import {
+  loadContainerPackageState,
+  planContainerPackageChange,
+  saveContainerPackageState,
+  validateContainerPackageNames,
+  type ContainerPackageOperation,
+} from "./container-packages.ts";
+import {
+  ApprovalStore,
+  isTerminalApproval,
+  publicApproval,
+  type ApprovalRecord,
+  type PublicApproval,
+  type TerminalApprovalStatus,
+} from "./approval-store.ts";
+import {
+  activateImageProposal,
+  buildImageRecipe,
+  imageRecipeHead,
+  imageRecipeTreeDigest,
+  stageImageProposal,
+  type ImageBuildResult,
+  type ImageProposal,
+} from "./image-recipe.ts";
 
 export interface ClientEvent {
   sequence: number;
@@ -47,11 +73,22 @@ export interface CoordinatorDependencies {
   internalFetch: typeof internalFetch;
   defer(callback: () => void): unknown;
   cancelDeferred(handle: unknown): void;
+  now(): number;
   listModelChoices(
     paths: IntegralPaths,
     config: EffectiveConfig,
     progress?: ModelCatalogProgress,
   ): Promise<ModelCatalog>;
+  ensureImage(
+    config: EffectiveConfig,
+    piVersion: string,
+    options: { systemPackages: readonly string[]; rebuild: boolean },
+  ): string | Promise<string>;
+  stageImageProposal: typeof stageImageProposal;
+  buildImageRecipe: typeof buildImageRecipe;
+  activateImageProposal: typeof activateImageProposal;
+  imageRecipeHead: typeof imageRecipeHead;
+  imageRecipeTreeDigest: typeof imageRecipeTreeDigest;
 }
 const productionDependencies: CoordinatorDependencies = {
   servers: nodeHttpServerRuntime,
@@ -60,18 +97,35 @@ const productionDependencies: CoordinatorDependencies = {
   defer: (callback) => setTimeout(callback, 0),
   cancelDeferred: (handle) =>
     clearTimeout(handle as NodeJS.Timeout | undefined),
+  now: Date.now,
   listModelChoices: (paths, config, progress) =>
     listModelChoices(paths, config, {}, progress),
+  ensureImage: ensureContainerImage,
+  stageImageProposal,
+  buildImageRecipe,
+  activateImageProposal,
+  imageRecipeHead,
+  imageRecipeTreeDigest,
 };
 export class Coordinator {
   readonly queue: DurableQueue;
   readonly conversation: ConversationStore;
   readonly modelSelection: ModelSelectionStore;
   readonly tasks: DurableTaskQueue;
+  readonly approvals: ApprovalStore;
   private readonly events = new EventEmitter();
   private server: http.Server | undefined;
   private eventSequence = 0;
   private attached = 0;
+  private readonly attachments = new Set<string>();
+  private readonly approvalWaiters = new Map<
+    string,
+    {
+      sessionId: string;
+      resolve(value: PublicApproval): void;
+      reject(error: Error): void;
+    }
+  >();
   private token = "";
   private refreshTimer: unknown;
   private catalogRefresh: unknown;
@@ -93,12 +147,14 @@ export class Coordinator {
     this.conversation = new ConversationStore(paths.conversation);
     this.modelSelection = new ModelSelectionStore(paths.modelSelection);
     this.tasks = new DurableTaskQueue(paths);
+    this.approvals = new ApprovalStore(paths, () => this.dependencies.now());
   }
   async start(): Promise<http.Server> {
     await this.queue.load();
     await this.conversation.load();
     await this.modelSelection.load();
     await this.tasks.load();
+    await this.approvals.load();
     this.token = await componentIdentity(this.paths);
     const server = http.createServer((req, res) => void this.route(req, res));
     this.server = server;
@@ -115,10 +171,29 @@ export class Coordinator {
       this.catalogRefresh = undefined;
       void this.modelCatalog().catch(() => undefined);
     });
+    for (const approval of this.approvals
+      .records()
+      .filter((record) => record.status === "approved"))
+      this.dependencies.defer(() => void this.executeApproval(approval));
     return server;
   }
   private async refresh(): Promise<void> {
-    await Promise.all([this.adoptGeneration(), this.flushTaskOutbox()]);
+    await Promise.all([
+      this.adoptGeneration(),
+      this.adoptExternalModelSelection(),
+      this.flushTaskOutbox(),
+      this.expireApprovals(),
+    ]);
+  }
+  private async adoptExternalModelSelection(): Promise<void> {
+    const previous = this.modelSelection.get();
+    await this.modelSelection.load();
+    const current = this.modelSelection.get();
+    if (!sameSelection(previous, current) && current) {
+      this.modelCatalogs.clear();
+      this.modelCatalogLoads.clear();
+      this.broadcast("conversation.selection", current);
+    }
   }
 
   async flushTaskOutbox(): Promise<void> {
@@ -161,6 +236,7 @@ export class Coordinator {
       queue: this.queue.snapshot(),
       tasks: this.tasks.snapshot(),
       modelSelection: this.modelSelection.get() ?? null,
+      approvals: this.approvals.snapshot(),
       eventSequence: this.eventSequence,
       attached: this.attached,
     };
@@ -217,6 +293,432 @@ export class Coordinator {
       }
       return choice;
     });
+  }
+  async containerPackageInventory(): Promise<Record<string, unknown>> {
+    const state = await loadContainerPackageState(this.paths),
+      selection = this.modelSelection.get();
+    return {
+      revision: state.revision,
+      packages: state.packages,
+      piVersion: selection?.piVersion ?? null,
+      piImage: selection?.piImage ?? null,
+    };
+  }
+  async changeContainerPackages(input: {
+    operation: ContainerPackageOperation;
+    packages: unknown;
+    expectedRevision: number;
+    actor: string;
+    approvalId: string;
+  }): Promise<Record<string, unknown>> {
+    return this.exclusiveWork(async () => {
+      if (this.config.runner.image !== DEFAULT_PI_IMAGE)
+        throw new IntegralError(
+          "container packages can only be changed for Integral's managed Pi image",
+          409,
+        );
+      const selection = this.modelSelection.get();
+      if (!selection)
+        throw new IntegralError(
+          "select a model before changing container packages",
+          409,
+        );
+      const current = await loadContainerPackageState(this.paths),
+        requested = validateContainerPackageNames(input.packages);
+      const repeated = current.lastApprovalId === input.approvalId,
+        planned = repeated
+          ? current
+          : planContainerPackageChange(
+              current,
+              input.operation,
+              requested,
+              input.expectedRevision,
+            ),
+        next = planned
+          ? { ...planned, lastApprovalId: input.approvalId }
+          : undefined;
+      if (!next) return this.containerPackageInventory();
+      const image = await this.dependencies.ensureImage(
+          this.config,
+          selection.piVersion,
+          { systemPackages: next.packages, rebuild: !repeated },
+        ),
+        updatedSelection = { ...selection, piImage: image };
+      if (!repeated) await saveContainerPackageState(this.paths, next);
+      await this.modelSelection.set(updatedSelection);
+      this.modelCatalogs.clear();
+      this.modelCatalogLoads.clear();
+      this.broadcast("conversation.selection", updatedSelection);
+      this.logger?.event(
+        "info",
+        "container.packages_updated",
+        "managed Pi image packages updated",
+        {
+          actor: input.actor,
+          operation: input.operation,
+          packages: requested,
+          package_revision: next.revision,
+          approval_id: input.approvalId,
+          pi_version: selection.piVersion,
+          pi_image: image,
+        },
+      );
+      return {
+        revision: next.revision,
+        packages: next.packages,
+        piVersion: selection.piVersion,
+        piImage: image,
+      };
+    });
+  }
+
+  async requestContainerPackageApproval(
+    input: {
+      operation: ContainerPackageOperation;
+      packages: unknown;
+      expectedRevision: number;
+      sessionId: string;
+      runId?: string;
+    },
+    response: ServerResponse,
+  ): Promise<PublicApproval> {
+    let waiting: Promise<PublicApproval> | undefined;
+    await this.exclusiveWork(async () => {
+      if (!input.sessionId.trim())
+        throw new IntegralError("approval origin session is required", 400);
+      if (this.config.runner.image !== DEFAULT_PI_IMAGE)
+        throw new IntegralError(
+          "container packages can only be changed for Integral's managed Pi image",
+          409,
+        );
+      const selection = this.modelSelection.get();
+      if (!selection)
+        throw new IntegralError(
+          "select a model before changing container packages",
+          409,
+        );
+      const packages = validateContainerPackageNames(input.packages),
+        state = await loadContainerPackageState(this.paths);
+      planContainerPackageChange(
+        state,
+        input.operation,
+        packages,
+        input.expectedRevision,
+      );
+      const record = await this.approvals.create({
+        request: {
+          kind: "container-packages",
+          operation: input.operation,
+          packages,
+          expectedRevision: input.expectedRevision,
+        },
+        sessionId: input.sessionId,
+        ...(input.runId ? { runId: input.runId } : {}),
+        selection,
+      });
+      waiting = this.waitForApproval(record, input.sessionId, response);
+      this.broadcast("approval.requested", publicApproval(record));
+    });
+    return waiting!;
+  }
+
+  async requestImageRecipeApproval(
+    input: {
+      operation: "proposal" | "rebuild";
+      sessionId: string;
+      runId?: string;
+      proposed?: string;
+      bundle?: Buffer;
+    },
+    response: ServerResponse,
+  ): Promise<PublicApproval> {
+    let waiting: Promise<PublicApproval> | undefined;
+    await this.exclusiveWork(async () => {
+      if (!input.sessionId.trim())
+        throw new IntegralError("approval origin session is required", 400);
+      if (this.config.runner.image !== DEFAULT_PI_IMAGE)
+        throw new IntegralError(
+          "image recipes can only change Integral's managed Pi image",
+          409,
+        );
+      const selection = this.modelSelection.get();
+      if (!selection)
+        throw new IntegralError(
+          "select a model before changing the Pi image",
+          409,
+        );
+      let proposal: ImageProposal | undefined;
+      if (input.operation === "proposal") {
+        if (!input.bundle || !input.proposed)
+          throw new IntegralError(
+            "image proposal bundle and commit are required",
+            400,
+          );
+        proposal = await this.dependencies.stageImageProposal(
+          this.paths,
+          input.bundle,
+          input.proposed,
+        );
+      }
+      const baseCommit =
+          proposal?.baseCommit ??
+          (await this.dependencies.imageRecipeHead(this.paths)),
+        treeDigest =
+          proposal?.treeDigest ??
+          (await this.dependencies.imageRecipeTreeDigest(
+            this.paths,
+            baseCommit,
+          )),
+        record = await this.approvals.create({
+          request: {
+            kind: "image-recipe",
+            operation: input.operation,
+            baseCommit,
+            ...(proposal
+              ? {
+                  proposedCommit: proposal.proposedCommit,
+                  proposalRef: proposal.proposalRef,
+                }
+              : {}),
+            treeDigest,
+            changedPaths: proposal?.changedPaths ?? [],
+            diff: proposal?.diff ?? "",
+            priorImage: selection.piImage,
+          },
+          sessionId: input.sessionId,
+          ...(input.runId ? { runId: input.runId } : {}),
+          selection,
+        });
+      waiting = this.waitForApproval(record, input.sessionId, response);
+      this.broadcast("approval.requested", publicApproval(record));
+    });
+    return waiting!;
+  }
+
+  private waitForApproval(
+    record: ApprovalRecord,
+    sessionId: string,
+    response: ServerResponse,
+  ): Promise<PublicApproval> {
+    return new Promise<PublicApproval>((resolve, reject) => {
+      this.approvalWaiters.set(record.id, { sessionId, resolve, reject });
+      response.once("close", () => {
+        if (response.writableEnded) return;
+        const waiter = this.approvalWaiters.get(record.id);
+        if (!waiter) return;
+        this.approvalWaiters.delete(record.id);
+        waiter.reject(
+          new IntegralError(
+            "originating approval request disconnected; approval remains pending",
+            499,
+          ),
+        );
+      });
+    });
+  }
+
+  async decideApproval(
+    id: string,
+    outcome: "approved" | "denied",
+    attachmentId: string,
+  ): Promise<PublicApproval> {
+    if (!this.attachments.has(attachmentId))
+      throw new IntegralError(
+        "approval requires an attached human terminal",
+        403,
+      );
+    const existing = this.approvals.get(id);
+    if (
+      existing.status === "pending" &&
+      Date.parse(existing.expiresAt) <= this.dependencies.now()
+    ) {
+      await this.expireApprovals();
+      throw new IntegralError(`approval ${id} is already expired`, 409);
+    }
+    const decided = await this.exclusiveWork(() =>
+      this.approvals.decide(id, outcome, attachmentId),
+    );
+    this.broadcast("approval.decided", publicApproval(decided));
+    if (outcome === "approved") return this.executeApproval(decided);
+    await this.deliverApproval(decided);
+    return publicApproval(decided);
+  }
+
+  private async executeApproval(
+    record: ApprovalRecord,
+  ): Promise<PublicApproval> {
+    let resolved: ApprovalRecord;
+    try {
+      const result =
+        record.request.kind === "container-packages"
+          ? await this.executePackageApproval(record, record.request)
+          : await this.executeImageRecipeApproval(record, record.request);
+      resolved = await this.exclusiveWork(() =>
+        this.approvals.resolveExecution(record.id, {
+          status: "succeeded",
+          result,
+        }),
+      );
+    } catch (error) {
+      const stale = error instanceof IntegralError && error.exitCode === 409;
+      resolved = await this.exclusiveWork(() =>
+        this.approvals.resolveExecution(record.id, {
+          status: stale ? "stale" : "failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+    this.broadcast("approval.resolved", publicApproval(resolved));
+    await this.deliverApproval(resolved);
+    return publicApproval(resolved);
+  }
+
+  private async executePackageApproval(
+    record: ApprovalRecord,
+    request: Extract<ApprovalRecord["request"], { kind: "container-packages" }>,
+  ): Promise<Record<string, unknown>> {
+    const packageState = await loadContainerPackageState(this.paths),
+      selection = this.modelSelection.get();
+    if (
+      packageState.lastApprovalId !== record.id &&
+      !sameSelection(selection, record.origin.selection)
+    )
+      throw new IntegralError(
+        "approval is stale because the selected Pi runtime changed",
+        409,
+      );
+    return await this.changeContainerPackages({
+      operation: request.operation,
+      packages: request.packages,
+      expectedRevision: request.expectedRevision,
+      actor: `approval:${record.id}`,
+      approvalId: record.id,
+    });
+  }
+
+  private async executeImageRecipeApproval(
+    record: ApprovalRecord,
+    request: Extract<ApprovalRecord["request"], { kind: "image-recipe" }>,
+  ): Promise<Record<string, unknown>> {
+    const selectedCommit = request.proposedCommit ?? request.baseCommit,
+      activeCommit = await this.dependencies.imageRecipeHead(this.paths),
+      rawCheckpoint = await readText(this.paths.imageState);
+    let checkpoint:
+      { approvalId: string; result: ImageBuildResult } | undefined;
+    if (rawCheckpoint)
+      try {
+        checkpoint = JSON.parse(rawCheckpoint) as {
+          approvalId: string;
+          result: ImageBuildResult;
+        };
+      } catch {
+        throw new IntegralError("invalid managed image execution state");
+      }
+    if (
+      activeCommit !== request.baseCommit &&
+      activeCommit !== request.proposedCommit
+    )
+      throw new IntegralError(
+        `image recipe approval is stale: active commit is ${activeCommit}`,
+        409,
+      );
+    const selection = this.modelSelection.get();
+    if (
+      checkpoint?.approvalId !== record.id &&
+      selection?.piImage !== request.priorImage
+    )
+      throw new IntegralError(
+        "image recipe approval is stale because the selected image changed",
+        409,
+      );
+    const result =
+      checkpoint?.approvalId === record.id
+        ? checkpoint.result
+        : await this.dependencies.buildImageRecipe(
+            this.paths,
+            this.config,
+            selectedCommit,
+            `approval:${record.id}`,
+            { priorImage: request.priorImage, approvalId: record.id },
+          );
+    if (checkpoint?.approvalId !== record.id)
+      await atomicWrite(
+        this.paths.imageState,
+        `${JSON.stringify({ approvalId: record.id, result })}\n`,
+      );
+    if (request.operation === "proposal" && activeCommit === request.baseCommit)
+      await this.dependencies.activateImageProposal(this.paths, {
+        baseCommit: request.baseCommit,
+        proposedCommit: request.proposedCommit!,
+        proposalRef: request.proposalRef!,
+        treeDigest: request.treeDigest,
+        changedPaths: request.changedPaths,
+        diff: request.diff,
+      });
+    await atomicWrite(
+      this.paths.activeImage,
+      `${JSON.stringify({ schemaVersion: 1, recipeCommit: selectedCommit, result })}\n`,
+    );
+    if (!selection)
+      throw new IntegralError("selected model is unavailable", 409);
+    const updated = {
+      ...selection,
+      piVersion: result.piVersion,
+      piImage: result.image,
+    };
+    await this.modelSelection.set(updated);
+    this.modelCatalogs.clear();
+    this.modelCatalogLoads.clear();
+    this.broadcast("conversation.selection", updated);
+    return {
+      recipeCommit: result.recipeCommit,
+      piVersion: result.piVersion,
+      piImage: result.image,
+      packages: result.packages,
+    };
+  }
+
+  private async expireApprovals(): Promise<void> {
+    for (const record of await this.approvals.expireDue()) {
+      this.broadcast("approval.resolved", publicApproval(record));
+      await this.deliverApproval(record);
+    }
+  }
+
+  private async deliverApproval(record: ApprovalRecord): Promise<void> {
+    if (!isTerminalApproval(record)) return;
+    const waiter = this.approvalWaiters.get(record.id);
+    if (waiter) {
+      this.approvalWaiters.delete(record.id);
+      waiter.resolve(publicApproval(record));
+      return;
+    }
+    await this.ensureApprovalContinuation(record);
+  }
+
+  private async ensureApprovalContinuation(
+    record: ApprovalRecord & { status: TerminalApprovalStatus },
+  ): Promise<void> {
+    if (record.continuationMessageId) return;
+    const existing = this.queue
+      .snapshot()
+      .find((item) => item.approvalContinuation?.approvalId === record.id);
+    if (existing) {
+      await this.approvals.setContinuation(record.id, existing.id);
+      return;
+    }
+    const detail = record.execution?.result
+        ? JSON.stringify(record.execution.result)
+        : (record.execution?.error ?? record.status),
+      text = `Approval ${record.id} for ${record.summary} resolved as ${record.status}. Outcome: ${detail}. This continues session ${record.origin.sessionId}${record.origin.runId ? ` and run ${record.origin.runId}` : ""}. Review the outcome and continue the conversation.`,
+      item = await this.queue.enqueue(text, {
+        approvalId: record.id,
+        originSessionId: record.origin.sessionId,
+        ...(record.origin.runId ? { originRunId: record.origin.runId } : {}),
+        outcome: record.status,
+        summary: record.summary,
+      });
+    await this.approvals.setContinuation(record.id, item.id);
   }
   private async modelCatalog(generation?: number): Promise<ModelCatalog> {
     const currentGeneration = generation ?? (await this.readGeneration()),
@@ -322,6 +824,82 @@ export class Coordinator {
           model = stringValue(body.model);
         const selection = await this.selectConversationModel(connection, model);
         json(res, 200, selection);
+        return;
+      }
+      if (url.pathname === "/integral/internal/container-packages") {
+        if (!this.internal(req, "gateway")) return unauthorized(res);
+        if (req.method === "GET") {
+          json(res, 200, await this.containerPackageInventory());
+          return;
+        }
+        if (req.method === "POST") {
+          const body = await bodyJson(req),
+            operation = stringValue(body.operation);
+          if (operation !== "install" && operation !== "upgrade")
+            throw new IntegralError("invalid package operation", 400);
+          const approval = await this.requestContainerPackageApproval(
+            {
+              operation,
+              packages: body.packages,
+              expectedRevision: numberValue(body.expectedRevision),
+              sessionId: stringValue(body.originSessionId),
+              ...(stringValue(body.originRunId)
+                ? { runId: stringValue(body.originRunId) }
+                : {}),
+            },
+            res,
+          );
+          json(res, 200, approval);
+          return;
+        }
+        throw new IntegralError("unsupported package operation", 405);
+      }
+      if (url.pathname === "/integral/internal/image-recipe") {
+        if (!this.internal(req, "gateway")) return unauthorized(res);
+        if (req.method !== "POST")
+          throw new IntegralError("unsupported image recipe operation", 405);
+        const body = await bodyJson(req, 45 * 1024 * 1024),
+          operation = stringValue(body.operation);
+        if (operation !== "proposal" && operation !== "rebuild")
+          throw new IntegralError("invalid image recipe operation", 400);
+        const encoded = stringValue(body.bundle),
+          approval = await this.requestImageRecipeApproval(
+            {
+              operation,
+              sessionId: stringValue(body.originSessionId),
+              ...(stringValue(body.originRunId)
+                ? { runId: stringValue(body.originRunId) }
+                : {}),
+              ...(operation === "proposal"
+                ? {
+                    proposed: stringValue(body.proposed),
+                    bundle: Buffer.from(encoded, "base64"),
+                  }
+                : {}),
+            },
+            res,
+          );
+        json(res, 200, approval);
+        return;
+      }
+      if (url.pathname === "/integral/approvals" && req.method === "GET") {
+        json(res, 200, this.approvals.snapshot());
+        return;
+      }
+      const approvalDecision = url.pathname.match(
+        /^\/integral\/approvals\/([^/]+)\/(approve|deny)$/,
+      );
+      if (approvalDecision && req.method === "POST") {
+        const body = await bodyJson(req);
+        json(
+          res,
+          200,
+          await this.decideApproval(
+            approvalDecision[1]!,
+            approvalDecision[2] === "approve" ? "approved" : "denied",
+            stringValue(body.attachmentId),
+          ),
+        );
         return;
       }
       if (url.pathname === "/integral/messages" && req.method === "POST") {
@@ -474,6 +1052,12 @@ export class Coordinator {
           type: "session",
           sessionId,
           text: state,
+          ...(stringValue(body.parentSessionId)
+            ? { parentSessionId: stringValue(body.parentSessionId) }
+            : {}),
+          ...(stringValue(body.approvalId)
+            ? { approvalId: stringValue(body.approvalId) }
+            : {}),
         });
         this.broadcast("conversation.session", event);
         res.writeHead(204).end();
@@ -565,10 +1149,13 @@ export class Coordinator {
     return item;
   }
   private stream(req: IncomingMessage, res: ServerResponse): void {
+    const attachmentId = randomUUID();
+    this.attachments.add(attachmentId);
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
       connection: "keep-alive",
+      "x-integral-attachment-id": attachmentId,
     });
     this.attached++;
     this.broadcast("chat.attached", { attached: this.attached });
@@ -581,6 +1168,7 @@ export class Coordinator {
     this.events.on("event", listener);
     req.once("close", () => {
       this.events.off("event", listener);
+      this.attachments.delete(attachmentId);
       this.attached--;
       this.broadcast("chat.detached", { attached: this.attached });
     });
@@ -591,6 +1179,12 @@ export class Coordinator {
       this.catalogRefresh = undefined;
     }
     this.dependencies.intervals.clearInterval(this.refreshTimer);
+    this.attachments.clear();
+    for (const waiter of this.approvalWaiters.values())
+      waiter.reject(
+        new IntegralError("coordinator stopped; approval remains pending", 503),
+      );
+    this.approvalWaiters.clear();
     const server = this.server;
     this.server = undefined;
     if (server) await this.dependencies.servers.close(server);
@@ -599,9 +1193,17 @@ export class Coordinator {
 
 async function bodyJson(
   req: IncomingMessage,
+  maxBytes = 1_000_000,
 ): Promise<Record<string, unknown>> {
   const chunks: Uint8Array[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  let bytes = 0;
+  for await (const chunk of req) {
+    const value = Buffer.from(chunk);
+    bytes += value.byteLength;
+    if (bytes > maxBytes)
+      throw new IntegralError("request body is too large", 413);
+    chunks.push(value);
+  }
   try {
     return JSON.parse(Buffer.concat(chunks).toString() || "{}") as Record<
       string,

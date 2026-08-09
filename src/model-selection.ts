@@ -8,6 +8,10 @@ import { DEFAULT_PI_IMAGE } from "./constants.ts";
 import { listConnections } from "./connections.ts";
 import type { IntegralPaths } from "./paths.ts";
 import { ensurePiRuntime, type PiRuntimeResolution } from "./pi-runtime.ts";
+import { loadContainerPackageState } from "./container-packages.ts";
+import { readText } from "./fs.ts";
+import type { ImageBuildResult } from "./image-recipe.ts";
+import { IntegralError } from "./errors.ts";
 
 export interface ModelSelection {
   connection: string;
@@ -37,6 +41,11 @@ export interface ModelCatalogDependencies {
   ensureImage(
     config: EffectiveConfig,
     piVersion: string,
+    options?: {
+      systemPackages?: readonly string[];
+      rebuild?: boolean;
+      expectedImage?: string;
+    },
   ): string | Promise<string>;
   discoverModels(
     image: string,
@@ -77,13 +86,36 @@ export async function listModelChoices(
     "resolving the managed Pi image; this may build or pull an image",
     { pi_version: runtime.version },
   );
-  const image = await dependencies.ensureImage(config, runtime.version);
+  const packageState = await loadContainerPackageState(paths),
+    activeRaw = await readText(paths.activeImage);
+  let active: { recipeCommit: string; result: ImageBuildResult } | undefined;
+  if (activeRaw)
+    try {
+      active = JSON.parse(activeRaw) as {
+        recipeCommit: string;
+        result: ImageBuildResult;
+      };
+    } catch {
+      throw new IntegralError("invalid active managed image state");
+    }
+  const image = await dependencies.ensureImage(
+    config,
+    active?.result.piVersion ?? runtime.version,
+    {
+      systemPackages: packageState.packages,
+      ...(active ? { expectedImage: active.result.image } : {}),
+    },
+  );
+  if (active && image !== active.result.image)
+    throw new IntegralError(
+      `active managed image ${active.result.image} is unavailable; run integral image rebuild`,
+    );
   progress?.("image.ready", "managed Pi image is ready", {
     pi_version: runtime.version,
   });
   const piVersion =
       config.runner.image === DEFAULT_PI_IMAGE
-        ? runtime.version
+        ? (active?.result.piVersion ?? runtime.version)
         : await dependencies.discoverVersion(image),
     providers = [
       ...new Set(connections.map((connection) => connection.provider!)),

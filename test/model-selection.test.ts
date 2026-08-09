@@ -9,6 +9,8 @@ import {
 import { ModelSelectionStore } from "../src/queue.ts";
 import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
+import { saveContainerPackageState } from "../src/container-packages.ts";
+import { atomicWrite } from "../src/fs.ts";
 
 const choices: ModelChoice[] = [
   {
@@ -111,4 +113,78 @@ test("[CHAT-6E91B4C7] conversation model selection is durable outside main confi
   await restored.load();
   assert.deepEqual(restored.get(), selection);
   assert.notEqual(paths.modelSelection, paths.mainConfig);
+});
+
+test("[BOX-40521095] latest Pi image resolution carries forward durable packages", async (t) => {
+  const paths = await fixture(t);
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "personal",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    "secret",
+  );
+  await saveContainerPackageState(paths, {
+    revision: 1,
+    packages: ["ca-certificates", "gh", "git", "jq"],
+  });
+  let received: readonly string[] = [];
+  await listModelChoices(paths, await loadConfig(paths, {}), {
+    ensureRuntime: async () => ({
+      version: "9.8.7",
+      packageRoot: "/unused",
+    }),
+    ensureImage: (_config, version, options) => {
+      assert.equal(version, "9.8.7");
+      received = options?.systemPackages ?? [];
+      return "sha256:latest-custom";
+    },
+    discoverModels: async () => [
+      { provider: "anthropic", model: "claude-sonnet-4-6" },
+    ],
+  });
+  assert.deepEqual(received, ["ca-certificates", "gh", "git", "jq"]);
+});
+
+test("[BOX-6A91C3E7] model discovery reuses the active recipe image and its resolved Pi version", async (t) => {
+  const paths = await fixture(t);
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "personal",
+      kind: "model",
+      provider: "anthropic",
+      auth: "key",
+    }),
+    "secret",
+  );
+  await atomicWrite(
+    paths.activeImage,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      recipeCommit: "a".repeat(40),
+      result: {
+        recipeCommit: "a".repeat(40),
+        image: "sha256:recipe-image",
+        piVersion: "0.85.0",
+        packages: ["git=1.0"],
+      },
+    })}\n`,
+  );
+  const catalog = await listModelChoices(paths, await loadConfig(paths, {}), {
+    ensureRuntime: async () => ({ version: "9.9.9", packageRoot: "/unused" }),
+    ensureImage: (_config, version, options) => {
+      assert.equal(version, "0.85.0");
+      assert.equal(options?.expectedImage, "sha256:recipe-image");
+      return "sha256:recipe-image";
+    },
+    discoverModels: async () => [
+      { provider: "anthropic", model: "claude-sonnet-4-6" },
+    ],
+  });
+  assert.equal(catalog.piVersion, "0.85.0");
+  assert.equal(catalog.piImage, "sha256:recipe-image");
 });

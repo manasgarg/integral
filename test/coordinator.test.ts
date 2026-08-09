@@ -5,6 +5,22 @@ import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
 import { saveConnection, validateConnection } from "../src/connections.ts";
 import { Logger } from "../src/logging.ts";
+import { EventEmitter } from "node:events";
+import type { ServerResponse } from "node:http";
+
+async function until(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (check()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition was not reached");
+}
+
+function waitingResponse(): ServerResponse & EventEmitter {
+  return Object.assign(new EventEmitter(), {
+    writableEnded: false,
+  }) as ServerResponse & EventEmitter;
+}
 
 async function coordinatorFixture(
   t: test.TestContext,
@@ -143,6 +159,360 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] model choices are validated, persisted, br
   });
   await restored.modelSelection.load();
   assert.deepEqual(restored.modelSelection.get(), selected);
+});
+
+test("[BOX-40521095] package changes rebuild the selected exact Pi image and persist its identity", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    builds: Array<{
+      version: string;
+      packages: readonly string[];
+      rebuild: boolean;
+    }> = [],
+    coordinator = new Coordinator(paths, config, {
+      ensureImage(_config, version, options) {
+        builds.push({
+          version,
+          packages: options.systemPackages,
+          rebuild: options.rebuild,
+        });
+        return `sha256:packages-${builds.length}`;
+      },
+    });
+  await coordinator.modelSelection.set({
+    connection: "work",
+    provider: "openai-codex",
+    model: "gpt-5.5",
+    piVersion: "9.8.7",
+    piImage: "sha256:base",
+  });
+  assert.deepEqual(await coordinator.containerPackageInventory(), {
+    revision: 0,
+    packages: ["ca-certificates", "gh", "git"],
+    piVersion: "9.8.7",
+    piImage: "sha256:base",
+  });
+  const installed = await coordinator.changeContainerPackages({
+    operation: "install",
+    packages: ["jq"],
+    expectedRevision: 0,
+    actor: "pi:session-1",
+    approvalId: "approval-install",
+  });
+  assert.deepEqual(installed, {
+    revision: 1,
+    packages: ["ca-certificates", "gh", "git", "jq"],
+    piVersion: "9.8.7",
+    piImage: "sha256:packages-1",
+  });
+  assert.deepEqual(builds, [
+    {
+      version: "9.8.7",
+      packages: ["ca-certificates", "gh", "git", "jq"],
+      rebuild: true,
+    },
+  ]);
+  assert.equal(coordinator.modelSelection.get()?.piImage, "sha256:packages-1");
+  const upgraded = await coordinator.changeContainerPackages({
+    operation: "upgrade",
+    packages: ["jq"],
+    expectedRevision: 1,
+    actor: "pi:session-1",
+    approvalId: "approval-upgrade",
+  });
+  assert.equal(upgraded.revision, 2);
+  assert.equal(upgraded.piImage, "sha256:packages-2");
+  assert.equal(builds.length, 2);
+  const recovered = await coordinator.changeContainerPackages({
+    operation: "upgrade",
+    packages: ["jq"],
+    expectedRevision: 1,
+    actor: "approval:approval-upgrade",
+    approvalId: "approval-upgrade",
+  });
+  assert.equal(recovered.revision, 2);
+  assert.equal(builds.length, 3);
+  assert.equal(builds[2]?.rebuild, false);
+});
+
+test("[GATEWAY-846B1000] a live Pi package request waits for an attached human and returns the durable result", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    builds: string[] = [],
+    coordinator = new Coordinator(paths, config, {
+      ensureImage: () => {
+        builds.push("build");
+        return "sha256:approved-image";
+      },
+    }),
+    selection = {
+      connection: "work",
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      piVersion: "1.2.3",
+      piImage: "sha256:base",
+    },
+    response = waitingResponse();
+  await coordinator.modelSelection.set(selection);
+  const waiting = coordinator.requestContainerPackageApproval(
+    {
+      operation: "install",
+      packages: ["jq"],
+      expectedRevision: 0,
+      sessionId: "session-live",
+      runId: "run-live",
+    },
+    response,
+  );
+  await until(() => (coordinator as any).approvalWaiters.size === 1);
+  const pending = coordinator.approvals.snapshot()[0]!;
+  assert.equal(pending.status, "pending");
+  assert.equal(builds.length, 0);
+  assert.equal(coordinator.queue.snapshot().length, 0);
+  await assert.rejects(
+    coordinator.decideApproval(pending.id, "approved", "forged-terminal"),
+    /attached human terminal/,
+  );
+  assert.equal(builds.length, 0);
+  (coordinator as any).attachments.add("human-a");
+  const decided = await coordinator.decideApproval(
+    pending.id,
+    "approved",
+    "human-a",
+  );
+  assert.equal(decided.status, "succeeded");
+  assert.equal((await waiting).status, "succeeded");
+  assert.equal(coordinator.queue.snapshot().length, 0);
+  assert.equal(
+    coordinator.modelSelection.get()?.piImage,
+    "sha256:approved-image",
+  );
+  assert.equal(builds.length, 1);
+});
+
+test("[GATEWAY-846B1000] denial is durable and never executes the package request", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  let builds = 0;
+  const coordinator = new Coordinator(paths, config, {
+      ensureImage: () => {
+        builds += 1;
+        return "sha256:unexpected";
+      },
+    }),
+    response = waitingResponse();
+  await coordinator.modelSelection.set({
+    connection: "work",
+    provider: "openai-codex",
+    model: "gpt-5.5",
+    piVersion: "1.2.3",
+    piImage: "sha256:base",
+  });
+  const waiting = coordinator.requestContainerPackageApproval(
+    {
+      operation: "upgrade",
+      packages: ["git"],
+      expectedRevision: 0,
+      sessionId: "session-denied",
+    },
+    response,
+  );
+  await until(() => (coordinator as any).approvalWaiters.size === 1);
+  const approvalId = coordinator.approvals.snapshot()[0]!.id;
+  (coordinator as any).attachments.add("human-denier");
+  assert.equal(
+    (await coordinator.decideApproval(approvalId, "denied", "human-denier"))
+      .status,
+    "denied",
+  );
+  assert.equal((await waiting).status, "denied");
+  assert.equal(builds, 0);
+});
+
+test("[BOX-6A91C3E7] [REPO-7B0E2F4A] an exact image recipe proposal builds and activates only after approval", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    calls: string[] = [],
+    coordinator = new Coordinator(paths, config, {
+      async stageImageProposal() {
+        calls.push("stage");
+        return {
+          baseCommit: "a".repeat(40),
+          proposedCommit: "b".repeat(40),
+          proposalRef: "refs/integral/proposals/proposal-1",
+          treeDigest: "c".repeat(40),
+          changedPaths: ["Dockerfile"],
+          diff: "+RUN npm install --global cowsay@latest",
+        };
+      },
+      async buildImageRecipe(_paths, _config, commit) {
+        calls.push(`build:${commit}`);
+        return {
+          recipeCommit: commit,
+          image: "sha256:approved-recipe",
+          piVersion: "0.85.0",
+          packages: ["cowsay=1.6.0"],
+        };
+      },
+      async activateImageProposal(_paths, proposal) {
+        calls.push(`activate:${proposal.proposedCommit}`);
+      },
+      async imageRecipeHead() {
+        return "a".repeat(40);
+      },
+      async imageRecipeTreeDigest() {
+        return "c".repeat(40);
+      },
+    }),
+    response = waitingResponse();
+  await coordinator.modelSelection.set({
+    connection: "work",
+    provider: "openai-codex",
+    model: "gpt-5.5",
+    piVersion: "0.84.1",
+    piImage: "sha256:prior-image",
+  });
+  const waiting = coordinator.requestImageRecipeApproval(
+    {
+      operation: "proposal",
+      sessionId: "session-image",
+      runId: "run-image",
+      proposed: "b".repeat(40),
+      bundle: Buffer.from("bundle"),
+    },
+    response,
+  );
+  await until(() => (coordinator as any).approvalWaiters.size === 1);
+  const pending = coordinator.approvals.snapshot()[0]!;
+  assert.deepEqual(calls, ["stage"]);
+  assert.match(String(pending.details?.diff), /cowsay@latest/);
+  (coordinator as any).attachments.add("human-image");
+  assert.equal(
+    (await coordinator.decideApproval(pending.id, "approved", "human-image"))
+      .status,
+    "succeeded",
+  );
+  assert.equal((await waiting).status, "succeeded");
+  assert.deepEqual(calls, [
+    "stage",
+    `build:${"b".repeat(40)}`,
+    `activate:${"b".repeat(40)}`,
+  ]);
+  assert.equal(
+    coordinator.modelSelection.get()?.piImage,
+    "sha256:approved-recipe",
+  );
+  assert.equal(coordinator.modelSelection.get()?.piVersion, "0.85.0");
+});
+
+test("[BOX-6A91C3E7] a fresh unchanged-recipe rebuild is approval-gated without advancing Git", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    calls: string[] = [],
+    commit = "d".repeat(40),
+    coordinator = new Coordinator(paths, config, {
+      async imageRecipeHead() {
+        return commit;
+      },
+      async imageRecipeTreeDigest() {
+        return "e".repeat(40);
+      },
+      async buildImageRecipe() {
+        calls.push("build");
+        return {
+          recipeCommit: commit,
+          image: "sha256:fresh",
+          piVersion: "0.86.0",
+          packages: [],
+        };
+      },
+      async activateImageProposal() {
+        calls.push("unexpected-activation");
+      },
+    }),
+    response = waitingResponse();
+  await coordinator.modelSelection.set({
+    connection: "work",
+    provider: "openai-codex",
+    model: "gpt-5.5",
+    piVersion: "0.85.0",
+    piImage: "sha256:prior",
+  });
+  const waiting = coordinator.requestImageRecipeApproval(
+    { operation: "rebuild", sessionId: "session-rebuild" },
+    response,
+  );
+  await until(() => (coordinator as any).approvalWaiters.size === 1);
+  assert.deepEqual(calls, []);
+  const approval = coordinator.approvals.snapshot()[0]!;
+  assert.equal(approval.details?.operation, "rebuild");
+  assert.equal(approval.details?.floatingResolution, true);
+  (coordinator as any).attachments.add("human-rebuild");
+  await coordinator.decideApproval(approval.id, "approved", "human-rebuild");
+  assert.equal((await waiting).status, "succeeded");
+  assert.deepEqual(calls, ["build"]);
+});
+
+test("[GATEWAY-846B1000] an orphaned approval survives restart and queues one lineage-aware continuation", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    selection = {
+      connection: "work",
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      piVersion: "1.2.3",
+      piImage: "sha256:base",
+    },
+    first = new Coordinator(paths, config),
+    response = waitingResponse();
+  await first.modelSelection.set(selection);
+  const disconnected = first
+    .requestContainerPackageApproval(
+      {
+        operation: "install",
+        packages: ["jq"],
+        expectedRevision: 0,
+        sessionId: "session-ended",
+        runId: "run-ended",
+      },
+      response,
+    )
+    .catch((error: unknown) => error);
+  await until(() => (first as any).approvalWaiters.size === 1);
+  const approvalId = first.approvals.snapshot()[0]!.id;
+  response.emit("close");
+  assert.match(String(await disconnected), /approval remains pending/);
+
+  const restored = new Coordinator(paths, config, {
+    ensureImage: () => "sha256:replacement-image",
+  });
+  await restored.modelSelection.load();
+  await restored.queue.load();
+  await restored.approvals.load();
+  assert.equal(restored.approvals.get(approvalId).status, "pending");
+  (restored as any).attachments.add("human-after-restart");
+  assert.equal(
+    (
+      await restored.decideApproval(
+        approvalId,
+        "approved",
+        "human-after-restart",
+      )
+    ).status,
+    "succeeded",
+  );
+  const continuation = restored.queue.snapshot()[0]!;
+  assert.equal(continuation.approvalContinuation?.approvalId, approvalId);
+  assert.equal(
+    continuation.approvalContinuation?.originSessionId,
+    "session-ended",
+  );
+  assert.equal(continuation.approvalContinuation?.originRunId, "run-ended");
+  assert.match(continuation.text, /resolved as succeeded/);
+  await assert.rejects(
+    restored.decideApproval(approvalId, "denied", "human-after-restart"),
+    /already succeeded/,
+  );
 });
 
 test("[QUEUE-31A6D84F] [CHAT-D7E2F609] one in-flight claim completes to one persisted assistant event before next work", async (t) => {

@@ -31,6 +31,8 @@ export interface RunMetadata {
   termination?: RunTermination;
   error?: string;
   parentRunId?: string;
+  parentSessionId?: string;
+  approvalId?: string;
   priorAttemptRunId?: string;
   scheduleId?: string;
   executionId?: string;
@@ -91,6 +93,8 @@ export interface BeginRunOptions {
   model: ModelSelection;
   config: EffectiveConfig;
   parentRunId?: string;
+  parentSessionId?: string;
+  approvalId?: string;
   priorAttemptRunId?: string;
   scheduleId?: string;
   executionId?: string;
@@ -172,6 +176,10 @@ export class RunStore {
             : {}),
         },
         ...(options.parentRunId ? { parentRunId: options.parentRunId } : {}),
+        ...(options.parentSessionId
+          ? { parentSessionId: options.parentSessionId }
+          : {}),
+        ...(options.approvalId ? { approvalId: options.approvalId } : {}),
         ...(options.priorAttemptRunId
           ? { priorAttemptRunId: options.priorAttemptRunId }
           : {}),
@@ -367,7 +375,8 @@ export class RunRecorder {
       | "original-request"
       | "follow-up"
       | "retry-instruction"
-      | "task-outcome-reminder",
+      | "task-outcome-reminder"
+      | "approval-resolution",
     relationships: Record<string, string> = {},
   ): Promise<void> {
     return this.event("user", "input", { category, text, relationships });

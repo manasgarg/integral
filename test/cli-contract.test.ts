@@ -5,11 +5,13 @@ import {
   completeEmailOptions,
   createTalkTerminal,
   explicitConnection,
+  imageCommand,
   main,
   queueCommand,
   selectAuthentication,
   talkCommand,
 } from "../src/cli.ts";
+import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
 import { saveConnection } from "../src/connections.ts";
 
@@ -482,7 +484,7 @@ test("[QUEUE-947D3AC0] top-level queue commands report coordinator rejections", 
   );
 });
 
-test("[CHAT-84D839CE] talk help documents every local command and never contacts Pi", async () => {
+test("[CHAT-84D839CE] [GATEWAY-846B1000] talk help documents every local command and never contacts Pi", async () => {
   const result = await capture(["talk", "--help"]);
   for (const command of [
     "/help",
@@ -491,6 +493,9 @@ test("[CHAT-84D839CE] talk help documents every local command and never contacts
     "/queue ls",
     "/queue edit",
     "/queue delete",
+    "/approvals",
+    "/approve",
+    "/deny",
     "/exit",
   ])
     assert.match(result.stdout, new RegExp(command.replace("/", "\\/")));
@@ -611,7 +616,7 @@ test("[CHAT-888AFAE0] asynchronous events redraw the active prompt and preserve 
   assert.equal(actions.at(-1), "write:∮ later\n");
 });
 
-test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
+test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] [GATEWAY-846B1000] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
     userLabel = "\u001b[48;5;238m\u001b[97m ☺ ",
     lines = [
@@ -622,6 +627,9 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
       "/queue ls",
       "/queue edit message-1 revised text",
       "/queue delete message-1",
+      "/approvals",
+      "/approve approval-1",
+      "/deny approval-2",
       "/unknown",
       "  hello Pi  ",
       "/exit",
@@ -680,7 +688,10 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
         method: init?.method ?? "GET",
         ...(typeof init?.body === "string" ? { body: init.body } : {}),
       });
-      if (url.pathname === "/integral/events") return new Response(events);
+      if (url.pathname === "/integral/events")
+        return new Response(events, {
+          headers: { "x-integral-attachment-id": "attachment-test" },
+        });
       if (url.pathname === "/integral/models")
         return Response.json({
           choices: [
@@ -719,6 +730,20 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
         return Response.json({
           queue: [{ id: "message-1", text: "queued", status: "queued" }],
         });
+      if (url.pathname === "/integral/approvals")
+        return Response.json([
+          {
+            id: "approval-1",
+            status: "pending",
+            summary: "install Debian packages: jq",
+          },
+        ]);
+      if (url.pathname.startsWith("/integral/approvals/"))
+        return Response.json({
+          id: url.pathname.split("/")[3],
+          status: url.pathname.endsWith("/approve") ? "succeeded" : "denied",
+          summary: "install Debian packages: jq",
+        });
       return new Response(null, { status: 204 });
     },
   });
@@ -736,6 +761,9 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
   assert.doesNotMatch(stdout, /hidden/);
   assert.match(stdout, /gateway.*healthy/s);
   assert.match(stdout, /queued\tmessage-1\tqueued/);
+  assert.match(stdout, /approval approval-1 \[pending\]/);
+  assert.match(stdout, /approval approval-1 \[succeeded\]/);
+  assert.match(stdout, /approval approval-2 \[denied\]/);
   assert.match(stderr, /Unknown local command/);
   assert.deepEqual(
     requests
@@ -753,6 +781,16 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
         JSON.stringify({ text: "revised text" }),
       ],
       ["DELETE", "/integral/queue/message-1", undefined],
+      [
+        "POST",
+        "/integral/approvals/approval-1/approve",
+        JSON.stringify({ attachmentId: "attachment-test" }),
+      ],
+      [
+        "POST",
+        "/integral/approvals/approval-2/deny",
+        JSON.stringify({ attachmentId: "attachment-test" }),
+      ],
       [
         "POST",
         "/integral/messages",
@@ -832,7 +870,10 @@ test("[CHAT-4F29A6D8] an attached talk terminal reconnects after coordinator res
           },
         });
       if (url.pathname === "/integral/events") {
-        if (eventCalls++ === 0) return new Response(firstEvents);
+        if (eventCalls++ === 0)
+          return new Response(firstEvents, {
+            headers: { "x-integral-attachment-id": "attachment-first" },
+          });
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             controller.enqueue(
@@ -845,7 +886,9 @@ test("[CHAT-4F29A6D8] an attached talk terminal reconnects after coordinator res
             });
           },
         });
-        return new Response(stream);
+        return new Response(stream, {
+          headers: { "x-integral-attachment-id": "attachment-restored" },
+        });
       }
       if (url.pathname === "/integral/messages") {
         postedHost = url.hostname;
@@ -934,7 +977,10 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] integral talk patterns and /model use one 
         updates.push(body);
         return Response.json(current);
       }
-      if (url.pathname === "/integral/events") return new Response("");
+      if (url.pathname === "/integral/events")
+        return new Response("", {
+          headers: { "x-integral-attachment-id": "attachment-model" },
+        });
       return new Response(null, { status: 204 });
     },
   });
@@ -1028,7 +1074,10 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] chooser handles stale defaults, ambiguity,
         updates.push(body);
         return Response.json(selected);
       }
-      if (url.pathname === "/integral/events") return new Response("");
+      if (url.pathname === "/integral/events")
+        return new Response("", {
+          headers: { "x-integral-attachment-id": "attachment-removed" },
+        });
       return new Response(null, { status: 204 });
     },
   });
@@ -1076,4 +1125,39 @@ test("[CHAT-6E91B4C7] integral talk refuses attachment when no active provider a
     }),
     /no provider and model choices.*integral connection add/,
   );
+});
+
+test("[CLI-5D8A1C72] local image edit and rebuild commands execute directly without creating approvals", async (t) => {
+  const paths = await fixture(t),
+    calls: string[] = [],
+    output: string[] = [],
+    dependencies = {
+      resolvePaths: () => paths,
+      loadConfig: () => loadConfig(paths, {}),
+      actor: () => "local-human",
+      writeOutput: (text: string) => output.push(text),
+      async edit(_paths: typeof paths, actor: string) {
+        calls.push(`edit:${actor}`);
+        return { prior: "old", landed: "new" };
+      },
+      async rebuild(_paths: typeof paths, _config: unknown, actor: string) {
+        calls.push(`rebuild:${actor}`);
+        return {
+          recipeCommit: "new",
+          piVersion: "0.85.0",
+          image: "sha256:new-image",
+        };
+      },
+    };
+  assert.equal(await imageCommand(["edit"], dependencies), 0);
+  assert.equal(await imageCommand(["rebuild"], dependencies), 0);
+  assert.deepEqual(calls, ["edit:local-human", "rebuild:local-human"]);
+  assert.match(output.join(""), /Updated image Dockerfile to new/);
+  assert.match(output.join(""), /Built Pi 0\.85\.0/);
+  assert.doesNotMatch(output.join(""), /approval/i);
+
+  output.length = 0;
+  assert.equal(await imageCommand(["--help"], dependencies), 0);
+  assert.match(output.join(""), /privileged local operator actions/);
+  assert.match(output.join(""), /do not create approval requests/);
 });

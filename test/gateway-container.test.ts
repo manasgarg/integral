@@ -43,6 +43,15 @@ test("[BOX-E1F472A1] managed Pi image identity changes with its build recipe", (
   assert.match(first, /^integral-pi:0\.1\.0-recipe-[a-f0-9]{12}-pi-1\.2\.3$/);
 });
 
+test("[BOX-40521095] managed Pi image identity includes the governed package set", () => {
+  const recipe = [Buffer.from("same recipe")],
+    base = managedPiImage("1.2.3", recipe, ["git"]),
+    customized = managedPiImage("1.2.3", recipe, ["git", "jq"]),
+    reordered = managedPiImage("1.2.3", recipe, ["jq", "git"]);
+  assert.notEqual(base, customized);
+  assert.equal(customized, reordered);
+});
+
 test("[GATEWAY-3F299566] gateway health identifies deployment and publishes the current component state", async (t) => {
   const paths = await fixture(t),
     deployment = deploymentId(paths);
@@ -396,6 +405,9 @@ test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the 
   let status = 0,
     responseBody = "";
   const response = {
+    once() {
+      return response;
+    },
     writeHead(value: number) {
       status = value;
       return response;
@@ -420,6 +432,154 @@ test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the 
   assert.equal(status, 200);
   assert.equal(responseBody, "[]");
   assert.deepEqual(forwarded, ["/integral/schedules"]);
+});
+
+test("[BOX-40521095] [GATEWAY-846B1000] authenticated package controls bind session and run lineage at the gateway", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  let forwarded:
+    { target: string; path: string; body: Record<string, unknown> } | undefined;
+  const gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path, init) {
+          const serialized = init?.body;
+          if (typeof serialized !== "string")
+            throw new Error("expected serialized package request");
+          forwarded = {
+            target,
+            path,
+            body: JSON.parse(serialized) as Record<string, unknown>,
+          };
+          return Response.json({ revision: 1, packages: ["git", "jq"] });
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          operation: "install",
+          packages: ["jq"],
+          expectedRevision: 0,
+          actor: "forged",
+        }),
+      ),
+    ]) as unknown as IncomingMessage;
+  let status = 0;
+  const response = {
+    once() {
+      return response;
+    },
+    writeHead(value: number) {
+      status = value;
+      return response;
+    },
+    end() {
+      return response;
+    },
+  } as unknown as ServerResponse;
+  request.url = "/integral/control/container-packages";
+  request.method = "POST";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:package-token").toString("base64")}`,
+  };
+  gateway.sessions.set("package-token", "session-42");
+  gateway.sessionRunIds.set("session-42", "run-42");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  assert.equal(status, 200);
+  assert.deepEqual(forwarded, {
+    target: "coordinator",
+    path: "/integral/internal/container-packages",
+    body: {
+      operation: "install",
+      packages: ["jq"],
+      expectedRevision: 0,
+      originSessionId: "session-42",
+      originRunId: "run-42",
+    },
+  });
+});
+
+test("[BOX-6A91C3E7] [REPO-7B0E2F4A] image recipe pushes cross into approval with authenticated lineage", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  let forwarded: Record<string, unknown> | undefined;
+  const gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path, init) {
+          assert.equal(target, "coordinator");
+          assert.equal(path, "/integral/internal/image-recipe");
+          const serialized = init?.body;
+          if (typeof serialized !== "string")
+            throw new Error("expected serialized image proposal");
+          forwarded = JSON.parse(serialized) as Record<string, unknown>;
+          return Response.json({ id: "approval-image", status: "pending" });
+        },
+      },
+    ),
+    request = Readable.from([
+      Buffer.from(
+        JSON.stringify({
+          proposed: "b".repeat(40),
+          bundle: "encoded-bundle",
+          originSessionId: "forged",
+        }),
+      ),
+    ]) as unknown as IncomingMessage;
+  let status = 0;
+  const response = {
+    once() {
+      return response;
+    },
+    writeHead(value: number) {
+      status = value;
+      return response;
+    },
+    end() {
+      return response;
+    },
+  } as unknown as ServerResponse;
+  request.url = "/integral/control/resources/repos/integral-image-recipe/push";
+  request.method = "POST";
+  request.headers = {
+    "proxy-authorization": `Basic ${Buffer.from("integral:image-token").toString("base64")}`,
+  };
+  gateway.sessions.set("image-token", "session-image");
+  gateway.sessionRunIds.set("session-image", "run-image");
+  await (
+    gateway as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  assert.equal(status, 200);
+  assert.deepEqual(forwarded, {
+    operation: "proposal",
+    proposed: "b".repeat(40),
+    bundle: "encoded-bundle",
+    originSessionId: "session-image",
+    originRunId: "run-image",
+  });
 });
 
 test("[SCHEDULE-930581F7] task outcome declarations derive execution identity from the authenticated gateway session", async (t) => {
@@ -825,7 +985,7 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
   assert.equal(spec.sessionId, identity.sessionId);
 });
 
-test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose remote MCP and authenticated schedule tools", async (t) => {
+test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi extensions expose remote MCP and authenticated control tools", async (t) => {
   const paths = await fixture(t),
     mcp = validateConnection({
       name: "work-docs",
@@ -842,6 +1002,9 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] temporary Pi extensions expose r
   assert.match(source, /integral-managed-credential/);
   assert.match(source, /schedule_create/);
   assert.match(source, /schedule_update/);
+  assert.match(source, /container_package_list/);
+  assert.match(source, /container_package_" \+ operation/);
+  assert.match(source, /\["install", "upgrade"\]/);
   assert.match(source, /proxy-authorization/);
   assert.match(source, /request\(target\.url, \{ agent: false/);
   assert.doesNotMatch(source, /fetch\("http:\/\/integral\.control/);
@@ -895,6 +1058,7 @@ test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticat
     "store_delete",
     "store_restore",
     "repo_push",
+    "container_image_rebuild",
     "store_snapshot_list",
     "store_snapshot_restore",
   ]);

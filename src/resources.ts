@@ -31,6 +31,14 @@ import {
 import { IntegralError } from "./errors.ts";
 import { acquireLock, atomicWrite, ensureDir, readText } from "./fs.ts";
 import type { IntegralPaths } from "./paths.ts";
+import {
+  IMAGE_RECIPE_ID,
+  IMAGE_RECIPE_MOUNT,
+  IMAGE_RECIPE_NAME,
+  ensureImageRecipeRepository,
+  imageRecipeHead,
+  materializeImageRecipe,
+} from "./image-recipe.ts";
 
 const run = promisify(execFile);
 
@@ -59,6 +67,7 @@ export interface ResourceRecord {
   identity: BackingIdentity;
   state: ResourceState;
   revision: number;
+  writePolicy?: "direct" | "approval-required" | "denied";
   availabilityReason?: AvailabilityReason;
   tombstone?: {
     deletedAt: string;
@@ -297,6 +306,7 @@ export async function readResource(
     !Number.isInteger(value.revision)
   )
     throw new IntegralError(`invalid resource record: ${name}`);
+  value.writePolicy ??= "direct";
   return value;
 }
 
@@ -389,6 +399,7 @@ async function addHostResourceUnlocked(
     identity: source.identity,
     state: "active",
     revision: 1,
+    writePolicy: "direct",
   };
   try {
     await writeResource(paths, record);
@@ -691,6 +702,26 @@ export async function prepareResourceProjection(
       }
     }
   }
+  const imageHead = await ensureImageRecipeRepository(paths),
+    image = await materializeImageRecipe(paths, sessionHome, sessionId),
+    imageIdentity = await backingIdentity(paths.imageRecipe),
+    imageResource: ResourceRecord = {
+      id: IMAGE_RECIPE_ID,
+      connection: IMAGE_RECIPE_NAME,
+      kind: "host-repo",
+      path: paths.imageRecipe,
+      mount: IMAGE_RECIPE_MOUNT,
+      branch: "main",
+      identity: imageIdentity,
+      state: "active",
+      revision: 0,
+      writePolicy: "approval-required",
+    };
+  result.repositories.push({
+    resource: imageResource,
+    checkout: image.checkout,
+    initialHead: imageHead,
+  });
   void config;
   return result;
 }
@@ -803,16 +834,22 @@ export async function cleanupResourceProjection(
         ["rev-parse", "--verify", "HEAD"],
         repository.checkout,
       ).catch(() => ""),
-      record = await readResource(paths, repository.resource.connection),
-      canonicalHead = record
-        ? await git([
-            "--git-dir",
-            record.path,
-            "rev-parse",
-            "--verify",
-            `refs/heads/${record.branch ?? "main"}`,
-          ]).catch(() => "")
-        : "";
+      record =
+        repository.resource.id === IMAGE_RECIPE_ID
+          ? undefined
+          : await readResource(paths, repository.resource.connection),
+      canonicalHead =
+        repository.resource.id === IMAGE_RECIPE_ID
+          ? await imageRecipeHead(paths).catch(() => "")
+          : record
+            ? await git([
+                "--git-dir",
+                record.path,
+                "rev-parse",
+                "--verify",
+                `refs/heads/${record.branch ?? "main"}`,
+              ]).catch(() => "")
+            : "";
     if (current || head !== canonicalHead) {
       const destination = join(
         paths.recovery,
@@ -1047,6 +1084,13 @@ async function repositoryBundlePushUnlocked(
     throw new IntegralError("resource_soft_deleted", 409);
   if (current.state !== "active")
     throw new IntegralError("resource_unavailable", 409);
+  if (current.writePolicy === "denied")
+    throw new IntegralError("repository writes are denied by host policy", 403);
+  if (current.writePolicy === "approval-required")
+    throw new IntegralError(
+      "repository requires a specialized approval-gated landing",
+      409,
+    );
   if (!/^[0-9a-f]{40,64}$/i.test(proposed))
     throw new IntegralError("invalid proposed commit", 400);
   if (bundle.byteLength > config.repositories.maxRepoBytes)

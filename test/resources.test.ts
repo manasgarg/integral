@@ -204,7 +204,7 @@ test("[REPO-95B5606D] [STORE-83D2CD52] soft deletion preserves current leases an
   assert.equal((await listStoreSnapshots(paths, resource.id)).length, 1);
 });
 
-test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] repository work lands only through a validated bundle", async (t) => {
+test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] [REPO-7B0E2F4A] repository work lands only through its host write policy and a validated bundle", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     resource = await createResource(
@@ -256,6 +256,20 @@ test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] repository work lands only
     (await run("git", ["--git-dir", resource.path, "show", "main:README.md"]))
       .stdout,
     "governed\n",
+  );
+  await writeFile(
+    join(paths.resources, "source.json"),
+    `${JSON.stringify({ ...resource, writePolicy: "denied" })}\n`,
+  );
+  await assert.rejects(
+    repositoryBundlePush(
+      paths,
+      config,
+      resource.id,
+      await readFile(bundle),
+      proposed,
+    ),
+    /writes are denied by host policy/,
   );
   const gateway = new Gateway(
     paths,

@@ -6,6 +6,13 @@ import { IntegralError } from "./errors.ts";
 import type { ModelSelection } from "./model-selection.ts";
 
 export type QueueStatus = "queued" | "in-flight";
+export interface ApprovalContinuation {
+  approvalId: string;
+  originSessionId: string;
+  originRunId?: string;
+  outcome: "denied" | "expired" | "stale" | "succeeded" | "failed";
+  summary: string;
+}
 export interface QueuedMessage {
   id: string;
   text: string;
@@ -13,6 +20,7 @@ export interface QueuedMessage {
   status: QueueStatus;
   attempts: number;
   createdAt: string;
+  approvalContinuation?: ApprovalContinuation;
 }
 interface QueueFile {
   nextOrder: number;
@@ -110,7 +118,10 @@ export class DurableQueue {
       .map((item) => ({ ...item }))
       .sort((a, b) => a.order - b.order);
   }
-  async enqueue(text: string): Promise<QueuedMessage> {
+  async enqueue(
+    text: string,
+    approvalContinuation?: ApprovalContinuation,
+  ): Promise<QueuedMessage> {
     return this.exclusive(async () => {
       if (!text.trim()) throw new IntegralError("message must not be empty");
       const priorSnowflake = this.data.snowflake
@@ -129,6 +140,9 @@ export class DurableQueue {
         status: "queued",
         attempts: 0,
         createdAt: new Date().toISOString(),
+        ...(approvalContinuation
+          ? { approvalContinuation: structuredClone(approvalContinuation) }
+          : {}),
       };
       this.data.items.push(item);
       try {
@@ -251,6 +265,8 @@ export interface ConversationEvent {
   messageId?: string;
   text?: string;
   sessionId?: string;
+  parentSessionId?: string;
+  approvalId?: string;
   timestamp: string;
 }
 export class ConversationStore {
