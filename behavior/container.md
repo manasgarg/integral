@@ -157,17 +157,23 @@ Given Integral owns a dedicated governed Git repository for the deployment's Pi 
 	When Pi requests a fresh rebuild of the active image recipe
 		Then Integral creates an approval request bound to the active recipe commit, foundational image reference, and floating-resolution intent
 			And does not build or select an image before approval
-	When a user or host automation requests a fresh rebuild without starting Pi
-		Then Integral creates the same governed rebuild request through a host CLI or API
+	When a trusted local operator runs `integral image edit`
+		Then Integral validates and commits the Dockerfile change directly through the host boundary
+			And records the operator and exact Git change without creating an approval request
+	When a trusted local operator runs `integral image rebuild`
+		Then Integral treats the command itself as direct human authorization to rebuild the active recipe
+			And records the operator without creating an approval request or inventing a Pi session
+	When host automation or a remote API requests a fresh rebuild without starting Pi
+		Then Integral creates the same governed rebuild request used for Pi
 			And records the external actor instead of inventing a Pi session
-			And requires the same human approval before building
+			And requires human approval before building
 	When a human approves the exact image proposal
 		Then Integral builds only the approved commit and complete tree digest
 			And uses a build context containing only validated files from that tree
 			And provides no host source tree, session credentials, Docker socket, or undeclared secret to the build
 			And applies bounded build time, CPU, memory, output size, and network policy
 			And records the foundational image digest, recipe base and proposal commits, tree digest, approval ID, and resulting immutable image digest
-	When a human approves a fresh rebuild of the unchanged active recipe
+	When Integral executes a fresh rebuild authorized by approval or the trusted local CLI
 		Then Integral pulls mutable base references again
 			And reruns dependency installation without Docker layer-cache reuse
 			And refreshes package indexes within the build as directed by the Dockerfile

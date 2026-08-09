@@ -127,6 +127,10 @@ Given every governed repository has a host-managed write policy of `direct`, `ap
 		Then integral rejects the request without accepting a proposal or changing repository state
 	When Pi calls a read-only repository operation
 		Then integral permits it according to ordinary session and repository policy without mutation approval
+	When a trusted local operator edits an `approval-required` image-recipe repository through `integral image edit`
+		Then integral treats the local CLI invocation as direct human authority for that repository
+			And validates and durably commits the exact change without creating an approval request
+			And records the operator, prior commit, landed commit, tree digest, and changed paths in host audit history
 
 ## REPO-37441347 — Refuse stale or malformed repository landings safely
 

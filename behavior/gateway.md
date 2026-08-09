@@ -80,7 +80,7 @@ Given a chat container is running
 Given the gateway classifies a control operation as requiring human approval
 	And container package installation and upgrade are approval-required
 	And writes to repositories with host-managed `approval-required` policy are approval-required
-	And fresh image rebuilds that can resolve floating dependencies are approval-required
+	And fresh image rebuilds requested by Pi, host automation, or a remote API are approval-required
 	And read-only package inventory is not approval-required
 	And read-only repository operations are not approval-required
 	When an authenticated Pi session submits an approval-required request
@@ -90,10 +90,14 @@ Given the gateway classifies a control operation as requiring human approval
 			And includes it in snapshots for terminals that attach later
 			And keeps the originating tool call pending while its connection remains active
 			And does not build an image, advance a protected repository ref, or modify package state before approval
-Given an authenticated host user or automation submits an approval-required request outside Pi
+Given authenticated host automation or a remote API submits an approval-required request outside Pi
 	When Integral creates the approval request
 		Then it records the external actor and request origin without inventing a Pi session or run
 			And applies the same validation, decision, execution, audit, expiry, and restart lifecycle
+Given a trusted local operator invokes `integral image edit` or `integral image rebuild`
+	When Integral authorizes the operation
+		Then it treats local CLI authority as the human decision
+			And bypasses approval-request creation without bypassing validation, build isolation, durable audit, or immutable image selection
 Given an approval request is pending
 	When an attached human runs `/approve <approval-id>`
 		Then Integral binds the decision to that terminal attachment
