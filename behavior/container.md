@@ -128,8 +128,10 @@ Given Pi runs in an immutable managed image without host Docker access
 			And records a new revision and immutable image identity
 	When Pi submits command syntax, an unknown package for upgrade, or a stale revision
 		Then Integral rejects the request without changing package state or the selected image
-	When Integral later resolves a newer latest Pi release
-		Then it builds that exact Pi version with the durable desired package set
+	When the active Dockerfile declares Pi with a floating version such as `latest`
+		And a human approves a fresh rebuild of that recipe
+		Then Integral resolves Pi again during the build instead of overriding the Dockerfile with the prior selected version
+			And records the version and immutable image identity that were actually installed
 
 ## BOX-6A91C3E7 — Let Pi author its next managed image
 
@@ -146,12 +148,33 @@ Given Integral owns a dedicated governed Git repository for the deployment's Pi 
 		Then Integral treats the commit as an image proposal governed by `REPO-7B0E2F4A`
 			And presents the exact Dockerfile and artifact diff, base commit, proposed commit, and tree digest for approval
 			And keeps the active recipe ref and selected image unchanged before approval
+	When the active Dockerfile declares an exact package version or immutable image digest
+		Then Integral uses that exact declaration on every build
+	When the active Dockerfile declares a floating package version, mutable image tag, or unversioned operating-system package
+		Then Integral treats resolution at build time as intentional recipe behavior
+			And does not describe the recipe commit as a reproducible package lock
+			And tells an approving human that repository state may resolve differently at execution time
+	When Pi requests a fresh rebuild of the active image recipe
+		Then Integral creates an approval request bound to the active recipe commit, foundational image reference, and floating-resolution intent
+			And does not build or select an image before approval
+	When a user or host automation requests a fresh rebuild without starting Pi
+		Then Integral creates the same governed rebuild request through a host CLI or API
+			And records the external actor instead of inventing a Pi session
+			And requires the same human approval before building
 	When a human approves the exact image proposal
 		Then Integral builds only the approved commit and complete tree digest
 			And uses a build context containing only validated files from that tree
 			And provides no host source tree, session credentials, Docker socket, or undeclared secret to the build
 			And applies bounded build time, CPU, memory, output size, and network policy
 			And records the foundational image digest, recipe base and proposal commits, tree digest, approval ID, and resulting immutable image digest
+	When a human approves a fresh rebuild of the unchanged active recipe
+		Then Integral pulls mutable base references again
+			And reruns dependency installation without Docker layer-cache reuse
+			And refreshes package indexes within the build as directed by the Dockerfile
+			And resolves `latest`, ranges, mutable tags, and unversioned packages against their configured repositories at build time
+			And never substitutes an older selected package version for a floating Dockerfile declaration
+			And records the recipe commit, prior image digest, resulting image digest, and actual installed package inventory
+			And permits the resulting image digest and installed inventory to differ from an earlier build of the same recipe commit
 	When the approved image build and validation succeed
 		Then Integral compare-and-swap advances the active recipe ref from the approved base to the approved commit
 			And selects the resulting immutable image for replacement sessions

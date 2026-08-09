@@ -80,15 +80,20 @@ Given a chat container is running
 Given the gateway classifies a control operation as requiring human approval
 	And container package installation and upgrade are approval-required
 	And writes to repositories with host-managed `approval-required` policy are approval-required
+	And fresh image rebuilds that can resolve floating dependencies are approval-required
 	And read-only package inventory is not approval-required
 	And read-only repository operations are not approval-required
 	When an authenticated Pi session submits an approval-required request
 		Then Integral validates it without executing it
-			And durably records an unpredictable approval ID, safe summary, canonical request digest, originating session and run, model selection, current revision, and deadline
+			And durably records an unpredictable approval ID, safe summary, canonical request digest, originating actor, session and run, model selection, current revision, and deadline
 			And broadcasts the pending approval to every attached human terminal
 			And includes it in snapshots for terminals that attach later
 			And keeps the originating tool call pending while its connection remains active
 			And does not build an image, advance a protected repository ref, or modify package state before approval
+Given an authenticated host user or automation submits an approval-required request outside Pi
+	When Integral creates the approval request
+		Then it records the external actor and request origin without inventing a Pi session or run
+			And applies the same validation, decision, execution, audit, expiry, and restart lifecycle
 Given an approval request is pending
 	When an attached human runs `/approve <approval-id>`
 		Then Integral binds the decision to that terminal attachment
@@ -105,6 +110,9 @@ Given an approval request is pending
 	When the request revision is stale at approval time
 		Then Integral records and broadcasts a stale outcome
 			And does not execute the request
+	When the request is a fresh rebuild with floating dependencies
+		Then Integral shows the active recipe commit, prior image digest, mutable inputs, and build-time resolution warning
+			And approval authorizes resolution against the configured repositories at execution time rather than an exact dependency closure
 Given an approval is resolved while its originating Pi tool call remains connected
 	When Integral completes the decision
 		Then it returns the durable outcome to that tool call
