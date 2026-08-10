@@ -9,8 +9,6 @@ switches are outside this scope.
 <!-- Automation note (MCP-DB6BD516): Stateless, sessionful, and legacy SSE negotiation are covered by MCP protocol tests. -->
 <!-- Automation note (MCP-007BCE08): Paginated discovery, malformed-tool isolation, deterministic first-class tool generation, and schema bounds are covered by MCP and container tests. -->
 <!-- Automation note (MCP-2F0F5CB5): Named remote invocation and stdio gateway brokering are covered by MCP and gateway/container tests. -->
-<!-- Automation note (MCP-5751370A): This behavior defines planned generalized MCP catalog refresh functionality; executable coverage will land with implementation. -->
-<!-- Automation note (MCP-6F5CFA0E): This behavior defines planned generalized MCP failure isolation; executable coverage will land with implementation. -->
 <!-- Automation note (MCP-0A804DA4): Stdio configuration, secret handling, locked sidecar construction, protocol supervision, and session cleanup are covered by connection, CLI, container, and runner tests. -->
 
 ## MCP-948B2522 — Discover and complete MCP authorization

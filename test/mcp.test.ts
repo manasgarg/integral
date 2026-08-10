@@ -7,6 +7,7 @@ import {
   MCP_LEGACY_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSION,
   MCP_SESSION_PROTOCOL_VERSION,
+  McpCatalogRegistry,
   RemoteMcpClient,
   toolsFromListResult,
 } from "../src/mcp.ts";
@@ -98,6 +99,53 @@ test("[MCP-DB6BD516] [MCP-007BCE08] stateless remote discovery reads every tool 
     seen[1]?.headers.get("mcp-protocol-version"),
     MCP_PROTOCOL_VERSION,
   );
+});
+
+test("[MCP-5751370A] catalog refresh atomically replaces complete catalogs on expiry, notification, and reconnect", async () => {
+  let now = 0,
+    calls = 0,
+    fail = false;
+  const discover: typeof discoverRemoteMcp = async (selected) => {
+      calls++;
+      if (fail) throw new Error("discovery failed");
+      return {
+        connection: selected,
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        tools: [
+          {
+            name: calls === 1 ? "old" : "new",
+            inputSchema: { type: "object" },
+          },
+        ],
+      };
+    },
+    registry = new McpCatalogRegistry(discover, () => now, 100);
+  assert.deepEqual(
+    (await registry.refresh(connection(), undefined)).tools.map(
+      (tool) => tool.name,
+    ),
+    ["old"],
+  );
+  assert.equal(calls, 1);
+  assert.equal(
+    (await registry.refresh(connection(), undefined)).tools[0]?.name,
+    "old",
+  );
+  now = 101;
+  assert.equal(
+    (await registry.refresh(connection(), undefined)).tools[0]?.name,
+    "new",
+  );
+  registry.announceToolListChange("docs");
+  fail = true;
+  await assert.rejects(
+    registry.refresh(connection(), undefined),
+    /discovery failed/,
+  );
+  assert.equal(registry.current("docs")?.tools[0]?.name, "new");
+  fail = false;
+  await registry.refresh(connection(), undefined, fetch, true);
+  assert.equal(calls, 4);
 });
 
 test("[MCP-DB6BD516] [MCP-2F0F5CB5] sessionful servers initialize, retain their session, and receive tool calls", async () => {

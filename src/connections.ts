@@ -50,11 +50,55 @@ export interface Connection {
   mount?: string;
 }
 export interface ListedConnection extends Connection {
-  state: "active" | "unavailable" | "soft-deleted" | "DISABLED (no secret)";
+  state:
+    | "active"
+    | "degraded"
+    | "unavailable"
+    | "soft-deleted"
+    | "DISABLED (no secret)";
   resourceId?: string;
   lifecycleRevision?: number;
   availabilityReason?: string;
   restorationPossible?: boolean;
+}
+
+export type ConnectionHealthStage =
+  "authorization" | "negotiation" | "discovery" | "sidecar";
+
+function connectionHealthFile(paths: IntegralPaths, name: string): string {
+  return join(paths.state, "connection-health", `${name}.json`);
+}
+
+export async function markConnectionDegraded(
+  paths: IntegralPaths,
+  name: string,
+  stage: ConnectionHealthStage,
+): Promise<void> {
+  await atomicWrite(
+    connectionHealthFile(paths, name),
+    `${JSON.stringify({ stage, updatedAt: new Date().toISOString() })}\n`,
+  );
+}
+
+export async function clearConnectionDegraded(
+  paths: IntegralPaths,
+  name: string,
+): Promise<void> {
+  await rm(connectionHealthFile(paths, name), { force: true });
+}
+
+async function connectionHealth(
+  paths: IntegralPaths,
+  name: string,
+): Promise<ConnectionHealthStage | undefined> {
+  const raw = await readText(connectionHealthFile(paths, name));
+  if (!raw) return undefined;
+  const value = JSON.parse(raw) as { stage?: unknown };
+  return ["authorization", "negotiation", "discovery", "sidecar"].includes(
+    String(value.stage),
+  )
+    ? (value.stage as ConnectionHealthStage)
+    : undefined;
 }
 
 export const CATALOG = [
@@ -700,15 +744,20 @@ export async function listConnections(
     );
   return Promise.all(
     loaded.connections.map(async (c) => {
-      const resource = hostRecords.get(c.name);
+      const resource = hostRecords.get(c.name),
+        health = resource ? undefined : await connectionHealth(paths, c.name),
+        usable =
+          (c.auth === "none" && !c.secretEnv?.length) ||
+          usableCredential(c, await credentialFor(paths, c.name));
       return {
         ...c,
         state: resource
           ? resource.state
-          : (c.auth === "none" && !c.secretEnv?.length) ||
-              usableCredential(c, await credentialFor(paths, c.name))
-            ? "active"
-            : "DISABLED (no secret)",
+          : !usable
+            ? "DISABLED (no secret)"
+            : health
+              ? "degraded"
+              : "active",
         ...(resource
           ? {
               resourceId: resource.id,
@@ -720,6 +769,7 @@ export async function listConnections(
                 : {}),
             }
           : {}),
+        ...(!resource && health ? { availabilityReason: health } : {}),
       } satisfies ListedConnection;
     }),
   );
@@ -842,6 +892,7 @@ export async function removeConnection(
   }
   await rm(file);
   await rm(join(paths.credentials, name), { force: true });
+  await clearConnectionDegraded(paths, name);
   await bumpGeneration(paths);
 }
 

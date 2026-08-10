@@ -4,8 +4,10 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   credentialFor,
+  clearConnectionDegraded,
   listConnections,
   loadConnections,
+  markConnectionDegraded,
   removeConnection,
   removeCredential,
   saveConnection,
@@ -260,6 +262,33 @@ test("[CONNECTION-5833EDC7] [CONNECTION-475E6AE7] missing credentials disable re
   const rows = await listConnections(paths);
   assert.equal(rows[0]?.state, "DISABLED (no secret)");
   assert.doesNotMatch(JSON.stringify(rows), /value/);
+});
+
+test("[MCP-6F5CFA0E] one MCP connection reports a bounded failing stage and recovers without affecting healthy connections", async (t) => {
+  const paths = await fixture(t);
+  for (const name of ["healthy", "failing"])
+    await saveConnection(
+      paths,
+      validateConnection({
+        name,
+        kind: "mcp",
+        url: `https://${name}.example.test/mcp`,
+        auth: "none",
+      }),
+    );
+  await markConnectionDegraded(paths, "failing", "discovery");
+  let rows = await listConnections(paths);
+  assert.equal(rows.find((row) => row.name === "healthy")?.state, "active");
+  assert.deepEqual(
+    rows
+      .filter((row) => row.name === "failing")
+      .map((row) => [row.state, row.availabilityReason]),
+    [["degraded", "discovery"]],
+  );
+  assert.doesNotMatch(JSON.stringify(rows), /credential|secret/i);
+  await clearConnectionDegraded(paths, "failing");
+  rows = await listConnections(paths);
+  assert.equal(rows.find((row) => row.name === "failing")?.state, "active");
 });
 
 test("[CONNECTION-741C2F56] [CONNECTION-E73B40C6] removal can delete credentials separately or remove an entire no-auth record", async (t) => {

@@ -6,18 +6,6 @@ Git landing protocol; Integral provides mounting, isolation, coordination,
 configured snapshots, and soft deletion without interpreting
 their content.
 
-<!-- Automation note (STORE-350F3496): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-6148863C): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-18E17123): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-815F88A3): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-77471EF0): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-F0338E2A): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-83D2CD52): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-4C006F7D): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-C38A633E): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-097B028D): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-0B28DA79): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (STORE-0A19F4CB): This behavior defines planned durable-store availability functionality; executable coverage will land with implementation. -->
 
 ## STORE-350F3496 — Give Pi authenticated store lifecycle tools
 

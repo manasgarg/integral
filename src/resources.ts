@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import {
   access,
+  appendFile,
   cp,
   lstat,
   mkdir,
@@ -869,6 +870,17 @@ export async function cleanupResourceProjection(
         filter: (source) =>
           relative(repository.checkout, source).split("/")[0] !== ".git",
       });
+      await atomicWrite(
+        join(destination, ".integral-recovery.json"),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          resourceId: repository.resource.id,
+          sessionId: projection.sessionId,
+          createdAt: new Date().toISOString(),
+          committedChanges: Boolean(head && head !== canonicalHead),
+          uncommittedChanges: Boolean(current),
+        })}\n`,
+      );
     }
     await expireRecoveryArtifacts(paths, repository.resource.id, config);
     await rm(sessionFile(paths, repository.resource.id, projection.sessionId), {
@@ -907,7 +919,19 @@ async function expireRecoveryArtifacts(
     const path = join(root, entry),
       value = await stat(path);
     if (value.mtimeMs < cutoff)
-      await rm(path, { recursive: true, force: true });
+      await rm(path, { recursive: true, force: true }).then(async () => {
+        await ensureDir(dirname(paths.repositoryRecoveryAudit));
+        await appendFile(
+          paths.repositoryRecoveryAudit,
+          `${JSON.stringify({
+            event: "repository_recovery_expired",
+            resourceId,
+            artifactId: entry,
+            expiredAt: new Date().toISOString(),
+          })}\n`,
+          { mode: 0o600 },
+        );
+      });
   }
 }
 
@@ -936,16 +960,39 @@ export async function sessionHasResource(
 export async function listRepositoryRecovery(
   paths: IntegralPaths,
   id: string,
-): Promise<Array<{ id: string; createdAt: string }>> {
+): Promise<
+  Array<{
+    id: string;
+    createdAt: string;
+    committedChanges: boolean;
+    uncommittedChanges: boolean;
+  }>
+> {
   const root = join(paths.recovery, id),
     entries = (await readdir(root).catch(() => [] as string[]))
       .sort()
       .reverse();
   return await Promise.all(
-    entries.map(async (entry) => ({
-      id: entry,
-      createdAt: (await stat(join(root, entry))).mtime.toISOString(),
-    })),
+    entries.map(async (entry) => {
+      const directory = join(root, entry),
+        metadata = await readText(join(directory, ".integral-recovery.json")),
+        parsed = metadata
+          ? (JSON.parse(metadata) as {
+              createdAt?: unknown;
+              committedChanges?: unknown;
+              uncommittedChanges?: unknown;
+            })
+          : undefined;
+      return {
+        id: entry,
+        createdAt:
+          typeof parsed?.createdAt === "string"
+            ? parsed.createdAt
+            : (await stat(directory)).mtime.toISOString(),
+        committedChanges: parsed?.committedChanges === true,
+        uncommittedChanges: parsed?.uncommittedChanges === true,
+      };
+    }),
   );
 }
 
@@ -1134,7 +1181,12 @@ async function repositoryBundlePushUnlocked(
         "--is-ancestor",
         prior,
         proposed,
-      ]);
+      ]).catch(() => {
+        throw new IntegralError(
+          `stale repository head; current canonical head is ${prior}`,
+          409,
+        );
+      });
     const changedPaths = (
       await git([
         "--git-dir",

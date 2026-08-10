@@ -383,7 +383,7 @@ test("[MCP-2F0F5CB5] authenticated Pi MCP calls use the named remote connection 
   });
 });
 
-test("[MCP-STDIO-ISOLATION] stdio MCP sidecars keep secrets out of Docker metadata and mount only trust roots", async (t) => {
+test("[MCP-0A804DA4] stdio MCP sidecars keep secrets out of Docker metadata and mount only trust roots", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     connection = validateConnection({

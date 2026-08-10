@@ -16,6 +16,10 @@ export class McpSidecarManager {
       sessionHome: string,
       catalogs: McpCatalog[],
     ) => Promise<void>,
+    private readonly connectionHealth: (
+      connection: string,
+      healthy: boolean,
+    ) => Promise<void> = async () => undefined,
   ) {}
 
   async start(
@@ -52,11 +56,13 @@ export class McpSidecarManager {
           ),
         );
         runtimes.set(sidecar.connection.name, runtime);
+        await this.connectionHealth(sidecar.connection.name, true);
       } catch (error) {
         await runtime.stop().catch(() => undefined);
         unavailable.push(
           `${sidecar.connection.name} (${error instanceof Error ? error.message : String(error)})`,
         );
+        await this.connectionHealth(sidecar.connection.name, false);
       }
     }
     if (runtimes.size) this.sessions.set(spec.sessionId, runtimes);

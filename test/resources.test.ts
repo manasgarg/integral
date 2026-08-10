@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
+  chmod,
   mkdir,
   readFile,
   rename,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -22,6 +24,7 @@ import {
   cleanupResourceProjection,
   createResource,
   listStoreSnapshots,
+  listRepositoryRecovery,
   prepareResourceProjection,
   readResource,
   refreshResource,
@@ -203,7 +206,7 @@ test("[CONNECTION-717CAD0E] [STORE-18E17123] [STORE-0A19F4CB] host stores retain
   );
 });
 
-test("[REPO-95B5606D] [STORE-83D2CD52] soft deletion preserves current leases and backing bytes without replacing the active session", async (t) => {
+test("[REPO-95B5606D] [STORE-83D2CD52] [STORE-4C006F7D] soft deletion preserves current leases and backing bytes without replacing the active session", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     resource = await createResource(
@@ -260,7 +263,7 @@ test("[REPO-95B5606D] [STORE-83D2CD52] soft deletion preserves current leases an
   assert.equal((await listStoreSnapshots(paths, resource.id)).length, 1);
 });
 
-test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] [REPO-7B0E2F4A] repository work lands only through its host write policy and a validated bundle", async (t) => {
+test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] [REPO-7B0E2F4A] [REPO-37441347] repository work lands only through its host write policy and a validated bundle", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     resource = await createResource(
@@ -312,6 +315,49 @@ test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] [REPO-7B0E2F4A] repository
     (await run("git", ["--git-dir", resource.path, "show", "main:README.md"]))
       .stdout,
     "governed\n",
+  );
+  await assert.rejects(
+    repositoryBundlePush(
+      paths,
+      config,
+      resource.id,
+      Buffer.from("not a bundle"),
+      "0".repeat(40),
+    ),
+  );
+  await run("git", ["checkout", "--orphan", "stale"], { cwd: checkout });
+  await run("git", ["rm", "-rf", "."], { cwd: checkout });
+  await writeFile(join(checkout, "STALE.md"), "stale\n");
+  await run("git", ["add", "STALE.md"], { cwd: checkout });
+  await run(
+    "git",
+    [
+      "-c",
+      "user.name=Integral Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "stale",
+    ],
+    { cwd: checkout },
+  );
+  const stale = (
+      await run("git", ["rev-parse", "HEAD"], { cwd: checkout })
+    ).stdout.trim(),
+    staleBundle = join(paths.root, "stale.bundle");
+  await run("git", ["bundle", "create", staleBundle, "HEAD"], {
+    cwd: checkout,
+  });
+  await assert.rejects(
+    repositoryBundlePush(
+      paths,
+      config,
+      resource.id,
+      await readFile(staleBundle),
+      stale,
+    ),
+    new RegExp(`current canonical head is ${proposed}`),
   );
   await writeFile(
     join(paths.resources, "source.json"),
@@ -373,9 +419,10 @@ test("[REPO-403F597E] [REPO-A690931F] [REPO-CDA4609A] [REPO-7B0E2F4A] repository
   assert.match(advertisement, new RegExp(proposed));
   await cleanupResourceProjection(paths, config, projection);
   await rm(bundle, { force: true });
+  await rm(staleBundle, { force: true });
 });
 
-test("[STORE-F0338E2A] [STORE-0B28DA79] store snapshots deduplicate bytes and restore through lifecycle CAS", async (t) => {
+test("[STORE-815F88A3] [STORE-F0338E2A] [STORE-0B28DA79] store bytes and symlinks remain inert across deduplicated snapshots and lifecycle CAS", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     resource = await createResource(
@@ -386,6 +433,11 @@ test("[STORE-F0338E2A] [STORE-0B28DA79] store snapshots deduplicate bytes and re
       config,
     );
   await writeFile(join(resource.path, "value.txt"), "one");
+  const external = join(paths.root, "outside-store.txt");
+  await writeFile(external, "outside");
+  await symlink(external, join(resource.path, "external-link"));
+  await writeFile(join(resource.path, ".git"), "inert");
+  await chmod(join(resource.path, ".git"), 0o755);
   for (const [session, value] of [
     ["snapshot-one", "one"],
     ["snapshot-one-again", "one"],
@@ -416,6 +468,13 @@ test("[STORE-F0338E2A] [STORE-0B28DA79] store snapshots deduplicate bytes and re
   );
   assert.equal(restored.revision, resource.revision + 1);
   assert.equal(await readFile(join(resource.path, "value.txt"), "utf8"), "one");
+  assert.equal(await readFile(external, "utf8"), "outside");
+  assert.equal(
+    await import("node:fs/promises").then((fs) =>
+      fs.readlink(join(resource.path, "external-link")),
+    ),
+    external,
+  );
   await assert.rejects(
     restoreStoreSnapshot(
       paths,
@@ -426,4 +485,125 @@ test("[STORE-F0338E2A] [STORE-0B28DA79] store snapshots deduplicate bytes and re
     ),
     /stale resource revision/,
   );
+});
+
+test("[REPO-BB20CA23] [REPO-1C3B9872] [REPO-CEE2CA38] repository failure preserves classified recovery without exposing canonical paths", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    resource = await createResource(
+      paths,
+      "host-repo",
+      "recoverable",
+      "/home/pi/recoverable",
+      config,
+    ),
+    home = join(paths.root, "recovery-home"),
+    missing = `${resource.path}.missing`;
+  t.after(() => rm(missing, { recursive: true, force: true }));
+  await mkdir(home);
+  const projection = await prepareResourceProjection(
+      paths,
+      config,
+      home,
+      "recovery-session",
+    ),
+    checkout = projection.repositories.find(
+      (value) => value.resource.id === resource.id,
+    )!.checkout;
+  await writeFile(join(checkout, "committed.txt"), "committed");
+  await run("git", ["add", "committed.txt"], { cwd: checkout });
+  await run(
+    "git",
+    [
+      "-c",
+      "user.name=Integral Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "recovery",
+    ],
+    { cwd: checkout },
+  );
+  await writeFile(join(checkout, "uncommitted.txt"), "uncommitted");
+  const old = join(paths.recovery, resource.id, "expired-artifact");
+  await mkdir(old, { recursive: true });
+  await utimes(old, new Date(0), new Date(0));
+  await rename(resource.path, missing);
+  const unavailable = await refreshResource(
+    paths,
+    (await readResource(paths, resource.connection))!,
+  );
+  assert.equal(unavailable.availabilityReason, "missing");
+  await assert.rejects(
+    repositoryBundlePush(
+      paths,
+      config,
+      resource.id,
+      Buffer.from("ignored"),
+      "0".repeat(40),
+    ),
+    /resource_unavailable/,
+  );
+  const laterHome = join(paths.root, "recovery-later");
+  await mkdir(laterHome);
+  const later = await prepareResourceProjection(
+    paths,
+    config,
+    laterHome,
+    "later-session",
+  );
+  assert.deepEqual(later.unavailable, [
+    { name: "recoverable", kind: "host-repo", reason: "missing" },
+  ]);
+  await cleanupResourceProjection(paths, config, projection);
+  const recovery = await listRepositoryRecovery(paths, resource.id);
+  assert.equal(recovery.length, 1);
+  assert.equal(recovery[0]?.committedChanges, true);
+  assert.equal(recovery[0]?.uncommittedChanges, true);
+  assert.doesNotMatch(JSON.stringify(recovery), new RegExp(paths.root));
+  assert.match(
+    await readFile(paths.repositoryRecoveryAudit, "utf8"),
+    /repository_recovery_expired/,
+  );
+});
+
+test("[REPO-F96C6AE6] [REPO-4EB2390E] [REPO-D987932B] [STORE-097B028D] lifecycle CAS serializes soft deletion and restores the same backing resource", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  for (const [kind, name] of [
+    ["host-repo", "serialized-repo"],
+    ["host-store", "serialized-store"],
+  ] as const) {
+    const resource = await createResource(
+        paths,
+        kind,
+        name,
+        `/home/pi/${name}`,
+        config,
+      ),
+      outcomes = await Promise.allSettled([
+        softDeleteResource(paths, name, resource.revision, "one"),
+        softDeleteResource(paths, name, resource.revision, "two"),
+      ]);
+    assert.equal(
+      outcomes.filter((outcome) => outcome.status === "fulfilled").length,
+      1,
+    );
+    assert.equal(
+      outcomes.filter((outcome) => outcome.status === "rejected").length,
+      1,
+    );
+    const deleted = (await readResource(paths, name))!;
+    assert.equal(deleted.state, "soft-deleted");
+    const restored = await restoreResource(
+      paths,
+      name,
+      deleted.revision,
+      `/home/pi/restored-${name}`,
+    );
+    assert.equal(restored.id, resource.id);
+    assert.equal(restored.path, resource.path);
+    assert.equal(restored.revision, resource.revision + 2);
+  }
 });

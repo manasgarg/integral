@@ -2,7 +2,9 @@ import http from "node:http";
 import type { EffectiveConfig } from "./config.ts";
 import {
   credentialFor,
+  clearConnectionDegraded,
   listConnections,
+  markConnectionDegraded,
   type Connection,
 } from "./connections.ts";
 import type { IntegralPaths } from "./paths.ts";
@@ -41,7 +43,11 @@ import { readText } from "./fs.ts";
 import { join } from "node:path";
 import { IntegralError } from "./errors.ts";
 import { oauthAccess } from "./oauth.ts";
-import { discoverRemoteMcp, type McpCatalog } from "./mcp.ts";
+import {
+  discoverRemoteMcp,
+  McpCatalogRegistry,
+  type McpCatalog,
+} from "./mcp.ts";
 import type {
   ApprovalContinuation,
   ConversationEvent,
@@ -135,6 +141,7 @@ export class Runner {
   private dockerGateway = "";
   private token = "";
   private readonly mcpSidecars: McpSidecarManager;
+  private readonly mcpCatalogs: McpCatalogRegistry;
   private currentMessageId: string | undefined;
   private currentTask:
     { id: string; claimId: string; attemptId?: string } | undefined;
@@ -158,12 +165,20 @@ export class Runner {
   ) {
     this.dependencies = { ...productionDependencies, ...overrides };
     this.runs = new RunStore(paths, () => this.dependencies.now());
+    this.mcpCatalogs = new McpCatalogRegistry(
+      this.dependencies.discoverRemoteMcp,
+      () => this.dependencies.now(),
+    );
     this.mcpSidecars = new McpSidecarManager(
       this.dependencies.containers,
       config,
       `integral-${deploymentId(paths)}`,
       logger,
       this.dependencies.writeMcpExtension,
+      async (connection, healthy) => {
+        if (healthy) await clearConnectionDegraded(this.paths, connection);
+        else await markConnectionDegraded(this.paths, connection, "sidecar");
+      },
     );
   }
   async start(): Promise<http.Server> {
@@ -945,11 +960,13 @@ export class Runner {
           stdio.push({ connection, secretValues });
           continue;
         }
-        const catalog = await this.dependencies.discoverRemoteMcp(
+        const catalog = await this.mcpCatalogs.refresh(
           connection,
           credential,
           this.dependencies.fetch,
+          true,
         );
+        await clearConnectionDegraded(this.paths, connection.name);
         catalogs.push(catalog);
         mcpDiagnostics.push(
           ...(catalog.diagnostics ?? []).map(
@@ -957,6 +974,15 @@ export class Runner {
           ),
         );
       } catch (error) {
+        await markConnectionDegraded(
+          this.paths,
+          connection.name,
+          /401|403|authoriz/i.test(
+            error instanceof Error ? error.message : String(error),
+          )
+            ? "authorization"
+            : "discovery",
+        );
         unavailableMcp.push(
           `${connection.name} (${error instanceof Error ? error.message : String(error)})`,
         );
