@@ -54,6 +54,7 @@ export interface ListedConnection extends Connection {
   resourceId?: string;
   lifecycleRevision?: number;
   availabilityReason?: string;
+  restorationPossible?: boolean;
 }
 
 export const CATALOG = [
@@ -712,6 +713,8 @@ export async function listConnections(
           ? {
               resourceId: resource.id,
               lifecycleRevision: resource.revision,
+              restorationPossible:
+                await resourceModule.resourceRestorationPossible(resource),
               ...(resource.availabilityReason
                 ? { availabilityReason: resource.availabilityReason }
                 : {}),

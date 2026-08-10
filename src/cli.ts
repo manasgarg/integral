@@ -365,6 +365,8 @@ async function connectionCommand(args: string[]): Promise<number> {
             resourceId,
             lifecycleRevision,
             availabilityReason,
+            restorationPossible,
+            path,
           }) => ({
             name,
             kind,
@@ -376,7 +378,9 @@ async function connectionCommand(args: string[]): Promise<number> {
                   resourceId,
                   lifecycleRevision,
                   mount,
+                  path,
                   availabilityReason: availabilityReason ?? null,
+                  restorationPossible,
                 }
               : {}),
           }),
@@ -385,7 +389,7 @@ async function connectionCommand(args: string[]): Promise<number> {
     else
       for (const row of rows)
         process.stdout.write(
-          `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${row.mount ? `\t${row.mount}` : ""}\n`,
+          `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${row.mount ? `\t${row.availabilityReason ?? "-"}\trestorable=${row.restorationPossible ? "yes" : "no"}\t${row.mount}` : ""}\n`,
         );
     return 0;
   }

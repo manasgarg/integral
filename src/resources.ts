@@ -471,6 +471,12 @@ async function availability(
   return undefined;
 }
 
+export async function resourceRestorationPossible(
+  record: ResourceRecord,
+): Promise<boolean> {
+  return record.state === "soft-deleted" && !(await availability(record));
+}
+
 export async function refreshResource(
   paths: IntegralPaths,
   record: ResourceRecord,

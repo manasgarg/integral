@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   completeEmailOptions,
@@ -13,7 +14,8 @@ import {
 } from "../src/cli.ts";
 import { loadConfig } from "../src/config.ts";
 import { fixture } from "./helpers.ts";
-import { saveConnection } from "../src/connections.ts";
+import { saveConnection, validateConnection } from "../src/connections.ts";
+import { addHostResource, softDeleteResource } from "../src/resources.ts";
 
 async function capture(
   args: string[],
@@ -246,6 +248,52 @@ test("[CONNECTION-89A88F7C] [CONNECTION-857967F4] explicit host resources accept
       mount: "/home/pi/files",
     },
   );
+});
+
+test("[CONNECTION-06B6AE14] host-resource listing reports bounded health and restoration data without exposing host paths in text", async (t) => {
+  const paths = await fixture(t),
+    backing = `${paths.root}-listed-store`,
+    env = { INTEGRAL_HOME: paths.root };
+  t.after(() => rm(backing, { recursive: true, force: true }));
+  await mkdir(backing);
+  const resource = await addHostResource(
+    paths,
+    validateConnection({
+      name: "listed",
+      kind: "host-store",
+      auth: "none",
+      path: backing,
+      mount: "/home/pi/listed",
+    }),
+    await loadConfig(paths, {}),
+  );
+
+  const human = await capture(["connection", "ls"], env);
+  assert.match(
+    human.stdout,
+    /listed\thost-store\tnone\tactive\t-\trestorable=no\t\/home\/pi\/listed/,
+  );
+  assert.doesNotMatch(human.stdout, new RegExp(backing));
+
+  await softDeleteResource(paths, "listed", resource.revision, "operator");
+  const json = JSON.parse(
+    (await capture(["connection", "ls", "--json"], env)).stdout,
+  );
+  assert.deepEqual(json, [
+    {
+      name: "listed",
+      kind: "host-store",
+      provider: null,
+      auth: "none",
+      state: "soft-deleted",
+      resourceId: resource.id,
+      lifecycleRevision: 2,
+      mount: "/home/pi/listed",
+      path: backing,
+      availabilityReason: null,
+      restorationPossible: true,
+    },
+  ]);
 });
 
 test("[CONNECTION-512D9A25] unsupported authentication is rejected before creating a declaration", async (t) => {

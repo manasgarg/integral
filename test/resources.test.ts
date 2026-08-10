@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
@@ -41,6 +48,55 @@ test("[REPO-515BAAB9] governed mount paths stay below the safe Pi home namespace
     "/tmp/repo",
   ])
     assert.throws(() => validateMountPath(path));
+});
+
+test("[CONNECTION-C0978F5E] host-resource validation canonicalizes safe directories and rejects trusted-path boundary violations", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    outside = `${paths.root}-source-validation`,
+    canonical = join(outside, "canonical"),
+    alias = join(outside, "alias"),
+    nested = join(canonical, "nested"),
+    file = join(outside, "file");
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await mkdir(nested, { recursive: true });
+  await symlink(canonical, alias);
+  await writeFile(file, "not a directory");
+
+  const accepted = await addHostResource(
+    paths,
+    validateConnection({
+      name: "canonical",
+      kind: "host-store",
+      auth: "none",
+      path: alias,
+      mount: "/home/pi/canonical",
+    }),
+    config,
+  );
+  assert.equal(accepted.path, canonical);
+
+  for (const [name, source, message] of [
+    ["root", "/", /filesystem root/],
+    ["deployment", paths.root, /deployment root/],
+    ["overlap", nested, /overlaps connection canonical/],
+    ["wrong-type", file, /must be a directory/],
+  ] as const) {
+    await assert.rejects(
+      addHostResource(
+        paths,
+        validateConnection({
+          name,
+          kind: "host-store",
+          auth: "none",
+          path: source,
+          mount: `/home/pi/${name}`,
+        }),
+        config,
+      ),
+      message,
+    );
+  }
 });
 
 test("[CONNECTION-717CAD0E] a replacement directory is never silently adopted, while the recorded identity can recover", async (t) => {
