@@ -13,7 +13,11 @@ import { saveConnection, validateConnection } from "../src/connections.ts";
 import { Logger } from "../src/logging.ts";
 import { Runner, type RunnerClock } from "../src/runner.ts";
 import type { ResourceProjection } from "../src/resources.ts";
-import { deploymentId, writeComponentState } from "../src/state.ts";
+import {
+  deploymentId,
+  readComponentState,
+  writeComponentState,
+} from "../src/state.ts";
 import { fixture } from "./helpers.ts";
 
 function emptyProjection(sessionId: string): ResourceProjection {
@@ -61,6 +65,51 @@ class ManualClock implements RunnerClock {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
+
+test("[FAILURE-3780301D] runner degrades without claiming work when gateway state is absent", async (t) => {
+  const paths = await fixture(t),
+    base = await loadConfig(paths, {}),
+    config = {
+      ...base,
+      logging: { ...base.logging, level: "error" as const },
+    },
+    deployment = deploymentId(paths);
+  for (const component of ["coordinator", "runner"] as const)
+    await writeComponentState(paths, {
+      component,
+      deploymentId: deployment,
+      endpoint: "http://127.0.0.1:1",
+      pid: process.pid,
+      status: "ready",
+      fingerprint: config.fingerprint,
+      connectionGeneration: 0,
+      startedAt: "now",
+    });
+  let internalRequests = 0;
+  const runner = new Runner(
+    paths,
+    config,
+    new Logger({
+      component: "runner",
+      deploymentId: deployment,
+      level: "error",
+      format: "json",
+      sink: () => undefined,
+    }),
+    {
+      clock: new ManualClock(),
+      async internalFetch() {
+        internalRequests++;
+        throw new Error("must not claim without the gateway");
+      },
+    },
+  );
+  await runner.runOnce();
+  assert.equal(internalRequests, 0);
+  const state = await readComponentState(paths, "runner");
+  assert.equal(state?.status, "degraded");
+  assert.match(state?.error ?? "", /configuration or connection generations/);
+});
 
 test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D] runner reuses one recorded Pi runtime and destroys it after the configured idle deadline", async (t) => {
   const paths = await fixture(t),
@@ -302,7 +351,7 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
   await runner.stop();
 });
 
-test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-A4C19E72] runner releases claimed work and destroys a failed Pi runtime", async (t) => {
+test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-3780301D] [FAILURE-A4C19E72] runner releases claimed work and destroys a failed Pi runtime", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
     config = {

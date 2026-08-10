@@ -1179,7 +1179,7 @@ async function bodyJson(
   req: IncomingMessage,
   maxBytes = 1_000_000,
 ): Promise<Record<string, unknown>> {
-  return await readJsonObject(req, { maxBytes, invalidAsEmpty: true });
+  return await readJsonObject(req, { maxBytes });
 }
 async function gitUploadPack(
   gitDir: string,

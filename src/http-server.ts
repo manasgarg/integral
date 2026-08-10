@@ -4,13 +4,19 @@ import { IntegralError } from "./errors.ts";
 export interface JsonBodyOptions {
   maxBytes?: number;
   invalidMessage?: string;
-  invalidAsEmpty?: boolean;
 }
 
 export async function readRequestBody(
   request: IncomingMessage,
   maxBytes = 1_000_000,
 ): Promise<Buffer> {
+  const declared = request.headers["content-length"];
+  if (
+    typeof declared === "string" &&
+    /^\d+$/.test(declared) &&
+    Number(declared) > maxBytes
+  )
+    throw new IntegralError("request body is too large", 413);
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   for await (const chunk of request) {
@@ -36,7 +42,6 @@ export async function readJsonObject(
     return value as Record<string, unknown>;
   } catch (error) {
     if (error instanceof IntegralError) throw error;
-    if (options.invalidAsEmpty) return {};
     throw new IntegralError(
       options.invalidMessage ?? "invalid JSON request",
       400,

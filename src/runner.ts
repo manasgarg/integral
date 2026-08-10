@@ -1271,5 +1271,5 @@ export function renderTaskContext(task: ScheduledTask): string {
 async function runnerBodyJson(
   req: http.IncomingMessage,
 ): Promise<Record<string, unknown>> {
-  return await readJsonObject(req, { invalidAsEmpty: true });
+  return await readJsonObject(req);
 }
