@@ -9,7 +9,11 @@ import type {
   TaskRuntime,
 } from "../src/container.ts";
 import { loadConfig } from "../src/config.ts";
-import { saveConnection, validateConnection } from "../src/connections.ts";
+import {
+  listConnections,
+  saveConnection,
+  validateConnection,
+} from "../src/connections.ts";
 import { Logger } from "../src/logging.ts";
 import { Runner, type RunnerClock } from "../src/runner.ts";
 import type { ResourceProjection } from "../src/resources.ts";
@@ -109,6 +113,72 @@ test("[FAILURE-3780301D] runner degrades without claiming work when gateway stat
   const state = await readComponentState(paths, "runner");
   assert.equal(state?.status, "degraded");
   assert.match(state?.error ?? "", /configuration or connection generations/);
+});
+
+test("[MCP-5751370A] [MCP-6F5CFA0E] runner detects validated catalog changes between turns and retains the active catalog on refresh failure", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {});
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "dynamic",
+      kind: "mcp",
+      url: "https://dynamic.example.test/mcp",
+      auth: "none",
+    }),
+  );
+  let tool = "old",
+    fail = false;
+  const runner = new Runner(
+      paths,
+      config,
+      new Logger({
+        component: "runner",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async discoverRemoteMcp(connection) {
+          if (fail) throw new Error("catalog refresh failed");
+          return {
+            connection,
+            protocolVersion: "2025-11-25",
+            tools: [{ name: tool, inputSchema: { type: "object" } }],
+          };
+        },
+      },
+    ),
+    internals = runner as unknown as {
+      piMcpCatalogs: Map<string, string>;
+      mcpCatalogChanged(): Promise<boolean>;
+    };
+  internals.piMcpCatalogs = new Map([
+    [
+      "dynamic",
+      JSON.stringify([{ name: "old", inputSchema: { type: "object" } }]),
+    ],
+  ]);
+  assert.equal(await internals.mcpCatalogChanged(), false);
+  tool = "new";
+  assert.equal(await internals.mcpCatalogChanged(), true);
+  internals.piMcpCatalogs = new Map([
+    [
+      "dynamic",
+      JSON.stringify([{ name: "new", inputSchema: { type: "object" } }]),
+    ],
+  ]);
+  fail = true;
+  assert.equal(await internals.mcpCatalogChanged(), false);
+  assert.deepEqual(
+    (await listConnections(paths)).map((connection) => [
+      connection.name,
+      connection.state,
+      connection.availabilityReason,
+    ]),
+    [["dynamic", "degraded", "discovery"]],
+  );
 });
 
 test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D] runner reuses one recorded Pi runtime and destroys it after the configured idle deadline", async (t) => {

@@ -142,6 +142,7 @@ export class Runner {
   private token = "";
   private readonly mcpSidecars: McpSidecarManager;
   private readonly mcpCatalogs: McpCatalogRegistry;
+  private piMcpCatalogs = new Map<string, string>();
   private currentMessageId: string | undefined;
   private currentTask:
     { id: string; claimId: string; attemptId?: string } | undefined;
@@ -168,6 +169,7 @@ export class Runner {
     this.mcpCatalogs = new McpCatalogRegistry(
       this.dependencies.discoverRemoteMcp,
       () => this.dependencies.now(),
+      0,
     );
     this.mcpSidecars = new McpSidecarManager(
       this.dependencies.containers,
@@ -676,6 +678,8 @@ export class Runner {
       this.dependencies.clock.clearTimeout(this.idle);
       const continuation = item.approvalContinuation;
       if (continuation && this.pi) await this.destroyPi("selection-changed");
+      if (this.pi && (await this.mcpCatalogChanged()))
+        await this.destroyPi("selection-changed");
       await this.ensurePi(
         body.context,
         selection,
@@ -881,6 +885,12 @@ export class Runner {
       this.piRun = recorder;
       this.piHistoryView = historyView;
       this.piResources = resources;
+      this.piMcpCatalogs = new Map(
+        catalogs.map((catalog) => [
+          catalog.connection.name,
+          mcpCatalogSignature(catalog),
+        ]),
+      );
       this.piTurnCount = 0;
       await this.dependencies.internalFetch(
         this.paths,
@@ -1070,6 +1080,42 @@ export class Runner {
       this.config.runner.idleTimeoutSeconds * 1000,
     );
   }
+  private async mcpCatalogChanged(): Promise<boolean> {
+    const connections = (await listConnections(this.paths)).filter(
+      (connection) =>
+        connection.kind === "mcp" &&
+        connection.transport !== "stdio" &&
+        connection.state !== "DISABLED (no secret)",
+    );
+    for (const connection of connections) {
+      try {
+        const raw = await credentialFor(this.paths, connection.name),
+          credential = raw ? (oauthAccess(raw) ?? raw) : undefined,
+          catalog = await this.mcpCatalogs.refresh(
+            connection,
+            credential,
+            this.dependencies.fetch,
+          );
+        await clearConnectionDegraded(this.paths, connection.name);
+        if (
+          this.piMcpCatalogs.get(connection.name) !==
+          mcpCatalogSignature(catalog)
+        )
+          return true;
+      } catch (error) {
+        await markConnectionDegraded(
+          this.paths,
+          connection.name,
+          /401|403|authoriz/i.test(
+            error instanceof Error ? error.message : String(error),
+          )
+            ? "authorization"
+            : "discovery",
+        );
+      }
+    }
+    return connections.length !== this.piMcpCatalogs.size;
+  }
   private async revoke(token: string): Promise<void> {
     await this.dependencies
       .internalFetch(
@@ -1100,6 +1146,7 @@ export class Runner {
     this.piRun = undefined;
     this.piHistoryView = undefined;
     this.piResources = undefined;
+    this.piMcpCatalogs = new Map();
     this.piTurnCount = 0;
     if (pi) {
       await this.finalizeRun(recorder, {
@@ -1215,6 +1262,19 @@ export class Runner {
       );
     }
   }
+}
+
+function mcpCatalogSignature(catalog: McpCatalog): string {
+  return JSON.stringify(
+    catalog.tools.map((tool) => ({
+      name: tool.name,
+      title: tool.title,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
+      annotations: tool.annotations,
+    })),
+  );
 }
 
 export async function validateRunnerHost(paths: IntegralPaths): Promise<void> {
