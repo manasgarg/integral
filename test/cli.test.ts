@@ -26,6 +26,18 @@ async function capture(
   }
 }
 
+/* @covers CLI-6001FE46
+Given integral is installed
+	When the user runs `integral`, `integral --help`, `integral -h`, or `integral help`
+		Then the command exits successfully
+			And lists `server`, `talk`, `queue`, `schedule`, `connection`, `image`, `config`, and `version`
+			And does not list a separate `auth` or `credential` command
+			And describes each command in plain English
+	When npm reads the package metadata
+		Then the package is named `@pirogram/integral`
+			And it exposes `integral` through `bin/integral.js`
+			And it does not expose an `rr` binary
+*/
 test("[CLI-6001FE46] top-level help lists the public command surface", async () => {
   const result = await capture(["--help"]);
   assert.equal(result.code, 0);
@@ -53,6 +65,17 @@ test("[CLI-6001FE46] package metadata exposes only the Integral CLI", async () =
   });
 });
 
+/* @covers CLI-04301CCA
+Given integral is installed
+	When the user runs `integral version`
+		Then the command prints the integral version
+			And prints the Node.js version
+			And reports that Pi is resolved to the latest runtime version when needed
+			And exits successfully
+	When the user runs `integral --version` or `integral -V`
+		Then the command prints the same implementation versions
+			And exits successfully
+*/
 test("[CLI-04301CCA] version reports integral, Node, and Pi versions", async () => {
   const result = await capture(["version"]);
   assert.equal(result.code, 0);

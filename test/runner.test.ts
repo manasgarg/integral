@@ -70,6 +70,19 @@ class ManualClock implements RunnerClock {
   }
 }
 
+/* @covers FAILURE-3780301D
+Given the runner has not claimed its next message
+	When gateway state is missing or not ready
+		Then the runner marks itself degraded
+			And does not claim new work
+			And does not fall back to direct internet access
+Given a chat turn is already in progress
+	When the prompt fails with a gateway, container, timeout, or exit error
+		Then the runner removes the failed Pi container
+			And integral does not place a real credential in any replacement container
+			And the coordinator durably returns the interrupted message to the queue
+			And reports the turn error to attached terminals
+*/
 test("[FAILURE-3780301D] runner degrades without claiming work when gateway state is absent", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
@@ -181,6 +194,17 @@ test("[MCP-5751370A] [MCP-6F5CFA0E] runner detects validated catalog changes bet
   );
 });
 
+/* @covers BOX-7D3A19E4
+Given the durable queue is empty
+	And the Pi session has no turn in flight
+	When the Pi idle timeout expires
+		Then integral terminates the Pi container
+			And terminates every MCP sidecar owned by that Pi session
+			And revokes its temporary session token
+			And preserves the durable conversation record and queue
+			And keeps attached terminals connected
+			And starts a replacement session when another message is queued
+*/
 test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D] runner reuses one recorded Pi runtime and destroys it after the configured idle deadline", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
@@ -421,6 +445,23 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
   await runner.stop();
 });
 
+/* @covers BOX-C28F4A61
+Given the runner has claimed a queued message
+	When it cannot provision or start the Pi container
+		Then integral durably returns the message to its prior queue position
+			And terminates every partially started MCP sidecar
+			And records the provisioning failure
+			And reports the failure to every attached terminal
+*/
+/* @covers FAILURE-071CB99A
+Given a chat turn is in progress
+	When the Pi process or container exits unexpectedly
+		Then integral records that the response did not complete
+			And reports the interruption to every attached terminal
+			And does not present partial protocol output as a complete answer
+			And durably returns the interrupted message to the queue
+			And removes the container and temporary session material
+*/
 test("[BOX-BE26C696] [BOX-C28F4A61] [FAILURE-071CB99A] [FAILURE-3780301D] [FAILURE-A4C19E72] runner releases claimed work and destroys a failed Pi runtime", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
@@ -959,6 +1000,25 @@ test("[CONNECTION-12C87631] runner recycles a Pi session after GitHub is connect
   await runner.stop();
 });
 
+/* @covers SCHEDULE-033C050E
+Given the coordinator task queue contains an occurrence ready to run
+	And an interactive Pi container may already be active
+	When the task executor claims the occurrence
+		Then it never sends the task to the interactive container
+			And creates a fresh temporary home, gateway session identity, and Pi container for the attempt
+			And does not restore the interactive conversation transcript into the task
+			And supplies only the self-contained task prompt and trusted schedule, execution, and attempt metadata
+			And provisions governed connection capabilities through the same environment preparation path used by interactive talk
+			And permits the interactive container to remain separate from the task container
+*/
+/* @covers SCHEDULE-81B854FB
+Given Pi is running an isolated task attempt
+	When integral supplies its trusted task context
+		Then the context includes the stable schedule ID, execution ID, scheduled instant, and attempt number
+			And retries of a one-time task retain the execution ID while changing the attempt identity
+			And Pi can use the execution ID as an idempotency key for external operations
+			And integral does not claim that coordinator idempotency prevents repeated external effects after an ambiguous failure
+*/
 test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] [RUN-B1D837E0] [RUN-88706C0D] task execution uses a fresh recorded one-shot runtime and completes only after exit zero", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),

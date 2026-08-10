@@ -43,6 +43,39 @@ function rpc(init: RequestInit, result?: unknown, error?: unknown): Response {
   });
 }
 
+/* @covers MCP-DB6BD516
+Given an active remote MCP connection
+	When integral opens communication with its server
+		Then integral supports the MCP `2026-07-28` stateless HTTP protocol
+			And supports the sessionful `2025-11-25` protocol family
+			And supports the legacy `2024-11-05` HTTP+SSE transport
+			And selects the newest mutually supported protocol
+			And sends the protocol, routing, client identity, capability, and session metadata required by the selected version
+			And follows the selected version's request, response, cancellation, and shutdown lifecycle
+	When a sessionful server assigns an MCP session identifier
+		Then integral returns that identifier only to the same connection and server boundary
+			And reinitializes after the server expires the session
+			And attempts orderly session termination when the Pi session ends
+	When a server cannot negotiate any supported version
+		Then integral marks that connection unavailable
+			And does not send a tool request using guessed protocol semantics
+*/
+/* @covers MCP-007BCE08
+Given an active MCP server advertises one or more tools
+	When integral prepares a Pi session
+		Then integral reads every page of the server's tool catalog
+			And registers one Pi tool for each valid remote tool
+			And preserves the remote tool's name when making MCP requests
+			And gives the Pi tool a deterministic name namespaced by connection
+			And exposes the remote title, description, input schema, output schema, and annotations supported by Pi
+			And supports JSON Schema 2020-12 input schemas within documented resource limits
+			And prevents one connection's names from colliding with Integral tools or another connection's tools
+			And does not expose a generic `mcp_<server>` tool that requires Pi to guess a remote tool name
+	When a remote tool declaration is malformed, duplicated, or exceeds a documented schema limit
+		Then integral excludes that tool
+			And reports a bounded diagnostic identifying its connection and tool
+			And keeps other valid tools from the same server available
+*/
 test("[MCP-DB6BD516] [MCP-007BCE08] stateless remote discovery reads every tool page with routing metadata", async () => {
   const seen: Array<{ method: string; headers: Headers; params: unknown }> = [];
   const request: typeof fetch = async (_input, init = {}) => {
@@ -101,6 +134,22 @@ test("[MCP-DB6BD516] [MCP-007BCE08] stateless remote discovery reads every tool 
   );
 });
 
+/* @covers MCP-5751370A
+Given an active MCP server changes its tool catalog
+	When the negotiated protocol announces a tool-list change
+		Or the advertised tool-catalog cache lifetime expires
+		Or integral provisions a new Pi session after reconnecting
+		Then integral retrieves the complete current catalog
+			And validates it before replacing the previous catalog
+			And makes the replacement catalog visible no later than the next Pi turn
+			And lets an invocation already in flight finish against its original catalog
+			And removes tools no longer advertised
+			And adds newly advertised tools without requiring the user to remove and re-add the connection
+	When catalog refresh fails
+		Then integral retains no newly received partial catalog
+			And reports the connection as degraded
+			And does not prevent unrelated connections from operating
+*/
 test("[MCP-5751370A] catalog refresh atomically replaces complete catalogs on expiry, notification, and reconnect", async () => {
   let now = 0,
     calls = 0,
@@ -255,6 +304,28 @@ test("[MCP-007BCE08] catalog parsing bounds schemas, rejects duplicate names, an
   assert.ok(catalog.diagnostics.every((value) => value.length <= 500));
 });
 
+/* @covers MCP-948B2522
+Given a remote MCP server responds that authorization is required
+	When integral adds or reconnects the server
+		Then integral discovers its protected-resource metadata
+			And discovers and validates the authorization server metadata
+			And binds discovered client registration and tokens to that authorization-server issuer
+			And prefers configured client information when supplied
+			And otherwise uses a supported MCP client-registration mechanism
+			And uses authorization code with PKCE
+			And includes the MCP resource indicator in authorization and token requests
+			And requests only the scopes advertised as necessary for the MCP resource
+			And validates authorization state, issuer, redirect URI, and resource binding
+			And accepts a loopback callback or a pasted authorization response
+			And stores client credentials, access tokens, and refresh tokens only in the host credential area
+			And never places a real credential in a Pi environment, file, argument, tool declaration, or MCP payload
+	When an access token is near expiry
+		Then integral refreshes it before the next MCP request
+			And atomically stores the replacement token record
+	When authorization discovery is incomplete or inconsistent
+		Then integral refuses the connection
+			And identifies the incompatible metadata without exposing secrets
+*/
 test("[MCP-948B2522] protected-resource and authorization-server metadata configure MCP OAuth automatically", async () => {
   const urls: string[] = [];
   const request: typeof fetch = async (input, init = {}) => {

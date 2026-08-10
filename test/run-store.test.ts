@@ -15,6 +15,58 @@ const selection = {
   piImage: "sha256:pi",
 };
 
+/* @covers RUN-B1D837E0
+Given the runner is about to start a warm interactive Pi session or an isolated scheduled-task attempt
+	When integral assigns the container a run identity
+		Then it creates a durable run record under `<INTEGRAL_HOME>/data/runs/<run-id>` before starting Pi
+			And records whether the run is interactive or scheduled
+			And records its immutable model and Pi runtime identity
+			And records its start time and applicable schedule, execution, and attempt identities
+	When integral supplies input to Pi or receives agent output during that run
+		Then it appends the input, assistant output, and tool activity needed to reconstruct the run
+			And preserves their observed order
+	When the run ends for any reason
+		Then integral durably records the finish time and host-observed termination reason
+			And records the declared task outcome when one exists without treating it as host-attested success
+			And finalizes the record before removing the temporary session home
+	When integral recovers a record whose run did not reach finalization
+		Then it marks the run interrupted with the available host evidence
+			And does not invent a successful outcome
+*/
+/* @covers RUN-88706C0D
+Given integral is recording a run
+	When it records the run's identity and operating conditions
+		Then it records the run ID, run kind, parent or prior-attempt run IDs when applicable, model provider and model, Pi runtime identity, start time, finish time, and elapsed time
+			And records the configured turn, idle, and task ceilings that applied
+			And records schedule, execution, attempt, and retry numbers when applicable
+	When a turn occurs
+		Then it records the complete agent-visible input and output in observed order
+			And records whether input was an original request, follow-up, steering message, retry instruction, or task-outcome reminder
+			And records each tool name, redacted agent-visible arguments, redacted result, status, error, and elapsed time
+			And records failed commands, failed validations, refused gateway operations, timeouts, cancellations, and task outcome declarations as typed events
+			And gives each event a stable identity that summaries can reference
+	When the model provider reports usage for a turn
+		Then integral preserves the provider's usage categories
+			And normalizes available input, output, cache-read, cache-write or cache-creation, reasoning, and total token counts
+			And records available monetary cost and currency without estimating missing cost
+			And counts every provider-reported request exactly once, including a retry that consumed tokens
+			And aggregates each available usage category for the complete run
+			And reports cache reuse as a ratio when it can be calculated from reported counts
+	When the provider omits a usage category
+		Then integral records that category as unavailable rather than zero
+			And does not estimate tokens from text length
+	When the user corrects, redirects, rejects, or retries earlier work
+		Then integral records that feedback as an event in the run where it was received
+			And links it to the earlier run or event when the relationship is known
+			And does not rewrite the finalized earlier run
+	When integral finalizes the run
+		Then it writes a machine-readable learning-signal summary beside the ordered activity
+			And summarizes objective counts and references for tool failures, command failures, validation failures, denied operations, timeouts, cancellations, retries, steering, user corrections, and outcome status
+			And includes the run-level token, cache, cost, and elapsed-time aggregates
+			And distinguishes host-observed facts, provider-reported values, user feedback, and agent declarations
+			And does not infer an unobserved mistake, quality score, or cause
+			And does not store or expose private provider reasoning that was not part of the agent-visible protocol
+*/
 test("[RUN-B1D837E0] [RUN-88706C0D] finalized runs retain ordered evidence, redacted failures, and provider usage signals", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
@@ -117,6 +169,19 @@ test("[RUN-B1D837E0] [RUN-88706C0D] finalized runs retain ordered evidence, reda
   assert.deepEqual(signals.usage.unavailable, []);
 });
 
+/* @covers RUN-770B8FFA
+Given integral has selected the finalized runs visible to a new agent environment
+	When another run finishes while that agent is still active
+		Then the active agent's finalized-runs index and `$HOME/history/runs` snapshot do not change
+			And a later agent environment includes the newly finalized run
+	When the current run writes evidence or reaches its outcome
+		Then only `$HOME/history/current` changes in that environment
+			And the run appears under `$HOME/history/runs/<run-id>` only in agent environments prepared after finalization
+Given integral restarts with an existing durable run archive
+	When it prepares the next agent environment
+		Then the environment receives the same finalized history as before the restart
+			And temporary session-home cleanup does not remove that history
+*/
 test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view combines stable finalized runs with a live current-run projection", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
