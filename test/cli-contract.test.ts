@@ -3,13 +3,16 @@ import test from "node:test";
 import { mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+  approvalCommand,
   completeEmailOptions,
   createTalkTerminal,
   explicitConnection,
   imageCommand,
   main,
+  modelCommand,
   queueCommand,
   selectAuthentication,
+  statusCommand,
   talkCommand,
 } from "../src/cli.ts";
 import { loadConfig } from "../src/config.ts";
@@ -84,8 +87,12 @@ test("[CLI-A7D3E91B] -h prints applicable help at every command depth without pe
     ["connection", "add", "-h"],
     ["server", "-h"],
     ["server", "start", "-h"],
+    ["status", "-h"],
+    ["model", "-h"],
     ["queue", "-h"],
     ["queue", "ls", "-h"],
+    ["approval", "-h"],
+    ["approval", "ls", "-h"],
     ["talk", "-h"],
   ]) {
     const result = await capture(args, {
@@ -96,6 +103,174 @@ test("[CLI-A7D3E91B] -h prints applicable help at every command depth without pe
     assert.match(result.stdout, /Usage:/, args.join(" "));
     assert.equal(result.stderr, "", args.join(" "));
   }
+});
+
+/* @covers CLI-D1B5816E
+Given the integral coordinator is healthy
+	And an operation concerns the shared conversation rather than host administration or terminal lifecycle
+	When the user invokes `integral status` or enters `/status` in `integral talk`
+		Then integral reports the same conversation and component status from either surface
+	When the user invokes `integral model [<pattern>...]` or enters `/model [<pattern>...]` in `integral talk`
+		Then integral uses the same model chooser and changes the same durable conversation selection from either surface
+	When the user invokes `integral connection catalog` or enters `/connection catalog` in `integral talk`
+		Then integral shows the same public connection types and authentication methods from either surface
+	When the user invokes `integral connection ls` or enters `/connection ls` in `integral talk`
+		Then integral shows the same connection names, types, authentication methods, and states from either surface
+			And neither surface prints secret values
+	When the user invokes `integral queue ls`, `integral queue edit <id> <text>`, or `integral queue delete <id>`
+		And the user could instead enter the corresponding `/queue` command in `integral talk`
+		Then integral reads or changes the same durable queue from either surface
+	When the user invokes `integral approval ls` or enters `/approvals` in `integral talk`
+		Then integral lists the same durable approval requests from either surface
+	When the user invokes `integral approval approve <id>` or `integral approval deny <id>`
+		And the user could instead enter the corresponding `/approve <id>` or `/deny <id>` command in `integral talk`
+		Then integral decides the same durable approval request from either surface
+			And applies the same validation, revalidation, authorization, persistence, and redaction rules
+			And attributes the shell form to the trusted local operator
+			And attributes the slash form to the attached human terminal
+	When a shared operation succeeds or fails
+		Then both surfaces report the same essential result or actionable error
+			And the shell form exits without attaching a talk session
+			And the slash form keeps the current talk session attached
+			And the slash form handles the operation on the host without sending it to Pi
+	When integral shows top-level CLI help or local talk help
+		Then it identifies the equivalent spelling for every shared operation on the other surface
+Given an operation is specific to host administration, scripting, or an attached terminal
+	When integral shows top-level CLI help or local talk help
+		Then `server`, `talk`, `schedule`, `image`, `config`, and `version` remain CLI-only
+			And connection setup, credential rotation, and removal remain CLI-only
+			And structured-output flags remain CLI-only
+			And `/exit` remains talk-only
+			And integral does not treat an arbitrary top-level CLI command as a local talk command
+*/
+test("[CLI-D1B5816E] standalone conversation commands share state without attaching talk", async (t) => {
+  const paths = await fixture(t),
+    requests: Array<{ path: string; method: string; body?: string }> = [];
+  let stdout = "",
+    terminalClosed = false;
+  const dependencies = {
+    resolvePaths: () => paths,
+    componentEndpoint: async () => "http://coordinator.test",
+    verifiedFetch: async () => new Response("ok"),
+    writeOutput(text: string) {
+      stdout += text;
+    },
+    async fetch(input: string | URL | Request, init?: RequestInit) {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input
+            : input.url,
+      );
+      requests.push({
+        path: url.pathname,
+        method: init?.method ?? "GET",
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      if (url.pathname === "/integral/status")
+        return Response.json({
+          gateway: "healthy",
+          runner: "healthy",
+          scheduler: "healthy",
+          container: "stopped",
+          session: null,
+          selection: {
+            connection: "work",
+            provider: "openai-codex",
+            model: "gpt-5.5",
+          },
+          queueDepth: 1,
+          inFlight: null,
+          attached: 0,
+          taskQueueDepth: 0,
+          taskInFlight: null,
+        });
+      if (url.pathname === "/integral/models")
+        return Response.json({
+          current: null,
+          choices: [
+            {
+              connection: "work",
+              provider: "openai-codex",
+              model: "gpt-5.5",
+              piVersion: "1.2.3",
+              piImage: "sha256:model",
+            },
+          ],
+        });
+      if (url.pathname === "/integral/selection")
+        return Response.json({ status: "selected" });
+      if (url.pathname === "/integral/approvals" && !init?.method)
+        return Response.json([
+          { id: "approval-1", status: "pending", summary: "install jq" },
+        ]);
+      if (url.pathname.startsWith("/integral/approvals/"))
+        return Response.json({
+          id: url.pathname.split("/")[3],
+          status: url.pathname.endsWith("/approve") ? "succeeded" : "denied",
+          summary: "install jq",
+        });
+      throw new Error(`unexpected request: ${url.pathname}`);
+    },
+  };
+
+  assert.equal(await statusCommand([], dependencies), 0);
+  assert.match(stdout, /gateway: healthy/);
+  assert.match(stdout, /work \(openai-codex\) \/ gpt-5\.5/);
+  stdout = "";
+  assert.equal(
+    await modelCommand(["codex", "5.5"], {
+      ...dependencies,
+      createTerminal: () => ({
+        async question() {
+          throw new Error("matching terms must not prompt");
+        },
+        close() {
+          terminalClosed = true;
+        },
+      }),
+    }),
+    0,
+  );
+  assert.match(stdout, /Selected work \(openai-codex\) \/ gpt-5\.5/);
+  assert.equal(terminalClosed, true);
+  stdout = "";
+  assert.equal(await approvalCommand(["ls"], dependencies), 0);
+  assert.match(stdout, /approval approval-1 \[pending\]/);
+  stdout = "";
+  assert.equal(
+    await approvalCommand(["approve", "approval-1"], dependencies),
+    0,
+  );
+  assert.match(stdout, /approval approval-1 \[succeeded\]/);
+  assert.equal(await approvalCommand(["deny", "approval-2"], dependencies), 0);
+  assert.ok(
+    requests
+      .filter((request) => request.path.includes("/approvals/"))
+      .every(
+        (request) => request.body === JSON.stringify({ actor: "operator" }),
+      ),
+  );
+  assert.equal(
+    requests.some((request) => request.path === "/integral/events"),
+    false,
+  );
+
+  const topHelp = await capture(["--help"]),
+    talkHelp = await capture(["talk", "--help"]);
+  for (const command of ["status", "model", "queue", "approval", "connection"])
+    assert.match(topHelp.stdout, new RegExp(command));
+  for (const command of [
+    "integral status",
+    "integral model",
+    "integral connection catalog",
+    "integral connection ls",
+    "integral queue ls",
+    "integral approval ls",
+    "CLI-only",
+  ])
+    assert.match(talkHelp.stdout, new RegExp(command));
 });
 
 /* @covers CONNECTION-C14B8E70
@@ -836,7 +1011,7 @@ Given a message is durably queued and not in flight
 		Then integral requests the same atomic deletion from the coordinator without attaching a talk session
 			And confirms the deleted message ID after the coordinator accepts it
 */
-test("[QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUEUE-2F6B9D04] top-level queue commands use the coordinator without attaching a talk session", async (t) => {
+test("[CLI-D1B5816E] [QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUEUE-2F6B9D04] top-level queue commands use the coordinator without attaching a talk session", async (t) => {
   const paths = await fixture(t),
     requests: { path: string; method: string; body?: string }[] = [];
   let stdout = "";
@@ -938,7 +1113,7 @@ test("[QUEUE-947D3AC0] top-level queue commands report coordinator rejections", 
 /* @covers CHAT-84D839CE
 Given the user is in `integral talk`
 	When the user enters `/help`
-		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/queue ls`, `/queue edit`, `/queue delete`, and `/exit`
+		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/connection catalog`, `/connection ls`, `/queue ls`, `/queue edit`, `/queue delete`, `/approvals`, `/approve`, `/deny`, and `/exit`
 			And handles the command on the host
 			And does not send the command to Pi
 */
@@ -948,6 +1123,8 @@ test("[CHAT-84D839CE] [GATEWAY-846B1000] talk help documents every local command
     "/help",
     "/status",
     "/model",
+    "/connection catalog",
+    "/connection ls",
     "/queue ls",
     "/queue edit",
     "/queue delete",
@@ -1186,7 +1363,7 @@ Given the user is in `integral talk`
 			And identifies the in-flight message when one exists
 			And does not print secrets
 */
-test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] [GATEWAY-846B1000] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
+test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] [CLI-D1B5816E] [GATEWAY-846B1000] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
     userLabel = "\u001b[48;5;238m\u001b[97m ☺ ",
     lines = [
@@ -1194,12 +1371,16 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
       "   ",
       "/help",
       "/status",
+      "/connection catalog",
+      "/connection ls",
+      "/queue ls --json",
       "/queue ls",
       "/queue edit message-1 revised text",
       "/queue delete message-1",
       "/approvals",
       "/approve approval-1",
       "/deny approval-2",
+      "/server status",
       "/unknown",
       "  hello Pi  ",
       "/exit",
@@ -1216,6 +1397,16 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
       'event: queue.claimed\ndata: {"type":"claimed","message":{"status":"in-flight"}}\n\n' +
       'event: conversation.session\ndata: {"type":"session","text":"started","sessionId":"session-1"}\n\n' +
       'event: conversation.assistant\ndata: {"type":"assistant","text":"response"}\n\n',
+  );
+
+  await saveConnection(
+    paths,
+    validateConnection({
+      name: "docs",
+      kind: "http",
+      auth: "none",
+      url: "https://docs.example.test",
+    }),
   );
 
   const code = await talkCommand([], {
@@ -1330,11 +1521,14 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
   assert.deepEqual(workingStates, [true, false, false, false]);
   assert.doesNotMatch(stdout, /hidden/);
   assert.match(stdout, /gateway.*healthy/s);
+  assert.match(stdout, /openai-codex\tmodel/);
+  assert.match(stdout, /docs\thttp\tnone\tactive/);
   assert.match(stdout, /queued\tmessage-1\tqueued/);
   assert.match(stdout, /approval approval-1 \[pending\]/);
   assert.match(stdout, /approval approval-1 \[succeeded\]/);
   assert.match(stdout, /approval approval-2 \[denied\]/);
-  assert.match(stderr, /Unknown local command/);
+  assert.equal(stderr.match(/Unknown local command/g)?.length, 2);
+  assert.match(stderr, /structured output flags are available only in the CLI/);
   assert.deepEqual(
     requests
       .filter((request) => request.method !== "GET")
@@ -1491,7 +1685,7 @@ test("[CHAT-4F29A6D8] an attached talk terminal reconnects after coordinator res
 });
 
 /* @covers CHAT-C53A90D2
-Given integral opens the model chooser for `integral talk` or `/model`
+Given integral opens the model chooser for `integral model`, `integral talk`, or `/model`
 	When the coordinator has already discovered models for the current connection generation and configuration
 		Then it serves the cached catalog without repeating Pi version, image, or model discovery
 			And invalidates that catalog after the connection generation changes
@@ -1503,7 +1697,7 @@ Given integral opens the model chooser for `integral talk` or `/model`
 			And identifies the Pi runtime version that supplied the choices
 			And marks the conversation's current choice when it remains available
 			And explains that the user may enter a choice number or one or more search terms
-			And shows `integral talk [<pattern>...]` and `/model [<pattern>...]` as equivalent ways to search
+			And shows `integral model [<pattern>...]`, `integral talk [<pattern>...]`, and `/model [<pattern>...]` as equivalent ways to search
 	When no active model connection exists
 		Then integral reports that no provider and model choices are available
 			And instructs the user to run `integral connection add`
@@ -1727,10 +1921,12 @@ test("[CHAT-6E91B4C7] [CHAT-C53A90D2] chooser handles stale defaults, ambiguity,
   assert.match(stdout, /Previous model removed/);
   assert.match(stdout, /Multiple models match/);
   assert.match(stdout, /No provider and model match/);
-  assert.match(
-    stdout,
-    /integral talk <pattern>\.\.\. or \/model <pattern>\.\.\./,
-  );
+  for (const spelling of [
+    "integral model <pattern>...",
+    "integral talk <pattern>...",
+    "/model <pattern>...",
+  ])
+    assert.match(stdout, new RegExp(spelling.replaceAll(".", "\\.")));
 });
 
 test("[CHAT-6E91B4C7] integral talk refuses attachment when no active provider and model choices remain", async (t) => {

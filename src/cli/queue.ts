@@ -18,46 +18,16 @@ interface QueueItem {
   status: string;
 }
 
-export interface QueueDependencies {
-  resolvePaths(): IntegralPaths;
-  componentEndpoint: typeof componentEndpoint;
-  verifiedFetch: typeof verifiedFetch;
+export interface QueueOperationDependencies {
   fetch: typeof globalThis.fetch;
   writeOutput(text: string): void;
 }
 
-const productionDependencies: QueueDependencies = {
-  resolvePaths,
-  componentEndpoint,
-  verifiedFetch,
-  fetch: globalThis.fetch,
-  writeOutput: (text) => process.stdout.write(text),
-};
-
-export async function queueCommand(
+export async function runQueueCommand(
   args: string[],
-  overrides: Partial<QueueDependencies> = {},
+  endpoint: string,
+  dependencies: QueueOperationDependencies,
 ): Promise<number> {
-  const dependencies = { ...productionDependencies, ...overrides };
-  if (
-    !args[0] ||
-    args.includes("--help") ||
-    args.includes("-h") ||
-    args[0] === "help"
-  ) {
-    dependencies.writeOutput(HELP);
-    return 0;
-  }
-  const paths = dependencies.resolvePaths();
-  let endpoint: string;
-  try {
-    endpoint = await dependencies.componentEndpoint(paths, "coordinator");
-    await dependencies.verifiedFetch(paths, "coordinator", "/integral/health");
-  } catch {
-    throw new IntegralError(
-      "coordinator is not reachable; start it with integral server start",
-    );
-  }
   const command = args[0];
   if (command === "ls") {
     const snapshot = (await fetchJson(
@@ -100,4 +70,47 @@ export async function queueCommand(
     return 0;
   }
   throw new IntegralError(`unknown queue command: ${command}`);
+}
+
+export interface QueueDependencies {
+  resolvePaths(): IntegralPaths;
+  componentEndpoint: typeof componentEndpoint;
+  verifiedFetch: typeof verifiedFetch;
+  fetch: typeof globalThis.fetch;
+  writeOutput(text: string): void;
+}
+
+const productionDependencies: QueueDependencies = {
+  resolvePaths,
+  componentEndpoint,
+  verifiedFetch,
+  fetch: globalThis.fetch,
+  writeOutput: (text) => process.stdout.write(text),
+};
+
+export async function queueCommand(
+  args: string[],
+  overrides: Partial<QueueDependencies> = {},
+): Promise<number> {
+  const dependencies = { ...productionDependencies, ...overrides };
+  if (
+    !args[0] ||
+    args.includes("--help") ||
+    args.includes("-h") ||
+    args[0] === "help"
+  ) {
+    dependencies.writeOutput(HELP);
+    return 0;
+  }
+  const paths = dependencies.resolvePaths();
+  let endpoint: string;
+  try {
+    endpoint = await dependencies.componentEndpoint(paths, "coordinator");
+    await dependencies.verifiedFetch(paths, "coordinator", "/integral/health");
+  } catch {
+    throw new IntegralError(
+      "coordinator is not reachable; start it with integral server start",
+    );
+  }
+  return runQueueCommand(args, endpoint, dependencies);
 }

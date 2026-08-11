@@ -39,11 +39,25 @@ import {
 } from "./model-selection.ts";
 import { imageCommand } from "./cli/image.ts";
 export { imageCommand, type ImageCommandDependencies } from "./cli/image.ts";
-import { queueCommand } from "./cli/queue.ts";
+import { queueCommand, runQueueCommand } from "./cli/queue.ts";
 export { queueCommand, type QueueDependencies } from "./cli/queue.ts";
 import { scheduleCommand } from "./cli/schedule.ts";
 export { scheduleCommand, type ScheduleDependencies } from "./cli/schedule.ts";
 import { fetchJson, requestOk } from "./cli/http.ts";
+import {
+  approvalCommand,
+  healthyCoordinator,
+  renderApproval,
+  runApprovalCommand,
+  runStatusCommand,
+  statusCommand,
+  type ConversationCommandDependencies,
+} from "./cli/conversation.ts";
+export {
+  approvalCommand,
+  statusCommand,
+  type ConversationCommandDependencies,
+} from "./cli/conversation.ts";
 
 const TOP_HELP = `integral — a governed, containerized Pi conversation
 
@@ -52,9 +66,12 @@ Usage: integral <command>
 Commands:
   server       run or inspect server components
   talk         attach this terminal to the durable conversation
-  queue        inspect or change queued messages
+  status       show shared conversation and component status (in talk: /status)
+  model        show or change the conversation model (in talk: /model)
+  queue        inspect or change queued messages (in talk: /queue)
+  approval     inspect or decide requests (in talk: /approvals, /approve, /deny)
   schedule     manage schedules and inspect task executions
-  connection   configure external connections
+  connection   configure connections (in talk: /connection catalog or ls)
   image        edit or rebuild the managed Pi image
   config       inspect and validate configuration
   version      print implementation versions
@@ -102,15 +119,19 @@ Combined mode is the default. --component <name> starts one component only.
 Component values: coordinator, runner, gateway, scheduler
 `;
 const TALK_HELP = `/help                         show this help
-/status                       show shared chat status
-/model [<pattern>...]         show or change the provider and model
-/queue ls                     list queued and in-flight messages
-/queue edit <id> <text>       edit a queued message
-/queue delete <id>            delete a queued message
-/approvals                    list governed requests awaiting a human
-/approve <id>                 approve one governed request
-/deny <id>                    deny one governed request
+/status                       show shared chat status (integral status)
+/model [<pattern>...]         change model (integral model [<pattern>...])
+/connection catalog           show connection types (integral connection catalog)
+/connection ls                list connections (integral connection ls)
+/queue ls                     list messages (integral queue ls)
+/queue edit <id> <text>       edit a message (integral queue edit ...)
+/queue delete <id>            delete a message (integral queue delete ...)
+/approvals                    list requests (integral approval ls)
+/approve <id>                 approve (integral approval approve <id>)
+/deny <id>                    deny (integral approval deny <id>)
 /exit                         detach this terminal
+
+Host administration remains in the shell: integral server, talk, schedule, image, config, version, and connection add (including credential rotation) or rm. Structured --json output is CLI-only.
 `;
 const TALK_USER_STYLE = "\u001b[48;5;238m\u001b[97m";
 const TALK_STYLE_RESET = "\u001b[0m";
@@ -266,7 +287,10 @@ export async function main(args: string[]): Promise<number> {
     if (command === "connection") return await connectionCommand(rest);
     if (command === "image") return await imageCommand(rest);
     if (command === "server") return await serverCommand(rest);
+    if (command === "status") return await statusCommand(rest);
+    if (command === "model") return await modelCommand(rest);
     if (command === "queue") return await queueCommand(rest);
+    if (command === "approval") return await approvalCommand(rest);
     if (command === "schedule") return await scheduleCommand(rest);
     if (command === "talk") return await talkCommand(rest);
     throw new IntegralError(`unknown command: ${command}`);
@@ -336,24 +360,20 @@ async function configCommand(args: string[]): Promise<number> {
   throw new IntegralError(`unknown config command: ${command}`);
 }
 
-async function connectionCommand(args: string[]): Promise<number> {
-  const command = args[0];
-  if (!command || helpRequested(args) || command === "help") {
-    process.stdout.write(CONNECTION_HELP);
-    return 0;
-  }
-  if (command === "catalog") {
-    for (const entry of CATALOG)
-      process.stdout.write(
-        `${entry.name}\t${entry.kind}\t${entry.auth.join(", ")}\n`,
-      );
-    return 0;
-  }
-  const paths = resolvePaths();
-  if (command === "ls") {
-    const rows = await listConnections(paths);
-    if (has(args, "--json"))
-      writeJson(
+function showConnectionCatalog(writeOutput: (text: string) => void): void {
+  for (const entry of CATALOG)
+    writeOutput(`${entry.name}\t${entry.kind}\t${entry.auth.join(", ")}\n`);
+}
+
+async function showConnections(
+  paths: IntegralPaths,
+  json: boolean,
+  writeOutput: (text: string) => void,
+): Promise<void> {
+  const rows = await listConnections(paths);
+  if (json)
+    writeOutput(
+      `${JSON.stringify(
         rows.map(
           ({
             name,
@@ -385,12 +405,32 @@ async function connectionCommand(args: string[]): Promise<number> {
               : {}),
           }),
         ),
+        null,
+        2,
+      )}\n`,
+    );
+  else
+    for (const row of rows)
+      writeOutput(
+        `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${row.mount ? `\t${row.availabilityReason ?? "-"}\trestorable=${row.restorationPossible ? "yes" : "no"}\t${row.mount}` : ""}\n`,
       );
-    else
-      for (const row of rows)
-        process.stdout.write(
-          `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${row.mount ? `\t${row.availabilityReason ?? "-"}\trestorable=${row.restorationPossible ? "yes" : "no"}\t${row.mount}` : ""}\n`,
-        );
+}
+
+export async function connectionCommand(args: string[]): Promise<number> {
+  const command = args[0];
+  if (!command || helpRequested(args) || command === "help") {
+    process.stdout.write(CONNECTION_HELP);
+    return 0;
+  }
+  if (command === "catalog") {
+    showConnectionCatalog((text) => process.stdout.write(text));
+    return 0;
+  }
+  const paths = resolvePaths();
+  if (command === "ls") {
+    await showConnections(paths, has(args, "--json"), (text) =>
+      process.stdout.write(text),
+    );
     return 0;
   }
   if (command === "add") {
@@ -1107,6 +1147,45 @@ export function createTalkTerminal(overrides?: {
   };
 }
 
+export interface ModelCommandDependencies extends ConversationCommandDependencies {
+  createTerminal(): TalkTerminal;
+}
+
+const productionModelDependencies: ModelCommandDependencies = {
+  resolvePaths,
+  componentEndpoint,
+  verifiedFetch,
+  fetch: globalThis.fetch,
+  writeOutput: (text) => process.stdout.write(text),
+  createTerminal: createTalkTerminal,
+};
+
+export async function modelCommand(
+  args: string[],
+  overrides: Partial<ModelCommandDependencies> = {},
+): Promise<number> {
+  const dependencies = { ...productionModelDependencies, ...overrides };
+  if (helpRequested(args)) {
+    dependencies.writeOutput(
+      "Usage: integral model [<pattern>...]\n\nShow or change the shared conversation model without attaching a talk session. In integral talk, use /model [<pattern>...].\n",
+    );
+    return 0;
+  }
+  const terminal = dependencies.createTerminal();
+  try {
+    await chooseConversationModel(
+      args,
+      terminal,
+      await healthyCoordinator(dependencies),
+      dependencies.fetch,
+      dependencies.writeOutput,
+    );
+    return 0;
+  } finally {
+    terminal.close();
+  }
+}
+
 export async function talkCommand(
   args: string[],
   overrides: Partial<TalkDependencies> = {},
@@ -1184,11 +1263,7 @@ export async function talkCommand(
           continue;
         }
         if (text === "/status") {
-          const status = await fetchJson(
-            new URL("/integral/status", endpoint),
-            dependencies.fetch,
-          );
-          dependencies.writeOutput(`${JSON.stringify(status, null, 2)}\n`);
+          await runStatusCommand([], endpoint, dependencies);
           continue;
         }
         const model = text.match(/^\/model(?:\s+(.*))?$/);
@@ -1202,67 +1277,36 @@ export async function talkCommand(
           );
           continue;
         }
-        if (text === "/queue ls") {
-          const snap = (await fetchJson(
-            new URL("/integral/snapshot", endpoint),
-            dependencies.fetch,
-          )) as {
-            queue: { id: string; text: string; status: string }[];
-          };
-          for (const item of snap.queue)
-            dependencies.writeOutput(
-              `${item.status}\t${item.id}\t${item.text}\n`,
+        if (text === "/connection catalog") {
+          showConnectionCatalog(dependencies.writeOutput);
+          continue;
+        }
+        if (text === "/connection ls") {
+          await showConnections(paths, false, dependencies.writeOutput);
+          continue;
+        }
+        if (text.startsWith("/queue ")) {
+          const queueArgs = text.slice("/queue ".length).split(/\s+/);
+          if (queueArgs.includes("--json"))
+            throw new IntegralError(
+              "structured output flags are available only in the CLI",
             );
+          await runQueueCommand(queueArgs, endpoint, dependencies);
           continue;
         }
         if (text === "/approvals") {
-          const approvals = (await fetchJson(
-            new URL("/integral/approvals", endpoint),
-            dependencies.fetch,
-          )) as Array<Record<string, unknown>>;
-          if (!approvals.length)
-            dependencies.writeOutput("No approval requests.\n");
-          else
-            for (const approval of approvals)
-              dependencies.writeOutput(`${renderApproval(approval)}\n`);
+          await runApprovalCommand(["ls"], endpoint, dependencies, {
+            attachmentId,
+          });
           continue;
         }
         const approvalDecision = text.match(/^\/(approve|deny)\s+(\S+)$/);
         if (approvalDecision) {
-          const result = (await fetchJson(
-            new URL(
-              `/integral/approvals/${encodeURIComponent(approvalDecision[2]!)}/${approvalDecision[1]}`,
-              endpoint,
-            ),
-            dependencies.fetch,
-            {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ attachmentId }),
-            },
-          )) as Record<string, unknown>;
-          dependencies.writeOutput(`${renderApproval(result)}\n`);
-          continue;
-        }
-        const edit = text.match(/^\/queue edit\s+(\S+)\s+(.+)$/);
-        if (edit) {
-          await requestOk(
-            new URL(`/integral/queue/${edit[1]}`, endpoint),
-            {
-              method: "PATCH",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ text: edit[2] }),
-            },
-            dependencies.fetch,
-          );
-          continue;
-        }
-        const del = text.match(/^\/queue delete\s+(\S+)$/);
-        if (del) {
-          await requestOk(
-            new URL(`/integral/queue/${del[1]}`, endpoint),
-            { method: "DELETE" },
-            dependencies.fetch,
+          await runApprovalCommand(
+            [approvalDecision[1]!, approvalDecision[2]!],
+            endpoint,
+            dependencies,
+            { attachmentId },
           );
           continue;
         }
@@ -1414,7 +1458,7 @@ function renderModelChoices(
   });
   lines.push(
     "Enter a number or case-insensitive search terms.",
-    "Search directly with: integral talk <pattern>... or /model <pattern>...",
+    "Search directly with: integral model <pattern>..., integral talk <pattern>..., or /model <pattern>...",
     "",
   );
   writeOutput(lines.join("\n"));
@@ -1641,21 +1685,6 @@ async function consumeEvents(
       }
     }
   }
-}
-
-function renderApproval(value: Record<string, unknown>): string {
-  const id = typeof value.id === "string" ? value.id : "unknown",
-    status = typeof value.status === "string" ? value.status : "unknown",
-    summary = typeof value.summary === "string" ? value.summary : "request",
-    details =
-      value.details && typeof value.details === "object"
-        ? (value.details as Record<string, unknown>)
-        : undefined,
-    diff = typeof details?.diff === "string" ? details.diff.trim() : "";
-  const floating = details?.floatingResolution === true,
-    priorImage =
-      typeof details?.priorImage === "string" ? details.priorImage : "unknown";
-  return `approval ${id} [${status}] ${summary}${floating ? `\nFloating dependencies will resolve at build time; prior image: ${priorImage}` : ""}${diff ? `\n${diff}` : ""}`;
 }
 
 function humanLabel(colors: boolean): string {

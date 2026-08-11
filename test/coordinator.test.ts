@@ -337,6 +337,40 @@ test("[GATEWAY-846B1000] a live Pi package request waits for an attached human a
   assert.equal(builds.length, 1);
 });
 
+test("[CLI-D1B5816E] a trusted local operator can decide an approval without a talk attachment", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    coordinator = new Coordinator(paths, config),
+    response = waitingResponse();
+  await coordinator.modelSelection.set({
+    connection: "work",
+    provider: "openai-codex",
+    model: "gpt-5.5",
+    piVersion: "1.2.3",
+    piImage: "sha256:base",
+  });
+  const waiting = coordinator.requestContainerPackageApproval(
+    {
+      operation: "install",
+      packages: ["jq"],
+      expectedRevision: 0,
+      sessionId: "session-operator",
+    },
+    response,
+  );
+  await until(() => (coordinator as any).approvalWaiters.size === 1);
+  const approval = coordinator.approvals.snapshot()[0]!;
+  const denied = await coordinator.decideApproval(
+    approval.id,
+    "denied",
+    "",
+    true,
+  );
+  assert.equal(denied.status, "denied");
+  assert.equal(denied.decision?.terminalId, "operator");
+  assert.equal((await waiting).status, "denied");
+});
+
 test("[GATEWAY-846B1000] denial is durable and never executes the package request", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
