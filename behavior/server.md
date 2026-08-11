@@ -10,6 +10,21 @@ combined and separate-process modes.
 <!-- Automation note (SERVER-8A31D6C4): Separate component construction and network boundaries are automated in-process; four foreground OS processes are not spawned by the restricted default test runner. -->
 <!-- Automation note (SERVER-E3A74B10): Per-component ownership and cleanup are automated; live process signaling is reserved for an acceptance environment. -->
 
+## SERVER-A3D17B0F — Bound JSON request ingress
+
+Given an Integral component endpoint accepts a JSON object
+	When a request body exceeds that route's explicit byte limit
+		Then the component rejects it with HTTP 413
+			And does not invoke the route mutation
+			And does not retain or parse the oversized body
+	When a non-empty body is malformed JSON, a scalar, or an array
+		Then the component rejects it with HTTP 400
+			And does not invoke the route mutation
+			And does not echo the body in the response or diagnostics
+	When the route permits an empty request object and the body is empty
+		Then the component interprets it as an empty object
+			And applies the route's ordinary field validation
+
 ## SERVER-F886D80C — Start all components in one foreground process
 
 Given Docker is available

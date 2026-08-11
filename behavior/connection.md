@@ -10,11 +10,6 @@ no grant or revoke concept.
 <!-- Automation note (CONNECTION-1D691391): Commit-after-verification behavior is automated with a controlled failing endpoint; no real provider is contacted. -->
 <!-- Automation note (CONNECTION-741C2F56): The two independent removal decisions and storage outcomes are automated below the PTY prompt layer; prompt keystrokes are an acceptance test. -->
 <!-- Automation note (CONNECTION-E73B40C6): No-auth removal outcomes are automated below the PTY prompt layer; prompt keystrokes are an acceptance test. -->
-<!-- Automation note (CONNECTION-89A88F7C): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (CONNECTION-06B6AE14): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (CONNECTION-857967F4): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
-<!-- Automation note (CONNECTION-C0978F5E): This behavior defines planned host-resource source-validation functionality; executable coverage will land with implementation. -->
-<!-- Automation note (CONNECTION-717CAD0E): This behavior defines planned host-resource availability functionality; executable coverage will land with implementation. -->
 
 ## CONNECTION-C14B8E70 — Show connection command help
 
@@ -258,7 +253,6 @@ Given the user has the URL of a remote MCP server
 		Then integral treats them as compatibility overrides
 			And still verifies the resulting MCP connection before committing it
 
-<!-- Automation note (CONNECTION-0EF2CF89): This behavior defines planned stdio MCP setup; executable coverage will land with implementation. -->
 
 ## CONNECTION-0EF2CF89 — Add a stdio MCP connection
 

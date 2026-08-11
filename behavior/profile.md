@@ -5,9 +5,6 @@ opaque host-managed repository at Pi's native user-profile directory. Profile
 contents and synchronization with any remote repository are outside Integral's
 responsibility in this behavior increment.
 
-<!-- Automation note (PROFILE-6A93810F): This behavior defines planned Pi profile bootstrap functionality; executable coverage will land with implementation. -->
-<!-- Automation note (PROFILE-3083AEEE): This behavior defines planned native Pi profile projection functionality; executable coverage will land with implementation. -->
-
 ## PROFILE-6A93810F — Initialize one opaque Pi profile repository
 
 Given the deployment has never created a Pi profile repository

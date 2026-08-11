@@ -1,6 +1,4 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
-import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
 import type { EffectiveConfig } from "./config.ts";
 import type { IntegralPaths } from "./paths.ts";
 import {
@@ -37,6 +35,12 @@ import type { ScheduledOccurrence } from "./occurrence-store.ts";
 import { DEFAULT_PI_IMAGE, type Component } from "./constants.ts";
 import type { Logger } from "./logging.ts";
 import { ensureContainerImage } from "./container.ts";
+import { readJsonObject, writeJson } from "./http-server.ts";
+import {
+  ClientEventStream,
+  type ClientEvent,
+} from "./coordinator/event-stream.ts";
+export type { ClientEvent } from "./coordinator/event-stream.ts";
 import {
   loadContainerPackageState,
   planContainerPackageChange,
@@ -62,11 +66,6 @@ import {
   type ImageProposal,
 } from "./image-recipe.ts";
 
-export interface ClientEvent {
-  sequence: number;
-  type: string;
-  data: unknown;
-}
 export interface CoordinatorDependencies {
   servers: HttpServerRuntime;
   intervals: IntervalRuntime;
@@ -113,11 +112,10 @@ export class Coordinator {
   readonly modelSelection: ModelSelectionStore;
   readonly tasks: DurableTaskQueue;
   readonly approvals: ApprovalStore;
-  private readonly events = new EventEmitter();
+  private readonly eventStream = new ClientEventStream();
+  readonly events = this.eventStream.events;
   private server: http.Server | undefined;
-  private eventSequence = 0;
-  private attached = 0;
-  private readonly attachments = new Set<string>();
+  private readonly attachments = this.eventStream.attachments;
   private readonly approvalWaiters = new Map<
     string,
     {
@@ -225,9 +223,7 @@ export class Coordinator {
     if (changed) void this.modelCatalog(generation).catch(() => undefined);
   }
   private broadcast(type: string, data: unknown): ClientEvent {
-    const event = { sequence: ++this.eventSequence, type, data };
-    this.events.emit("event", event);
-    return event;
+    return this.eventStream.broadcast(type, data);
   }
   private snapshot(): Record<string, unknown> {
     return {
@@ -237,8 +233,8 @@ export class Coordinator {
       tasks: this.tasks.snapshot(),
       modelSelection: this.modelSelection.get() ?? null,
       approvals: this.approvals.snapshot(),
-      eventSequence: this.eventSequence,
-      attached: this.attached,
+      eventSequence: this.eventStream.sequence,
+      attached: this.eventStream.attached,
     };
   }
   private internal(
@@ -1114,7 +1110,7 @@ export class Coordinator {
           selection: this.modelSelection.get() ?? null,
           queueDepth: queue.filter((m) => m.status === "queued").length,
           inFlight: queue.find((m) => m.status === "in-flight")?.id ?? null,
-          attached: this.attached,
+          attached: this.eventStream.attached,
           taskQueueDepth: this.tasks
             .snapshot()
             .filter((task) => ["queued", "retry-wait"].includes(task.state))
@@ -1149,29 +1145,7 @@ export class Coordinator {
     return item;
   }
   private stream(req: IncomingMessage, res: ServerResponse): void {
-    const attachmentId = randomUUID();
-    this.attachments.add(attachmentId);
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-      "x-integral-attachment-id": attachmentId,
-    });
-    this.attached++;
-    this.broadcast("chat.attached", { attached: this.attached });
-    // Snapshot and listener registration are synchronous, avoiding a snapshot-to-live gap.
-    res.write(`event: snapshot\ndata: ${JSON.stringify(this.snapshot())}\n\n`);
-    const listener = (event: ClientEvent) =>
-      res.write(
-        `id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`,
-      );
-    this.events.on("event", listener);
-    req.once("close", () => {
-      this.events.off("event", listener);
-      this.attachments.delete(attachmentId);
-      this.attached--;
-      this.broadcast("chat.detached", { attached: this.attached });
-    });
+    this.eventStream.attach(req, res, () => this.snapshot());
   }
   async stop(): Promise<void> {
     if (this.catalogRefresh !== undefined) {
@@ -1179,7 +1153,7 @@ export class Coordinator {
       this.catalogRefresh = undefined;
     }
     this.dependencies.intervals.clearInterval(this.refreshTimer);
-    this.attachments.clear();
+    this.eventStream.clear();
     for (const waiter of this.approvalWaiters.values())
       waiter.reject(
         new IntegralError("coordinator stopped; approval remains pending", 503),
@@ -1195,23 +1169,7 @@ async function bodyJson(
   req: IncomingMessage,
   maxBytes = 1_000_000,
 ): Promise<Record<string, unknown>> {
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const value = Buffer.from(chunk);
-    bytes += value.byteLength;
-    if (bytes > maxBytes)
-      throw new IntegralError("request body is too large", 413);
-    chunks.push(value);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString() || "{}") as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    throw new IntegralError("invalid JSON request", 400);
-  }
+  return await readJsonObject(req, { maxBytes });
 }
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -1225,8 +1183,7 @@ function optionalNumber(value: unknown): number | undefined {
   return value === undefined ? undefined : numberValue(value);
 }
 function json(res: ServerResponse, status: number, value: unknown): void {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(`${JSON.stringify(value)}\n`);
+  writeJson(res, status, value);
 }
 function unauthorized(res: ServerResponse): void {
   json(res, 401, { error: "unauthorized component request" });

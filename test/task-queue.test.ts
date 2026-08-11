@@ -43,6 +43,21 @@ test("[SCHEDULE-52697825] coordinator acceptance is idempotent and rejects confl
   assert.equal(queue.snapshot().length, 1);
 });
 
+/* @covers SCHEDULE-E85BDCAD
+Given a recurring occurrence has been durably accepted by the coordinator
+	When delivery or capacity fails before its isolated Pi container starts
+		Then integral keeps the occurrence pending for an execution attempt
+	When its isolated Pi container starts and the attempt does not complete successfully
+		Then the coordinator durably marks that occurrence failed
+			And does not return it to the active task queue
+			And acknowledges the terminal failure to the scheduler
+			And retains the failed occurrence and attempt for inspection
+	When the runner or coordinator recovers an occurrence recorded as running with an unknown outcome
+		Then it marks that recurring occurrence failed rather than executing it again
+	When the schedule reaches its next recurring instant after an earlier occurrence failed
+		Then the scheduler creates the next independent occurrence normally
+			And the earlier failure does not delay or replace it
+*/
 test("[SCHEDULE-E85BDCAD] a recurring occurrence receives one execution attempt and terminal failure acknowledgement", async (t) => {
   const paths = await fixture(t);
   let now = Date.parse("2026-08-02T12:00:00Z");
@@ -72,6 +87,21 @@ test("[SCHEDULE-E85BDCAD] a recurring occurrence receives one execution attempt 
   );
 });
 
+/* @covers SCHEDULE-4205553B
+Given a one-time task has not completed successfully
+	When delivery fails or an isolated execution attempt is unsuccessful
+		Then integral retains the same logical execution ID in the active task queue
+			And records the unsuccessful attempt separately
+			And schedules another attempt with capped backoff
+			And uses a fresh attempt ID, temporary home, gateway identity, and container for that attempt
+	When the runner or coordinator recovers the one-time task with an unknown in-flight outcome
+		Then it returns the same logical execution ID to pending state for another isolated attempt
+	When Pi completes the task and exits cleanly
+		Then integral clears the task from the active queue only after durable completion
+	When an operator explicitly cancels the task
+		Then integral records cancellation as the only non-successful terminal outcome
+			And retains its execution and attempt history for inspection
+*/
 test("[SCHEDULE-4205553B] [SCHEDULE-930581F7] a one-time task retries in a fresh attempt until clean exit zero", async (t) => {
   const paths = await fixture(t);
   let now = Date.parse("2026-08-02T12:00:00Z"),
@@ -158,6 +188,14 @@ test("[SCHEDULE-E85BDCAD] [SCHEDULE-4205553B] restart resolves unknown running o
   assert.deepEqual(onceRecovered.outbox(), []);
 });
 
+/* @covers SCHEDULE-42E63F16
+Given the coordinator has durably completed a task or terminally failed a recurring occurrence
+	When scheduler acknowledgement is unavailable or its response is lost
+		Then the coordinator retains the acknowledgement in a durable outbox
+			And retries the same execution ID and outcome after component restart
+			And the scheduler applies repeated identical acknowledgements without changing the recorded outcome
+			And neither component causes the task to execute again because acknowledgement was repeated
+*/
 test("[SCHEDULE-42E63F16] successful outbox acknowledgement is durable and idempotent", async (t) => {
   const paths = await fixture(t),
     queue = new DurableTaskQueue(
@@ -248,6 +286,13 @@ test("[SCHEDULE-930581F7] clean exit finalizes Pi's declared failure and rejects
   assert.match(finalizedMissing.lastError!, /without declaring/);
 });
 
+/* @covers SCHEDULE-FDFA799E
+Given one occurrence of a recurring schedule is running
+	When another occurrence of that schedule becomes due
+		Then the scheduler may materialize the later occurrence durably
+			And the coordinator does not start it before the running occurrence reaches a terminal outcome
+			And work from other schedules and interactive talk remains eligible to run
+*/
 test("[SCHEDULE-FDFA799E] a later occurrence cannot overlap a running occurrence", async (t) => {
   const paths = await fixture(t);
   let id = 0;

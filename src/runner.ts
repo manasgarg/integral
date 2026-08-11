@@ -2,7 +2,9 @@ import http from "node:http";
 import type { EffectiveConfig } from "./config.ts";
 import {
   credentialFor,
+  clearConnectionDegraded,
   listConnections,
+  markConnectionDegraded,
   type Connection,
 } from "./connections.ts";
 import type { IntegralPaths } from "./paths.ts";
@@ -42,7 +44,11 @@ import { readText } from "./fs.ts";
 import { join } from "node:path";
 import { IntegralError } from "./errors.ts";
 import { oauthAccess } from "./oauth.ts";
-import { discoverRemoteMcp, type McpCatalog, type McpRuntime } from "./mcp.ts";
+import {
+  discoverRemoteMcp,
+  McpCatalogRegistry,
+  type McpCatalog,
+} from "./mcp.ts";
 import type {
   ApprovalContinuation,
   ConversationEvent,
@@ -57,6 +63,8 @@ import {
   type RunRecorder,
   type RunTermination,
 } from "./run-store.ts";
+import { readJsonObject } from "./http-server.ts";
+import { McpSidecarManager } from "./runner/mcp-sidecars.ts";
 
 export interface RunnerClock {
   setTimeout(
@@ -148,7 +156,9 @@ export class Runner {
   private idle: unknown;
   private dockerGateway = "";
   private token = "";
-  private readonly mcpRuntimes = new Map<string, Map<string, McpRuntime>>();
+  private readonly mcpSidecars: McpSidecarManager;
+  private readonly mcpCatalogs: McpCatalogRegistry;
+  private piMcpCatalogs = new Map<string, string>();
   private currentMessageId: string | undefined;
   private currentTask:
     { id: string; claimId: string; attemptId?: string } | undefined;
@@ -172,6 +182,22 @@ export class Runner {
   ) {
     this.dependencies = { ...productionDependencies, ...overrides };
     this.runs = new RunStore(paths, () => this.dependencies.now());
+    this.mcpCatalogs = new McpCatalogRegistry(
+      this.dependencies.discoverRemoteMcp,
+      () => this.dependencies.now(),
+      0,
+    );
+    this.mcpSidecars = new McpSidecarManager(
+      this.dependencies.containers,
+      config,
+      `integral-${deploymentId(paths)}`,
+      logger,
+      this.dependencies.writeMcpExtension,
+      async (connection, healthy) => {
+        if (healthy) await clearConnectionDegraded(this.paths, connection);
+        else await markConnectionDegraded(this.paths, connection, "sidecar");
+      },
+    );
   }
   async start(): Promise<http.Server> {
     await this.dependencies.ensurePiProfileRepository(this.paths, this.config);
@@ -242,9 +268,9 @@ export class Runner {
         Array.isArray(args)
       )
         throw new IntegralError("invalid MCP request", 400);
-      const runtime = this.mcpRuntimes.get(sessionId)?.get(connection);
-      if (!runtime) throw new IntegralError("MCP sidecar not found", 404);
-      const result = await runtime.callTool(
+      const result = await this.mcpSidecars.callTool(
+        sessionId,
+        connection,
         tool,
         args as Record<string, unknown>,
       );
@@ -471,7 +497,7 @@ export class Runner {
         ...(this.stopped ? {} : { error: "task execution did not complete" }),
       });
       if (runtime) {
-        await this.stopMcpSidecars(runtime.spec.sessionId);
+        await this.mcpSidecars.stop(runtime.spec.sessionId);
         await this.revoke(runtime.spec.sessionToken);
         if (this.taskResources)
           await this.dependencies
@@ -582,7 +608,7 @@ export class Runner {
         throw new IntegralError(
           `task gateway session unavailable: ${registered.status}`,
         );
-      await this.startMcpSidecars(spec, catalogs, sidecars);
+      await this.mcpSidecars.start(spec, catalogs, sidecars);
       return runtime;
     } catch (error) {
       await recorder.failure("provisioning-failure", error);
@@ -590,7 +616,7 @@ export class Runner {
         termination: "failed",
         error: error instanceof Error ? error.message : String(error),
       });
-      await this.stopMcpSidecars(identity.sessionId);
+      await this.mcpSidecars.stop(identity.sessionId);
       await this.revoke(identity.sessionToken);
       await this.dependencies
         .cleanupResourceProjection(this.paths, this.config, resources)
@@ -674,6 +700,8 @@ export class Runner {
       this.dependencies.clock.clearTimeout(this.idle);
       const continuation = item.approvalContinuation;
       if (continuation && this.pi) await this.destroyPi("selection-changed");
+      if (this.pi && (await this.mcpCatalogChanged()))
+        await this.destroyPi("selection-changed");
       await this.ensurePi(
         body.context,
         selection,
@@ -872,7 +900,7 @@ export class Runner {
         throw new IntegralError(
           `gateway session unavailable: ${registered.status}`,
         );
-      await this.startMcpSidecars(spec, catalogs, sidecars);
+      await this.mcpSidecars.start(spec, catalogs, sidecars);
       await pi.start();
       this.pi = pi;
       this.piSelection = { ...selection };
@@ -880,6 +908,12 @@ export class Runner {
       this.piRun = recorder;
       this.piHistoryView = historyView;
       this.piResources = resources;
+      this.piMcpCatalogs = new Map(
+        catalogs.map((catalog) => [
+          catalog.connection.name,
+          mcpCatalogSignature(catalog),
+        ]),
+      );
       this.piTurnCount = 0;
       await this.dependencies.internalFetch(
         this.paths,
@@ -906,7 +940,7 @@ export class Runner {
         termination: "failed",
         error: error instanceof Error ? error.message : String(error),
       });
-      await this.stopMcpSidecars(identity.sessionId);
+      await this.mcpSidecars.stop(identity.sessionId);
       await this.revoke(identity.sessionToken);
       await this.dependencies
         .cleanupResourceProjection(this.paths, this.config, resources)
@@ -959,11 +993,13 @@ export class Runner {
           stdio.push({ connection, secretValues });
           continue;
         }
-        const catalog = await this.dependencies.discoverRemoteMcp(
+        const catalog = await this.mcpCatalogs.refresh(
           connection,
           credential,
           this.dependencies.fetch,
+          true,
         );
+        await clearConnectionDegraded(this.paths, connection.name);
         catalogs.push(catalog);
         mcpDiagnostics.push(
           ...(catalog.diagnostics ?? []).map(
@@ -971,6 +1007,15 @@ export class Runner {
           ),
         );
       } catch (error) {
+        await markConnectionDegraded(
+          this.paths,
+          connection.name,
+          /401|403|authoriz/i.test(
+            error instanceof Error ? error.message : String(error),
+          )
+            ? "authorization"
+            : "discovery",
+        );
         unavailableMcp.push(
           `${connection.name} (${error instanceof Error ? error.message : String(error)})`,
         );
@@ -1060,76 +1105,48 @@ export class Runner {
       sidecars,
     };
   }
-  private async startMcpSidecars(
-    spec: { home: string; args: string[]; sessionId: string },
-    catalogs: McpCatalog[],
-    sidecars: McpSidecarSpec[],
-  ): Promise<void> {
-    const runtimes = new Map<string, McpRuntime>(),
-      unavailable: string[] = [],
-      diagnostics: string[] = [];
-    for (const sidecar of sidecars) {
-      if (!this.dependencies.containers.createMcpSidecar) {
-        unavailable.push(
-          `${sidecar.connection.name} (stdio MCP is unavailable)`,
-        );
-        continue;
-      }
-      const runtime = this.dependencies.containers.createMcpSidecar(
-        sidecar,
-        this.config,
-        `integral-${deploymentId(this.paths)}`,
-        (line) =>
-          this.logger.event("debug", "mcp.stderr", line, {
-            connection: sidecar.connection.name,
-            session_id: spec.sessionId,
-          }),
-      );
-      try {
-        const catalog = await runtime.start();
-        catalogs.push(catalog);
-        diagnostics.push(
-          ...(catalog.diagnostics ?? []).map(
-            (diagnostic) => `${sidecar.connection.name}: ${diagnostic}`,
-          ),
-        );
-        runtimes.set(sidecar.connection.name, runtime);
-      } catch (error) {
-        await runtime.stop().catch(() => undefined);
-        unavailable.push(
-          `${sidecar.connection.name} (${error instanceof Error ? error.message : String(error)})`,
-        );
-      }
-    }
-    if (runtimes.size) this.mcpRuntimes.set(spec.sessionId, runtimes);
-    await this.dependencies.writeMcpExtension(spec.home, catalogs);
-    if (unavailable.length)
-      spec.args.push(
-        "--append-system-prompt",
-        `Unavailable MCP connections: ${unavailable.join(", ")}.`,
-      );
-    if (diagnostics.length)
-      spec.args.push(
-        "--append-system-prompt",
-        `Excluded MCP tools: ${diagnostics.join(", ")}.`,
-      );
-  }
-  private async stopMcpSidecars(sessionId: string): Promise<void> {
-    const runtimes = this.mcpRuntimes.get(sessionId);
-    this.mcpRuntimes.delete(sessionId);
-    if (runtimes)
-      await Promise.all(
-        [...runtimes.values()].map((runtime) =>
-          runtime.stop().catch(() => undefined),
-        ),
-      );
-  }
   private armIdle(): void {
     if (!this.pi || this.idle) return;
     this.idle = this.dependencies.clock.setTimeout(
       () => this.destroyPi("idle"),
       this.config.runner.idleTimeoutSeconds * 1000,
     );
+  }
+  private async mcpCatalogChanged(): Promise<boolean> {
+    const connections = (await listConnections(this.paths)).filter(
+      (connection) =>
+        connection.kind === "mcp" &&
+        connection.transport !== "stdio" &&
+        connection.state !== "DISABLED (no secret)",
+    );
+    for (const connection of connections) {
+      try {
+        const raw = await credentialFor(this.paths, connection.name),
+          credential = raw ? (oauthAccess(raw) ?? raw) : undefined,
+          catalog = await this.mcpCatalogs.refresh(
+            connection,
+            credential,
+            this.dependencies.fetch,
+          );
+        await clearConnectionDegraded(this.paths, connection.name);
+        if (
+          this.piMcpCatalogs.get(connection.name) !==
+          mcpCatalogSignature(catalog)
+        )
+          return true;
+      } catch (error) {
+        await markConnectionDegraded(
+          this.paths,
+          connection.name,
+          /401|403|authoriz/i.test(
+            error instanceof Error ? error.message : String(error),
+          )
+            ? "authorization"
+            : "discovery",
+        );
+      }
+    }
+    return connections.length !== this.piMcpCatalogs.size;
   }
   private async revoke(token: string): Promise<void> {
     await this.dependencies
@@ -1161,13 +1178,14 @@ export class Runner {
     this.piRun = undefined;
     this.piHistoryView = undefined;
     this.piResources = undefined;
+    this.piMcpCatalogs = new Map();
     this.piTurnCount = 0;
     if (pi) {
       await this.finalizeRun(recorder, {
         termination,
         ...(error ? { error } : {}),
       });
-      await this.stopMcpSidecars(pi.spec.sessionId);
+      await this.mcpSidecars.stop(pi.spec.sessionId);
       await this.revoke(pi.spec.sessionToken);
       if (resources)
         await this.dependencies
@@ -1236,7 +1254,7 @@ export class Runner {
         termination: "stopped",
         error: "runner stopped",
       });
-      await this.stopMcpSidecars(taskRuntime.spec.sessionId);
+      await this.mcpSidecars.stop(taskRuntime.spec.sessionId);
       await this.revoke(taskRuntime.spec.sessionToken);
       await taskRuntime.stop().catch(() => undefined);
       await this.removeHistoryView(this.taskHistoryView);
@@ -1276,6 +1294,19 @@ export class Runner {
       );
     }
   }
+}
+
+function mcpCatalogSignature(catalog: McpCatalog): string {
+  return JSON.stringify(
+    catalog.tools.map((tool) => ({
+      name: tool.name,
+      title: tool.title,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
+      annotations: tool.annotations,
+    })),
+  );
 }
 
 export async function validateRunnerHost(paths: IntegralPaths): Promise<void> {
@@ -1332,21 +1363,5 @@ export function renderTaskContext(task: ScheduledTask): string {
 async function runnerBodyJson(
   req: http.IncomingMessage,
 ): Promise<Record<string, unknown>> {
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const part = Buffer.from(chunk);
-    bytes += part.byteLength;
-    if (bytes > 1_000_000)
-      throw new IntegralError("request body is too large", 413);
-    chunks.push(part);
-  }
-  try {
-    const value: unknown = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
+  return await readJsonObject(req);
 }

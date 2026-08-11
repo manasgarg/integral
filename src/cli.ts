@@ -1,10 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { clearLine, cursorTo, moveCursor } from "node:readline";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig, initConfig } from "./config.ts";
 import type { EffectiveConfig } from "./config.ts";
@@ -40,14 +37,13 @@ import {
   type ModelChoice,
   type ModelSelection,
 } from "./model-selection.ts";
-import { ModelSelectionStore } from "./queue.ts";
-import { atomicWrite } from "./fs.ts";
-import {
-  buildImageRecipe,
-  commitImageDockerfile,
-  ensureImageRecipeRepository,
-  imageRecipeDockerfile,
-} from "./image-recipe.ts";
+import { imageCommand } from "./cli/image.ts";
+export { imageCommand, type ImageCommandDependencies } from "./cli/image.ts";
+import { queueCommand } from "./cli/queue.ts";
+export { queueCommand, type QueueDependencies } from "./cli/queue.ts";
+import { scheduleCommand } from "./cli/schedule.ts";
+export { scheduleCommand, type ScheduleDependencies } from "./cli/schedule.ts";
+import { fetchJson, requestOk } from "./cli/http.ts";
 
 const TOP_HELP = `integral — a governed, containerized Pi conversation
 
@@ -104,35 +100,6 @@ const SERVER_HELP = `Usage: integral server start [--component <name>]
 
 Combined mode is the default. --component <name> starts one component only.
 Component values: coordinator, runner, gateway, scheduler
-`;
-const IMAGE_HELP = `Usage: integral image <command>
-
-Commands:
-  edit       edit and directly commit the managed Pi Dockerfile
-  rebuild    directly perform a fresh pull and no-cache image build
-
-These are privileged local operator actions. They do not create approval requests.
-Pi and remote automation image requests still require human approval.
-`;
-const QUEUE_HELP = `Usage: integral queue <command>
-
-Commands:
-  ls [--json]             list queued and in-flight messages
-  edit <id> <text>        edit a queued message
-  delete <id>             delete a queued message
-`;
-const SCHEDULE_HELP = `Usage: integral schedule <command>
-
-Commands:
-  ls [--json]                              list active schedules
-  show <id> [--json]                       show one schedule
-  history <id> [--json]                    show definition revisions
-  runs [<id>] [--json]                     show occurrence and attempt history
-  create --prompt <text> (--cron <expr> --timezone <zone> | --at <instant>)
-  update <id> --revision <n> [trigger and prompt options]
-  enable|disable|delete <id> --revision <n>
-  restore <id> <commit> --revision <n>      restore as a new revision
-  cancel <execution-id>                    cancel an active one-time task
 `;
 const TALK_HELP = `/help                         show this help
 /status                       show shared chat status
@@ -309,135 +276,6 @@ export async function main(args: string[]): Promise<number> {
   }
 }
 
-export interface ImageCommandDependencies {
-  resolvePaths(): IntegralPaths;
-  loadConfig(paths: IntegralPaths): Promise<EffectiveConfig>;
-  edit(
-    paths: IntegralPaths,
-    actor: string,
-  ): Promise<{
-    prior: string;
-    landed: string;
-  }>;
-  rebuild(
-    paths: IntegralPaths,
-    config: EffectiveConfig,
-    actor: string,
-  ): Promise<{ recipeCommit: string; piVersion: string; image: string }>;
-  actor(): string;
-  writeOutput(text: string): void;
-}
-
-async function editImageRecipe(
-  paths: IntegralPaths,
-  actor: string,
-): Promise<{ prior: string; landed: string }> {
-  await ensureImageRecipeRepository(paths);
-  const temporary = await mkdtemp(join(tmpdir(), "integral-image-edit-")),
-    file = join(temporary, "Dockerfile");
-  try {
-    await writeFile(
-      file,
-      `${(await imageRecipeDockerfile(paths)).trimEnd()}\n`,
-    );
-    const editor = process.env.EDITOR?.trim() || process.env.VISUAL?.trim();
-    if (!editor)
-      throw new IntegralError(
-        "EDITOR or VISUAL must name the Dockerfile editor",
-      );
-    const edited = spawnSync(editor, [file], { stdio: "inherit" });
-    if (edited.error) throw edited.error;
-    if (edited.status !== 0)
-      throw new IntegralError(
-        `image editor exited with status ${edited.status}`,
-      );
-    return await commitImageDockerfile(
-      paths,
-      await readFile(file, "utf8"),
-      actor,
-    );
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
-}
-
-async function rebuildImageRecipe(
-  paths: IntegralPaths,
-  config: EffectiveConfig,
-  actor: string,
-): Promise<{ recipeCommit: string; piVersion: string; image: string }> {
-  const selection = new ModelSelectionStore(paths.modelSelection);
-  await selection.load();
-  const current = selection.get();
-  if (!current)
-    throw new IntegralError(
-      "select a model before rebuilding the Pi image",
-      409,
-    );
-  const recipeCommit = await ensureImageRecipeRepository(paths),
-    result = await buildImageRecipe(paths, config, recipeCommit, actor, {
-      priorImage: current.piImage,
-    });
-  await atomicWrite(
-    paths.activeImage,
-    `${JSON.stringify({ schemaVersion: 1, recipeCommit, result })}\n`,
-  );
-  await selection.set({
-    ...current,
-    piVersion: result.piVersion,
-    piImage: result.image,
-  });
-  const generationFile = join(paths.state, "session-generation"),
-    currentGeneration = Number(
-      (await readFile(generationFile, "utf8").catch(() => "0")).trim() || "0",
-    );
-  await atomicWrite(
-    generationFile,
-    `${Number.isSafeInteger(currentGeneration) ? currentGeneration + 1 : 1}\n`,
-  );
-  return result;
-}
-
-const productionImageDependencies: ImageCommandDependencies = {
-  resolvePaths,
-  loadConfig,
-  edit: editImageRecipe,
-  rebuild: rebuildImageRecipe,
-  actor: () => process.env.USER?.trim() || "local-operator",
-  writeOutput: (text) => process.stdout.write(text),
-};
-
-export async function imageCommand(
-  args: string[],
-  overrides: Partial<ImageCommandDependencies> = {},
-): Promise<number> {
-  const dependencies = { ...productionImageDependencies, ...overrides };
-  if (!args[0] || helpRequested(args) || args[0] === "help") {
-    dependencies.writeOutput(IMAGE_HELP);
-    return 0;
-  }
-  const paths = dependencies.resolvePaths(),
-    config = await dependencies.loadConfig(paths),
-    actor = dependencies.actor();
-  if (args[0] === "edit") {
-    const result = await dependencies.edit(paths, actor);
-    dependencies.writeOutput(
-      result.prior === result.landed
-        ? "Image Dockerfile unchanged.\n"
-        : `Updated image Dockerfile to ${result.landed}.\n`,
-    );
-    return 0;
-  }
-  if (args[0] === "rebuild") {
-    const result = await dependencies.rebuild(paths, config, actor);
-    dependencies.writeOutput(
-      `Built Pi ${result.piVersion} from recipe ${result.recipeCommit}: ${result.image}\n`,
-    );
-    return 0;
-  }
-  throw new IntegralError(`unknown image command: ${args[0]}`);
-}
-
 async function configCommand(args: string[]): Promise<number> {
   const command = args[0];
   if (!command || helpRequested(args) || command === "help") {
@@ -527,6 +365,8 @@ async function connectionCommand(args: string[]): Promise<number> {
             resourceId,
             lifecycleRevision,
             availabilityReason,
+            restorationPossible,
+            path,
           }) => ({
             name,
             kind,
@@ -538,7 +378,9 @@ async function connectionCommand(args: string[]): Promise<number> {
                   resourceId,
                   lifecycleRevision,
                   mount,
+                  path,
                   availabilityReason: availabilityReason ?? null,
+                  restorationPossible,
                 }
               : {}),
           }),
@@ -547,7 +389,7 @@ async function connectionCommand(args: string[]): Promise<number> {
     else
       for (const row of rows)
         process.stdout.write(
-          `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${row.mount ? `\t${row.mount}` : ""}\n`,
+          `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${row.mount ? `\t${row.availabilityReason ?? "-"}\trestorable=${row.restorationPossible ? "yes" : "no"}\t${row.mount}` : ""}\n`,
         );
     return 0;
   }
@@ -1107,298 +949,6 @@ async function serverCommand(args: string[]): Promise<number> {
     return 0;
   }
   throw new IntegralError(`unknown server command: ${command}`);
-}
-
-interface QueueItem {
-  id: string;
-  text: string;
-  status: string;
-}
-
-export interface QueueDependencies {
-  resolvePaths(): IntegralPaths;
-  componentEndpoint: typeof componentEndpoint;
-  verifiedFetch: typeof verifiedFetch;
-  fetch: typeof globalThis.fetch;
-  writeOutput(text: string): void;
-}
-
-const productionQueueDependencies: QueueDependencies = {
-  resolvePaths,
-  componentEndpoint,
-  verifiedFetch,
-  fetch: globalThis.fetch,
-  writeOutput: (text) => process.stdout.write(text),
-};
-
-export async function queueCommand(
-  args: string[],
-  overrides: Partial<QueueDependencies> = {},
-): Promise<number> {
-  const dependencies = { ...productionQueueDependencies, ...overrides };
-  if (!args[0] || helpRequested(args) || args[0] === "help") {
-    dependencies.writeOutput(QUEUE_HELP);
-    return 0;
-  }
-  const paths = dependencies.resolvePaths();
-  let endpoint: string;
-  try {
-    endpoint = await dependencies.componentEndpoint(paths, "coordinator");
-    await dependencies.verifiedFetch(paths, "coordinator", "/integral/health");
-  } catch {
-    throw new IntegralError(
-      "coordinator is not reachable; start it with integral server start",
-    );
-  }
-  const command = args[0];
-  if (command === "ls") {
-    const snapshot = (await fetchJson(
-      new URL("/integral/snapshot", endpoint),
-      dependencies.fetch,
-    )) as { queue: QueueItem[] };
-    if (has(args, "--json"))
-      dependencies.writeOutput(`${JSON.stringify(snapshot.queue, null, 2)}\n`);
-    else
-      for (const item of snapshot.queue)
-        dependencies.writeOutput(`${item.status}\t${item.id}\t${item.text}\n`);
-    return 0;
-  }
-  if (command === "edit") {
-    const id = args[1],
-      text = args.slice(2).join(" ").trim();
-    if (!id || !text)
-      throw new IntegralError("usage: integral queue edit <id> <text>");
-    await requestOk(
-      new URL(`/integral/queue/${id}`, endpoint),
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text }),
-      },
-      dependencies.fetch,
-    );
-    dependencies.writeOutput(`Edited ${id}.\n`);
-    return 0;
-  }
-  if (command === "delete") {
-    const id = args[1];
-    if (!id) throw new IntegralError("usage: integral queue delete <id>");
-    await requestOk(
-      new URL(`/integral/queue/${id}`, endpoint),
-      { method: "DELETE" },
-      dependencies.fetch,
-    );
-    dependencies.writeOutput(`Deleted ${id}.\n`);
-    return 0;
-  }
-  throw new IntegralError(`unknown queue command: ${command}`);
-}
-
-export interface ScheduleDependencies {
-  resolvePaths(): IntegralPaths;
-  componentEndpoint: typeof componentEndpoint;
-  verifiedFetch: typeof verifiedFetch;
-  fetch: typeof globalThis.fetch;
-  writeOutput(text: string): void;
-}
-
-const productionScheduleDependencies: ScheduleDependencies = {
-  resolvePaths,
-  componentEndpoint,
-  verifiedFetch,
-  fetch: globalThis.fetch,
-  writeOutput: (text) => process.stdout.write(text),
-};
-
-export async function scheduleCommand(
-  args: string[],
-  overrides: Partial<ScheduleDependencies> = {},
-): Promise<number> {
-  const dependencies = { ...productionScheduleDependencies, ...overrides };
-  if (!args[0] || helpRequested(args) || args[0] === "help") {
-    dependencies.writeOutput(SCHEDULE_HELP);
-    return 0;
-  }
-  const paths = dependencies.resolvePaths(),
-    scheduler = await dependencies.componentEndpoint(paths, "scheduler");
-  await dependencies
-    .verifiedFetch(paths, "scheduler", "/integral/health")
-    .catch(() => {
-      throw new IntegralError(
-        "scheduler is not reachable; start it with integral server start",
-      );
-    });
-  const command = args[0],
-    jsonOutput = has(args, "--json");
-  if (command === "ls") {
-    const value = await fetchJson(
-      new URL("/integral/schedules", scheduler),
-      dependencies.fetch,
-    );
-    renderScheduleValue(value, jsonOutput, dependencies.writeOutput);
-    return 0;
-  }
-  if (command === "show" || command === "history") {
-    const id = args[1];
-    if (!id)
-      throw new IntegralError(`usage: integral schedule ${command} <id>`);
-    const suffix = command === "history" ? "/history" : "",
-      value = await fetchJson(
-        new URL(
-          `/integral/schedules/${encodeURIComponent(id)}${suffix}`,
-          scheduler,
-        ),
-        dependencies.fetch,
-      );
-    renderScheduleValue(value, jsonOutput, dependencies.writeOutput);
-    return 0;
-  }
-  if (command === "runs") {
-    const url = new URL("/integral/occurrences", scheduler),
-      scheduleId = args[1];
-    if (scheduleId && !scheduleId.startsWith("--"))
-      url.searchParams.set("scheduleId", scheduleId);
-    const value = await fetchJson(url, dependencies.fetch);
-    renderScheduleValue(value, jsonOutput, dependencies.writeOutput);
-    return 0;
-  }
-  if (command === "cancel") {
-    const executionId = args[1];
-    if (!executionId)
-      throw new IntegralError("usage: integral schedule cancel <execution-id>");
-    const coordinator = await dependencies.componentEndpoint(
-        paths,
-        "coordinator",
-      ),
-      value = await requestJson(
-        new URL(
-          `/integral/tasks/${encodeURIComponent(executionId)}/cancel`,
-          coordinator,
-        ),
-        { method: "POST", body: "{}" },
-        dependencies.fetch,
-      );
-    renderScheduleValue(value, jsonOutput, dependencies.writeOutput);
-    return 0;
-  }
-  const actor = "operator";
-  if (command === "create") {
-    const prompt = flag(args, "--prompt");
-    if (!prompt)
-      throw new IntegralError("schedule create requires --prompt <text>");
-    const coordinator = await dependencies.componentEndpoint(
-        paths,
-        "coordinator",
-      ),
-      snapshot = (await fetchJson(
-        new URL("/integral/snapshot", coordinator),
-        dependencies.fetch,
-      )) as { modelSelection?: ModelSelection | null };
-    if (!snapshot.modelSelection)
-      throw new IntegralError("select a model before creating a schedule");
-    const value = await requestJson(
-      new URL("/integral/schedules", scheduler),
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          actor,
-          prompt,
-          trigger: scheduleTriggerFromFlags(args),
-          profile: snapshot.modelSelection,
-        }),
-      },
-      dependencies.fetch,
-    );
-    renderScheduleValue(value, jsonOutput, dependencies.writeOutput);
-    return 0;
-  }
-  if (["update", "enable", "disable", "delete", "restore"].includes(command)) {
-    const id = args[1],
-      revision = Number(flag(args, "--revision"));
-    if (!id || !Number.isInteger(revision) || revision < 1)
-      throw new IntegralError(
-        `integral schedule ${command} requires <id> --revision <n>`,
-      );
-    let path = `/integral/schedules/${encodeURIComponent(id)}`,
-      method = "POST";
-    const body: Record<string, unknown> = { actor, expectedRevision: revision };
-    if (command === "update") {
-      method = "PATCH";
-      const prompt = flag(args, "--prompt");
-      if (prompt) body.prompt = prompt;
-      if (flag(args, "--at") || flag(args, "--cron"))
-        body.trigger = scheduleTriggerFromFlags(args);
-    } else if (command === "delete") method = "DELETE";
-    else {
-      path += `/${command}`;
-      if (command === "restore") {
-        const commit = args[2];
-        if (!commit)
-          throw new IntegralError(
-            "usage: integral schedule restore <id> <commit> --revision <n>",
-          );
-        body.commit = commit;
-      }
-    }
-    const value = await requestJson(
-      new URL(path, scheduler),
-      {
-        method,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      },
-      dependencies.fetch,
-    );
-    renderScheduleValue(value, jsonOutput, dependencies.writeOutput);
-    return 0;
-  }
-  throw new IntegralError(`unknown schedule command: ${command}`);
-}
-
-function scheduleTriggerFromFlags(args: string[]): Record<string, string> {
-  const runAt = flag(args, "--at"),
-    cron = flag(args, "--cron"),
-    timezone = flag(args, "--timezone");
-  if (runAt && !cron && !timezone) return { type: "once", runAt };
-  if (!runAt && cron && timezone) return { type: "recurring", cron, timezone };
-  throw new IntegralError(
-    "provide either --at <instant> or both --cron <expression> and --timezone <zone>",
-  );
-}
-
-function renderScheduleValue(
-  value: unknown,
-  jsonOutput: boolean,
-  write: (text: string) => void,
-): void {
-  if (jsonOutput) {
-    write(`${JSON.stringify(value, null, 2)}\n`);
-    return;
-  }
-  const rows = Array.isArray(value) ? value : [value];
-  for (const row of rows) {
-    if (!row || typeof row !== "object") {
-      write(`${String(row)}\n`);
-      continue;
-    }
-    const item = row as Record<string, unknown>;
-    write(
-      [
-        item.state ??
-          (item.deleted
-            ? "deleted"
-            : item.enabled === false
-              ? "disabled"
-              : "enabled"),
-        item.id ?? item.scheduleId ?? item.executionId ?? item.commit,
-        item.revision ?? item.scheduledFor ?? item.operation ?? "",
-        item.prompt ?? item.error ?? "",
-      ]
-        .filter((part) => part !== undefined && part !== "")
-        .join("\t") + "\n",
-    );
-  }
 }
 
 export interface TalkTerminal {
@@ -2116,45 +1666,4 @@ function humanMessage(text: string, colors: boolean): string {
   return colors
     ? `${humanLabel(true)}${text} ${TALK_STYLE_RESET}\n`
     : `${humanLabel(false)}${text}\n`;
-}
-async function fetchJson(
-  url: URL,
-  fetcher: typeof globalThis.fetch = globalThis.fetch,
-  init?: RequestInit,
-): Promise<unknown> {
-  const response = await fetcher(url, init);
-  if (!response.ok)
-    throw new IntegralError(
-      ((await response.json()) as { error?: string }).error ??
-        `request failed: ${response.status}`,
-    );
-  return response.json();
-}
-async function requestOk(
-  url: URL,
-  init: RequestInit,
-  fetcher: typeof globalThis.fetch = globalThis.fetch,
-): Promise<void> {
-  const response = await fetcher(url, init);
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as {
-      error?: string;
-    };
-    throw new IntegralError(body.error ?? `request failed: ${response.status}`);
-  }
-}
-async function requestJson(
-  url: URL,
-  init: RequestInit,
-  fetcher: typeof globalThis.fetch = globalThis.fetch,
-): Promise<unknown> {
-  const response = await fetcher(url, init),
-    body = (await response.json().catch(() => ({}))) as unknown;
-  if (!response.ok)
-    throw new IntegralError(
-      body && typeof body === "object" && "error" in body
-        ? String(body.error)
-        : `request failed: ${response.status}`,
-    );
-  return body;
 }

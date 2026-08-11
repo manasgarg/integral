@@ -671,6 +671,47 @@ export class RemoteMcpClient {
   }
 }
 
+interface CachedMcpCatalog {
+  catalog: McpCatalog;
+  expiresAt: number;
+}
+
+export class McpCatalogRegistry {
+  private readonly catalogs = new Map<string, CachedMcpCatalog>();
+
+  constructor(
+    private readonly discover: typeof discoverRemoteMcp,
+    private readonly now: () => number = Date.now,
+    private readonly lifetimeMs = 60_000,
+  ) {}
+
+  announceToolListChange(connection: string): void {
+    const current = this.catalogs.get(connection);
+    if (current) current.expiresAt = 0;
+  }
+
+  current(connection: string): McpCatalog | undefined {
+    return this.catalogs.get(connection)?.catalog;
+  }
+
+  async refresh(
+    connection: Connection,
+    credential: string | undefined,
+    request: typeof fetch = fetch,
+    reconnect = false,
+  ): Promise<McpCatalog> {
+    const cached = this.catalogs.get(connection.name);
+    if (!reconnect && cached && cached.expiresAt > this.now())
+      return cached.catalog;
+    const replacement = await this.discover(connection, credential, request);
+    this.catalogs.set(connection.name, {
+      catalog: replacement,
+      expiresAt: this.now() + this.lifetimeMs,
+    });
+    return replacement;
+  }
+}
+
 export async function discoverRemoteMcp(
   connection: Connection,
   credential: string | undefined,

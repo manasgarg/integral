@@ -10,6 +10,14 @@ import {
 } from "../src/queue.ts";
 import { fixture } from "./helpers.ts";
 
+/* @covers QUEUE-6A1B4E82
+Given two or more terminals are attached to the same conversation
+	When they submit messages concurrently
+		Then the coordinator serializes durable queue mutations through one commit chain
+			And commits one total order for those messages
+			And every attached terminal observes that same order
+			And Pi receives each message once in that order
+*/
 test("[QUEUE-5B7C2E91] [QUEUE-6A1B4E82] concurrent submissions commit one durable opaque-ID order", async (t) => {
   const paths = await fixture(t),
     events: unknown[] = [],
@@ -126,6 +134,13 @@ test("[QUEUE-2F6B9D04] deletion persists and deleted messages are never claimabl
   );
 });
 
+/* @covers QUEUE-D31A7C68
+Given a message is in flight with Pi
+	When an attached user tries to edit or delete that message ID
+		Then integral rejects the operation
+			And identifies the message as in flight
+			And leaves the message and turn unchanged
+*/
 test("[QUEUE-D31A7C68] claimed messages reject edits and deletion without changing the turn", async (t) => {
   const paths = await fixture(t),
     queue = new DurableQueue(paths.queue);
@@ -143,6 +158,17 @@ test("[QUEUE-8E42F5B1] queue ownership is independent of terminal attachment", a
   assert.equal(queue.snapshot().length, 1);
 });
 
+/* @covers QUEUE-F0C937AD
+Given queued messages were acknowledged before the coordinator stopped or crashed
+	When the coordinator starts again with the same `$INTEGRAL_HOME`
+		Then every acknowledged queued message is present in its prior order
+			And preserves its stable message ID regardless of the ID format used when it was created
+			And deleted messages remain deleted
+			And edits retain their latest acknowledged text
+			And a message recorded as in flight is returned to queued state
+			And its delivery-attempt count is preserved
+			And queue processing resumes without requiring a terminal
+*/
 test("[QUEUE-F0C937AD] restart recovery retains acknowledged edits, deletions, and order and requeues in-flight work", async (t) => {
   const paths = await fixture(t),
     before = new DurableQueue(paths.queue);
@@ -213,6 +239,13 @@ test("[QUEUE-947D3AC0] unknown and deleted IDs are refused without changing stat
   assert.deepEqual(queue.snapshot(), []);
 });
 
+/* @covers QUEUE-3C8E71B4
+Given the durable queue storage cannot commit a submission, edit, or deletion
+	When the user requests that queue mutation
+		Then integral reports that the operation failed
+			And does not acknowledge or broadcast the requested state
+			And keeps the last committed queue state visible to every terminal
+*/
 test("[QUEUE-3C8E71B4] mutations are not acknowledged or broadcast when persistence fails", async (t) => {
   const paths = await fixture(t),
     events: unknown[] = [],
@@ -226,6 +259,14 @@ test("[QUEUE-3C8E71B4] mutations are not acknowledged or broadcast when persiste
   assert.deepEqual(events, []);
 });
 
+/* @covers CHAT-B46C81F5
+Given the logical conversation has persisted completed turns
+	And no Pi container is active
+	When the runner starts a replacement Pi session for a queued message
+		Then integral supplies the persisted conversation context to Pi
+			And the replacement session can continue the same conversation
+			And temporary files from the previous container remain unavailable
+*/
 test("[CHAT-B46C81F5] [CONFIG-F2C84D16] restored context selects newest persisted messages within both configured limits", async (t) => {
   const paths = await fixture(t),
     conversation = new ConversationStore(paths.conversation);

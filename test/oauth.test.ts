@@ -113,6 +113,18 @@ test("[CONNECTION-0FB2F92A] OAuth credential serialization yields only the curre
   assert.equal(oauthAccess("not-json"), undefined);
 });
 
+/* @covers CONNECTION-6D2A9F84
+Given the selected connection uses OAuth
+	And a browser cannot be opened locally
+	When the user runs `integral connection add`
+		Then integral prints the authorization URL in the terminal
+			And accepts a matching loopback callback when one is available
+			And accepts a pasted authorization code or full redirect URL
+			And validates the redirect state when one is present
+			And uses PKCE for generic authorization-code exchange
+			And times out generic authorization after ten minutes
+			And completes the same credential storage as a local callback
+*/
 test("[CONNECTION-6D2A9F84] generic OAuth prints its URL and completes from a pasted redirect without a browser", async () => {
   const connection = validateConnection({
     name: "headless",

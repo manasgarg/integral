@@ -5,19 +5,6 @@ mount in its filesystem, edit through per-run checkouts, land through a
 validated host boundary, and soft-delete without destroying history. Existing
 bare repositories may enter the same lifecycle through a host connection.
 
-<!-- Automation note (REPO-403F597E): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-515BAAB9): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-A690931F): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-CDA4609A): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-37441347): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-BB20CA23): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-95B5606D): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-F96C6AE6): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-4EB2390E): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-CEE2CA38): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-D987932B): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-D1865075): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
-<!-- Automation note (REPO-1C3B9872): This behavior defines planned governed-repository availability functionality; executable coverage will land with implementation. -->
 <!-- Automation note (REPO-7B0E2F4A): Selective approval-gated repository landing, exact proposal review, stale-ref refusal, denied writes, and direct local image editing are automated. -->
 
 ## REPO-D1865075 — Give Pi authenticated repository lifecycle tools

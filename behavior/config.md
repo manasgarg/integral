@@ -305,7 +305,6 @@ Given an `mcp` connection file may define `transport`
 			And integral registers each discovered tool with a deterministic connection namespace
 			And the gateway applies the connection's remote HTTP boundary and authentication when applicable
 
-<!-- Automation note (CONFIG-02905B6E): This behavior defines planned stdio MCP declaration validation; executable coverage will land with implementation. -->
 
 ## CONFIG-02905B6E — Configure a stdio MCP process
 
@@ -324,7 +323,6 @@ Given an `mcp` connection uses `transport = "stdio"`
 		Then integral preserves them as literal process arguments or names
 			And never evaluates them through a shell
 
-<!-- Automation note (CONFIG-BAD88353): This behavior defines planned governed-repository functionality; executable coverage will land with implementation. -->
 
 ## CONFIG-BAD88353 — Configure governed repository limits
 
@@ -339,7 +337,6 @@ Given `[repositories]` may define `max_file_bytes`, `max_repo_bytes`, and `recov
 	When an existing host repository already exceeds a configured limit
 		Then `connection add host-repo` refuses it without modifying the repository
 
-<!-- Automation note (CONFIG-9E97B8A3): This behavior defines planned durable-store functionality; executable coverage will land with implementation. -->
 
 ## CONFIG-9E97B8A3 — Configure governed store snapshots
 

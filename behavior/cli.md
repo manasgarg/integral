@@ -2,7 +2,6 @@
 
 These behaviors cover command discovery and implementation information.
 
-<!-- Automation note (CLI-5D8A1C72): Trusted local image-recipe editing and direct rebuild commands are specified for the image-recipe implementation increment. -->
 
 ## CLI-6001FE46 — Show top-level help
 

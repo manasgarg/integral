@@ -4,6 +4,7 @@ import type { ModelSelection } from "./model-selection.ts";
 import type { IntegralPaths } from "./paths.ts";
 import type { ScheduleDefinition } from "./schedule-types.ts";
 import { IntegralError } from "./errors.ts";
+import { SerialExecutor } from "./persistence/serial-executor.ts";
 
 export type OccurrenceState =
   "pending" | "accepted" | "succeeded" | "failed" | "cancelled" | "coalesced";
@@ -42,7 +43,7 @@ export function executionId(
 
 export class OccurrenceStore {
   private data: OccurrenceFile = { occurrences: [] };
-  private chain: Promise<unknown> = Promise.resolve();
+  private readonly operations = new SerialExecutor();
 
   constructor(
     private readonly paths: IntegralPaths,
@@ -56,12 +57,6 @@ export class OccurrenceStore {
     if (!Array.isArray(parsed.occurrences))
       throw new Error("invalid occurrence file");
     this.data = parsed;
-  }
-
-  private exclusive<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.chain.then(work, work);
-    this.chain = result.catch(() => undefined);
-    return result;
   }
 
   private async persist(): Promise<void> {
@@ -91,7 +86,7 @@ export class OccurrenceStore {
     scheduledFor: string,
     state: "pending" | "coalesced" = "pending",
   ): Promise<ScheduledOccurrence> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const id = executionId(schedule.id, schedule.revision, scheduledFor),
         existing = this.data.occurrences.find(
           (item) => item.executionId === id,
@@ -157,7 +152,7 @@ export class OccurrenceStore {
     execution: string,
     update: (item: ScheduledOccurrence) => void,
   ): Promise<ScheduledOccurrence> {
-    return this.exclusive(async () => {
+    return this.operations.run(async () => {
       const item = this.data.occurrences.find(
         (candidate) => candidate.executionId === execution,
       );

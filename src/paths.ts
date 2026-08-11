@@ -36,6 +36,7 @@ export interface IntegralPaths {
   repositories: string;
   stores: string;
   recovery: string;
+  repositoryRecoveryAudit: string;
   storeSnapshots: string;
   storeLocks: string;
   resourceSessions: string;
@@ -114,6 +115,7 @@ export function pathsFor(root: string): IntegralPaths {
     repositories: join(data, "repositories"),
     stores: join(data, "stores"),
     recovery: join(data, "repository-recovery"),
+    repositoryRecoveryAudit: join(data, "repository-recovery-audit.jsonl"),
     storeSnapshots: join(data, "store-snapshots"),
     storeLocks: join(state, "store-locks"),
     resourceSessions: join(state, "resource-sessions"),
