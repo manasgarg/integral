@@ -45,6 +45,11 @@ Given the integral coordinator is healthy
 		Then integral reports the same conversation and component status from either surface
 	When the user invokes `integral model [<pattern>...]` or enters `/model [<pattern>...]` in `integral talk`
 		Then integral uses the same model chooser and changes the same durable conversation selection from either surface
+	When the user invokes `integral connection catalog` or enters `/connection catalog` in `integral talk`
+		Then integral shows the same public connection types and authentication methods from either surface
+	When the user invokes `integral connection ls` or enters `/connection ls` in `integral talk`
+		Then integral shows the same connection names, types, authentication methods, and states from either surface
+			And neither surface prints secret values
 	When the user invokes `integral queue ls`, `integral queue edit <id> <text>`, or `integral queue delete <id>`
 		And the user could instead enter the corresponding `/queue` command in `integral talk`
 		Then integral reads or changes the same durable queue from either surface
@@ -65,7 +70,8 @@ Given the integral coordinator is healthy
 		Then it identifies the equivalent spelling for every shared operation on the other surface
 Given an operation is specific to host administration, scripting, or an attached terminal
 	When integral shows top-level CLI help or local talk help
-		Then `server`, `talk`, `schedule`, `connection`, `image`, `config`, and `version` remain CLI-only
+		Then `server`, `talk`, `schedule`, `image`, `config`, and `version` remain CLI-only
+			And connection setup, credential rotation, and removal remain CLI-only
 			And structured-output flags remain CLI-only
 			And `/exit` remains talk-only
 			And integral does not treat an arbitrary top-level CLI command as a local talk command
