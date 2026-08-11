@@ -1,8 +1,9 @@
 # CLI behaviors
 
-These behaviors cover command discovery and implementation information.
+These behaviors cover command discovery, implementation information, and the
+deliberate overlap between shell commands and local commands in `integral talk`.
 
-
+<!-- Automation note (CLI-D1B5816E): This branch defines the cross-surface contract before executable parity coverage is added. -->
 ## CLI-6001FE46 — Show top-level help
 
 Given integral is installed
@@ -35,6 +36,39 @@ Given integral is installed
 		Then integral prints the applicable help
 			And exits successfully
 			And does not perform the command operation
+
+## CLI-D1B5816E — Keep conversation operations available in the CLI and talk
+
+Given the integral coordinator is healthy
+	And an operation concerns the shared conversation rather than host administration or terminal lifecycle
+	When the user invokes `integral status` or enters `/status` in `integral talk`
+		Then integral reports the same conversation and component status from either surface
+	When the user invokes `integral model [<pattern>...]` or enters `/model [<pattern>...]` in `integral talk`
+		Then integral uses the same model chooser and changes the same durable conversation selection from either surface
+	When the user invokes `integral queue ls`, `integral queue edit <id> <text>`, or `integral queue delete <id>`
+		And the user could instead enter the corresponding `/queue` command in `integral talk`
+		Then integral reads or changes the same durable queue from either surface
+	When the user invokes `integral approval ls` or enters `/approvals` in `integral talk`
+		Then integral lists the same durable approval requests from either surface
+	When the user invokes `integral approval approve <id>` or `integral approval deny <id>`
+		And the user could instead enter the corresponding `/approve <id>` or `/deny <id>` command in `integral talk`
+		Then integral decides the same durable approval request from either surface
+			And applies the same validation, revalidation, authorization, persistence, and redaction rules
+			And attributes the shell form to the trusted local operator
+			And attributes the slash form to the attached human terminal
+	When a shared operation succeeds or fails
+		Then both surfaces report the same essential result or actionable error
+			And the shell form exits without attaching a talk session
+			And the slash form keeps the current talk session attached
+			And the slash form handles the operation on the host without sending it to Pi
+	When integral shows top-level CLI help or local talk help
+		Then it identifies the equivalent spelling for every shared operation on the other surface
+Given an operation is specific to host administration, scripting, or an attached terminal
+	When integral shows top-level CLI help or local talk help
+		Then `server`, `talk`, `schedule`, `connection`, `image`, `config`, and `version` remain CLI-only
+			And structured-output flags remain CLI-only
+			And `/exit` remains talk-only
+			And integral does not treat an arbitrary top-level CLI command as a local talk command
 
 ## CLI-5D8A1C72 — Let a trusted host operator edit and rebuild the Pi image
 
