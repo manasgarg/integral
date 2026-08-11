@@ -5,6 +5,7 @@ These behaviors cover failures spanning more than one product area.
 <!-- Automation note (FAILURE-071CB99A): Interruption, durable release, and cleanup paths are automated at the runner/coordinator boundary; killing a real Pi container requires Docker. -->
 <!-- Automation note (FAILURE-3780301D): Fail-closed gateway-loss handling is automated at component boundaries; a live mid-request gateway kill requires Docker and process-control acceptance infrastructure. -->
 <!-- Automation note (FAILURE-A4C19E72): Immediate RPC rejection is automated at the Pi protocol boundary without a live provider call. -->
+<!-- Automation note (FAILURE-BE6D295B): Automatic retry lifecycle handling is automated at the Pi protocol boundary without a live provider call. -->
 
 ## FAILURE-071CB99A — Report an unexpected Pi exit
 
@@ -37,6 +38,16 @@ Given the runner has sent a claimed message to Pi
 		Then integral reports the rejection without waiting for the turn timeout
 			And durably returns the interrupted message to the queue
 			And removes the failed Pi container and temporary session material
+
+## FAILURE-BE6D295B — Wait for Pi's automatic retry
+
+Given Pi is processing a chat turn
+	When Pi ends an unsuccessful attempt and reports that it will retry
+		Then integral keeps the turn in progress
+			And does not publish the unsuccessful attempt as the assistant response
+	When Pi ends the final attempt
+		Then integral completes the turn with the accumulated final-attempt text
+			And publishes that text as the assistant response
 
 ## FAILURE-282E3B57 — Redact known secrets from component diagnostics
 
