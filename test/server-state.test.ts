@@ -248,6 +248,9 @@ test("[SERVER-F886D80C] [SERVER-0D7E29B5] combined orchestration starts every co
     events: string[] = [];
   let observedReady = false;
   const dependencies: StartComponentsDependencies = {
+    async ensurePiProfileRepository() {
+      events.push("profile:ensure");
+    },
     async validateRunnerHost() {
       events.push("preflight:runner");
     },
@@ -279,6 +282,7 @@ test("[SERVER-F886D80C] [SERVER-0D7E29B5] combined orchestration starts every co
 
   assert.equal(observedReady, true);
   assert.deepEqual(events, [
+    "profile:ensure",
     "preflight:runner",
     "create:coordinator",
     "start:coordinator",

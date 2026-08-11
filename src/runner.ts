@@ -27,6 +27,7 @@ import {
 } from "./container.ts";
 import {
   cleanupResourceProjection,
+  ensurePiProfileRepository,
   prepareResourceProjection,
   type ResourceProjection,
 } from "./resources.ts";
@@ -86,6 +87,7 @@ export interface RunnerDependencies {
   writeEmailExtension: typeof writeEmailExtension;
   writeTaskExtension: typeof writeTaskExtension;
   writeResourceExtension: typeof writeResourceExtension;
+  ensurePiProfileRepository: typeof ensurePiProfileRepository;
   prepareResourceProjection: typeof prepareResourceProjection;
   cleanupResourceProjection: typeof cleanupResourceProjection;
   writePiCredential: typeof writePiCredential;
@@ -113,6 +115,7 @@ const productionDependencies: RunnerDependencies = {
   writeEmailExtension,
   writeTaskExtension,
   writeResourceExtension,
+  ensurePiProfileRepository,
   prepareResourceProjection,
   cleanupResourceProjection,
   writePiCredential,
@@ -129,6 +132,19 @@ const productionDependencies: RunnerDependencies = {
     );
   },
 };
+
+async function recordResourceProjection(
+  recorder: RunRecorder,
+  projection: ResourceProjection,
+): Promise<void> {
+  await recorder.event("host", "resource-projection", {
+    repositories: projection.repositories.map(({ resource, initialHead }) => ({
+      name: resource.connection,
+      mount: resource.mount,
+      commit: initialHead,
+    })),
+  });
+}
 
 export class Runner {
   private server: http.Server | undefined;
@@ -184,6 +200,7 @@ export class Runner {
     );
   }
   async start(): Promise<http.Server> {
+    await this.dependencies.ensurePiProfileRepository(this.paths, this.config);
     await this.runs.initialize();
     this.token = await componentIdentity(this.paths);
     const network = `integral-${deploymentId(this.paths)}`;
@@ -516,6 +533,10 @@ export class Runner {
       await this.preparePiEnvironment(task.profile, task.profile.piImage);
     this.taskResources = resources;
     await this.dependencies.writeTaskExtension(spec.home);
+    spec.args.push(
+      "--extension",
+      "/home/pi/.integral/extensions/integral-task.ts",
+    );
     spec.args.push("--append-system-prompt", renderTaskContext(task));
     const previous = await this.runs.finalizedForExecution(task.executionId),
       recorder = await this.runs.begin({
@@ -532,6 +553,7 @@ export class Runner {
           : {}),
         sensitiveValues: [identity.sessionToken],
       });
+    await recordResourceProjection(recorder, resources);
     await recorder.event("host", "runtime-context", {
       text: renderTaskContext(task),
     });
@@ -826,6 +848,7 @@ export class Runner {
           : {}),
         sensitiveValues: [identity.sessionToken],
       });
+    await recordResourceProjection(recorder, resources);
     if (context.length)
       await recorder.event("host", "runtime-context", {
         text: renderContext(context),
@@ -1037,6 +1060,15 @@ export class Runner {
       mcp,
       connections: active,
     });
+    for (const extension of [
+      "integral-mcp.ts",
+      "integral-resources.ts",
+      ...(email.length ? ["integral-email.ts"] : []),
+    ])
+      spec.args.push(
+        "--extension",
+        `/home/pi/.integral/extensions/${extension}`,
+      );
     spec.args.push(
       "--append-system-prompt",
       "You run in an ephemeral Integral-managed container. The active image Dockerfile is in /home/pi/image. You may edit and commit it, then call repo_push for image-recipe; that proposal requires human approval and affects a replacement container, not this running filesystem. Use container_image_rebuild to request an approval-gated fresh rebuild of the unchanged recipe.",

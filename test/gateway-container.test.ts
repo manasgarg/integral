@@ -1477,7 +1477,7 @@ test("[BOX-AB639757] [BOX-B45DEA9B] one RPC container specification carries the 
     "--mode",
     "rpc",
     "--no-session",
-    "--no-approve",
+    "--approve",
     "--offline",
   ]);
   assert.deepEqual(spec.args.slice(5, 9), [
@@ -1537,7 +1537,7 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi exte
     },
   ]);
   const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile(`${paths.root}/.pi/agent/extensions/integral-mcp.ts`, "utf8"),
+    fs.readFile(`${paths.root}/.integral/extensions/integral-mcp.ts`, "utf8"),
   );
   assert.match(source, /"connection":"work-docs"/);
   assert.match(source, /"remoteName":"search-docs"/);
@@ -1589,7 +1589,7 @@ test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticat
     unavailable: [],
   });
   const source = await readFile(
-    join(paths.root, ".pi/agent/extensions/integral-resources.ts"),
+    join(paths.root, ".integral/extensions/integral-resources.ts"),
     "utf8",
   );
   const typebox = join(paths.root, "node_modules/typebox");
@@ -1604,7 +1604,7 @@ test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticat
   );
   const modulePath = join(
     paths.root,
-    ".pi/agent/extensions/integral-resources.mjs",
+    ".integral/extensions/integral-resources.mjs",
   );
   await writeFile(modulePath, source);
   const tools: string[] = [],
@@ -1806,7 +1806,7 @@ test("[STORE-6148863C] [STORE-77471EF0] [STORE-C38A633E] [STORE-83D2CD52] authen
 test("[SCHEDULE-930581F7] task extension steers a tool-free final turn until Pi declares an outcome", async (t) => {
   const paths = await fixture(t);
   await writeTaskExtension(paths.root);
-  const extensionDirectory = join(paths.root, ".pi", "agent", "extensions"),
+  const extensionDirectory = join(paths.root, ".integral", "extensions"),
     typeboxDirectory = join(paths.root, "node_modules", "typebox");
   await mkdir(typeboxDirectory, { recursive: true });
   await writeFile(
@@ -1893,7 +1893,7 @@ test("[BOX-AB639757] OAuth model connections receive only a temporary sentinel O
     });
   await writePiCredential(paths.root, model);
   const credential = await import("node:fs/promises").then((fs) =>
-    fs.readFile(`${paths.root}/.pi/agent/auth.json`, "utf8"),
+    fs.readFile(`${paths.root}/.integral/auth.json`, "utf8"),
   );
   assert.deepEqual(JSON.parse(credential), {
     "openai-codex": {
@@ -1904,8 +1904,26 @@ test("[BOX-AB639757] OAuth model connections receive only a temporary sentinel O
     },
   });
   assert.doesNotMatch(credential, /actual-secret/);
+  assert.equal(
+    await import("node:fs/promises").then((fs) =>
+      fs
+        .stat(join(paths.root, ".pi", "agent"))
+        .then((value) => value.isDirectory()),
+    ),
+    true,
+  );
   assert.equal(spec.args.includes("--api-key"), false);
   assert.equal(spec.environment.PI_CODING_AGENT_DIR, "/home/pi/.pi/agent");
+  assert.deepEqual(
+    spec.mounts.find(
+      (mount) => mount.target === "/home/pi/.pi/agent/auth.json",
+    ),
+    {
+      source: join(paths.root, ".integral", "auth.json"),
+      target: "/home/pi/.pi/agent/auth.json",
+      readonly: true,
+    },
+  );
 });
 
 /* @covers FAILURE-A4C19E72

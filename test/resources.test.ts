@@ -23,6 +23,7 @@ import {
   addHostResource,
   cleanupResourceProjection,
   createResource,
+  ensurePiProfileRepository,
   listStoreSnapshots,
   listRepositoryRecovery,
   prepareResourceProjection,
@@ -33,6 +34,8 @@ import {
   restoreStoreSnapshot,
   sessionHasResource,
   softDeleteResource,
+  PI_PROFILE_MOUNT,
+  PI_PROFILE_NAME,
   validateMountPath,
 } from "../src/resources.ts";
 import { deploymentId } from "../src/state.ts";
@@ -45,7 +48,8 @@ Given Pi or the connection CLI creates, adds, or restores a governed repository 
 	When integral validates the requested mount path
 		Then it requires an absolute normalized path below `/home/pi`
 			And rejects `/home/pi` itself
-			And rejects `.pi`, `history`, Integral control paths, and their descendants
+			And rejects `.pi`, `history`, Integral control paths, and their descendants except the exact host-designated `pi-profile` mount at `/home/pi/.pi`
+			And rejects every other repository or store at, above, or below the reserved profile mount
 			And rejects traversal, a symlink escape, or a target outside the current session home
 			And rejects a path equal to, above, or below another governed resource mount
 			And rejects a target containing files not owned by that resource
@@ -53,6 +57,12 @@ Given Pi or the connection CLI creates, adds, or restores a governed repository 
 */
 test("[REPO-515BAAB9] governed mount paths stay below the safe Pi home namespace", () => {
   assert.equal(validateMountPath("/home/pi/work/repo"), "/home/pi/work/repo");
+  assert.equal(
+    validateMountPath(PI_PROFILE_MOUNT, PI_PROFILE_NAME),
+    PI_PROFILE_MOUNT,
+  );
+  assert.throws(() => validateMountPath(PI_PROFILE_MOUNT));
+  assert.throws(() => validateMountPath("/home/pi/profile", PI_PROFILE_NAME));
   for (const path of [
     "relative",
     "/home/pi",
@@ -122,6 +132,198 @@ test("[CONNECTION-C0978F5E] host-resource validation canonicalizes safe director
       message,
     );
   }
+});
+
+/* @covers PROFILE-6A93810F
+Given the deployment has never created a Pi profile repository
+	When `integral server start` starts a Pi-capable server
+		Or the runner first attempts to provision Pi
+		Then integral creates one ordinary governed host repository through the existing repository protocol
+			And names its connection `pi-profile`
+			And gives it the host-managed `direct` write policy
+			And records `/home/pi/.pi` as its immutable mount path
+			And initializes its canonical branch as `main` with an empty commit
+			And performs repository creation and connection registration as one serialized operation
+			And records durably that profile initialization completed
+			And does not add or interpret any profile content
+	When concurrent components attempt the first initialization
+		Then exactly one canonical repository and one initial commit are created
+			And every component observes the same durable repository identity
+Given profile initialization completed previously
+	And the `pi-profile` repository was later soft-deleted
+	When integral starts again
+		Then it does not create a replacement profile repository
+			And leaves restoration to the ordinary governed repository lifecycle
+Given an earlier development version recorded `pi-profile` at `/home/pi/.pi/agent`
+	When integral initializes the profile boundary after this behavior is installed
+		Then it migrates the existing repository metadata to `/home/pi/.pi`
+			And preserves the canonical repository, commits, lifecycle state, and write policy
+			And does not create a replacement profile repository
+*/
+test("[PROFILE-6A93810F] the host initializes the opaque Pi profile repository exactly once", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    [first, concurrent] = await Promise.all([
+      ensurePiProfileRepository(paths, config),
+      ensurePiProfileRepository(paths, config),
+    ]);
+  assert.equal(concurrent.id, first.id);
+  assert.equal(first.connection, PI_PROFILE_NAME);
+  assert.equal(first.kind, "host-repo");
+  assert.equal(first.mount, PI_PROFILE_MOUNT);
+  assert.equal(first.branch, "main");
+  assert.equal(first.writePolicy, "direct");
+  assert.equal(first.state, "active");
+  assert.equal(
+    (await run("git", ["--git-dir", first.path, "ls-tree", "main"])).stdout,
+    "",
+  );
+  const head = (
+    await run("git", ["--git-dir", first.path, "rev-parse", "main"])
+  ).stdout.trim();
+  assert.match(head, /^[0-9a-f]{40,64}$/);
+
+  await writeFile(
+    join(paths.resources, `${PI_PROFILE_NAME}.json`),
+    `${JSON.stringify({ ...first, mount: "/home/pi/.pi/agent" })}\n`,
+  );
+  const declaration = join(paths.connections, `${PI_PROFILE_NAME}.toml`);
+  await writeFile(
+    declaration,
+    (await readFile(declaration, "utf8")).replace(
+      'mount = "/home/pi/.pi"',
+      'mount = "/home/pi/.pi/agent"',
+    ),
+  );
+  const migrated = await ensurePiProfileRepository(paths, config);
+  assert.equal(migrated.id, first.id);
+  assert.equal(migrated.mount, PI_PROFILE_MOUNT);
+  assert.equal(migrated.revision, first.revision + 1);
+  assert.match(
+    await readFile(declaration, "utf8"),
+    /mount = "\/home\/pi\/\.pi"/,
+  );
+
+  const deleted = await softDeleteResource(
+    paths,
+    migrated.connection,
+    migrated.revision,
+    "pi:test",
+  );
+  const afterDeletion = await ensurePiProfileRepository(paths, config);
+  assert.equal(afterDeletion.id, first.id);
+  assert.equal(afterDeletion.state, "soft-deleted");
+  assert.equal(afterDeletion.revision, deleted.revision);
+  const laterHome = join(paths.root, "deleted-profile-home");
+  await mkdir(laterHome);
+  const later = await prepareResourceProjection(
+    paths,
+    config,
+    laterHome,
+    "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+  );
+  assert.deepEqual(later.unavailable, [
+    {
+      name: PI_PROFILE_NAME,
+      kind: "host-repo",
+      reason: "soft_deleted",
+    },
+  ]);
+});
+
+/* @covers PROFILE-3083AEEE
+Given the `pi-profile` repository is active and available
+	When integral provisions an interactive or isolated scheduled Pi session
+		Then it materializes a writable per-run checkout through the ordinary governed repository protocol
+			And places the checkout at `/home/pi/.pi` before Pi starts
+			And lets Pi discover both project resources below `/home/pi/.pi` and global resources below `/home/pi/.pi/agent`
+			And trusts project resources from this designated untrusted profile checkout inside the container
+			And records the exact profile commit with the run
+			And exposes the checkout through the ordinary governed repository tools and lifecycle
+			And does not apply profile-specific parsing, validation, building, installation, or interpretation on the host
+			And marks authentication, sessions, package materializations, and trust decisions as ignored through checkout-local exclusions
+			And loads Integral's trusted runtime extensions from outside the profile checkout
+Given the `pi-profile` repository is unavailable or soft-deleted
+	When integral provisions a Pi session
+		Then it applies the ordinary governed repository omission and availability behavior
+			And starts Pi with an empty native `.pi` directory and the runtime-only authentication overlay required by Pi
+			And reports that `pi-profile` is unavailable without exposing its host path
+Given the `pi-profile` repository was soft-deleted
+	When Pi or an operator requests its restoration
+		Then integral accepts only `/home/pi/.pi` as its restored mount path
+			And otherwise applies the ordinary governed repository restoration behavior
+*/
+test("[PROFILE-3083AEEE] each run checks out the Pi profile at its native writable path", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    profile = await ensurePiProfileRepository(paths, config),
+    home = join(paths.root, "profile-home");
+  await mkdir(home);
+  const projection = await prepareResourceProjection(
+    paths,
+    config,
+    home,
+    "abababab-abab-4bab-8bab-abababababab",
+  );
+  const mounted = projection.repositories.find(
+    ({ resource }) => resource.connection === PI_PROFILE_NAME,
+  );
+  assert.ok(mounted);
+  assert.equal(mounted.checkout, join(home, ".pi"));
+  assert.equal(
+    mounted.initialHead,
+    (
+      await run("git", ["--git-dir", profile.path, "rev-parse", "main"])
+    ).stdout.trim(),
+  );
+  await writeFile(join(mounted.checkout, "pi-owned.txt"), "opaque\n");
+  assert.equal(
+    await readFile(join(mounted.checkout, "pi-owned.txt"), "utf8"),
+    "opaque\n",
+  );
+  for (const ignored of [
+    "agent/auth.json",
+    "agent/sessions/session.jsonl",
+    "agent/npm/package/package.json",
+    "agent/git/github.com/example/repo/config",
+    "agent/trust.json",
+    "npm/package/package.json",
+    "git/github.com/example/repo/config",
+  ]) {
+    const file = join(mounted.checkout, ignored);
+    await mkdir(join(file, ".."), { recursive: true });
+    await writeFile(file, "derived\n");
+    await run("git", ["check-ignore", "--quiet", ignored], {
+      cwd: mounted.checkout,
+    });
+  }
+  assert.equal(
+    (await run("git", ["status", "--porcelain"], { cwd: mounted.checkout }))
+      .stdout,
+    "?? pi-owned.txt\n",
+  );
+
+  const deleted = await softDeleteResource(
+    paths,
+    profile.connection,
+    profile.revision,
+    "pi:test",
+  );
+  await assert.rejects(() =>
+    restoreResource(
+      paths,
+      profile.connection,
+      deleted.revision,
+      "/home/pi/profile",
+    ),
+  );
+  const restored = await restoreResource(
+    paths,
+    profile.connection,
+    deleted.revision,
+    PI_PROFILE_MOUNT,
+  );
+  assert.equal(restored.mount, PI_PROFILE_MOUNT);
 });
 
 /* @covers CONNECTION-717CAD0E

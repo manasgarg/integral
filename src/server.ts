@@ -18,6 +18,7 @@ import { Runner, validateRunnerHost } from "./runner.ts";
 import { Logger } from "./logging.ts";
 import { IntegralError } from "./errors.ts";
 import { credentialSecretValues } from "./connections.ts";
+import { ensurePiProfileRepository } from "./resources.ts";
 
 interface Started {
   component: Component;
@@ -32,6 +33,10 @@ export interface ComponentRuntime {
 }
 
 export interface StartComponentsDependencies {
+  ensurePiProfileRepository(
+    paths: IntegralPaths,
+    config: EffectiveConfig,
+  ): Promise<unknown>;
   validateRunnerHost(paths: IntegralPaths): Promise<void>;
   createRuntime(
     component: Component,
@@ -94,6 +99,7 @@ export async function waitForShutdownSignal(
 }
 
 const productionDependencies: StartComponentsDependencies = {
+  ensurePiProfileRepository,
   validateRunnerHost,
   createRuntime: createProductionRuntime,
   waitForShutdown: waitForShutdownSignal,
@@ -122,8 +128,10 @@ export async function startComponents(
     : (["coordinator", "scheduler", "gateway", "runner"] satisfies Component[]);
   const started: Started[] = [],
     secrets = await credentialSecretValues(paths);
-  if (components.includes("runner"))
+  if (components.includes("runner")) {
+    await dependencies.ensurePiProfileRepository(paths, config);
     await dependencies.validateRunnerHost(paths);
+  }
   const stopAll = async () => {
     for (const item of started.toReversed()) {
       try {

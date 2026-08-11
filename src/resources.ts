@@ -5,6 +5,7 @@ import {
   appendFile,
   cp,
   lstat,
+  mkdtemp,
   mkdir,
   readFile,
   readlink,
@@ -14,6 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   basename,
   dirname,
@@ -25,6 +27,7 @@ import {
 import { promisify } from "node:util";
 import type { EffectiveConfig } from "./config.ts";
 import {
+  migratePiProfileConnection,
   removeConnection,
   saveConnection,
   type Connection,
@@ -43,6 +46,19 @@ import {
 
 const run = promisify(execFile);
 
+export const PI_PROFILE_NAME = "pi-profile";
+export const PI_PROFILE_MOUNT = "/home/pi/.pi";
+const LEGACY_PI_PROFILE_MOUNT = "/home/pi/.pi/agent";
+const PI_PROFILE_CHECKOUT_EXCLUDES = [
+  "/agent/auth.json",
+  "/agent/sessions/",
+  "/agent/npm/",
+  "/agent/git/",
+  "/agent/trust.json",
+  "/npm/",
+  "/git/",
+];
+
 export type ResourceKind = "host-repo" | "host-store";
 export type ResourceState = "active" | "unavailable" | "soft-deleted";
 export type AvailabilityReason =
@@ -51,7 +67,8 @@ export type AvailabilityReason =
   | "permission_denied"
   | "identity_changed"
   | "invalid_repository"
-  | "read_only";
+  | "read_only"
+  | "soft_deleted";
 
 export interface BackingIdentity {
   device: string;
@@ -138,11 +155,18 @@ function inside(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-export function validateMountPath(mount: string): string {
+export function validateMountPath(mount: string, connection?: string): string {
   if (!isAbsolute(mount) || normalize(mount) !== mount)
     throw new IntegralError("mount must be an absolute normalized path");
   if (mount === "/home/pi" || !mount.startsWith("/home/pi/"))
     throw new IntegralError("mount must be below /home/pi");
+  if (connection === PI_PROFILE_NAME) {
+    if (mount !== PI_PROFILE_MOUNT)
+      throw new IntegralError(
+        `${PI_PROFILE_NAME} must mount at ${PI_PROFILE_MOUNT}`,
+      );
+    return mount;
+  }
   const relativeMount = mount.slice("/home/pi/".length);
   for (const reserved of [".pi", "history"]) {
     if (relativeMount === reserved || relativeMount.startsWith(`${reserved}/`))
@@ -375,7 +399,9 @@ async function addHostResourceUnlocked(
   await prepareResourceStorage(paths);
   if (await readResource(paths, connection.name))
     throw new IntegralError(`connection ${connection.name} already exists`);
-  const mount = validateMountPath(connection.mount!),
+  if (connection.name === PI_PROFILE_NAME && connection.kind !== "host-repo")
+    throw new IntegralError(`${PI_PROFILE_NAME} must be a host repository`);
+  const mount = validateMountPath(connection.mount!, connection.name),
     source = await validateSource(paths, connection, config);
   await assertNoOverlap(paths, source.path, mount);
   const leases = await sessionsUsingPath(paths, source.path);
@@ -442,6 +468,97 @@ export async function createResource(
     await rm(source, { recursive: true, force: true });
     throw error;
   }
+}
+
+/**
+ * Provision Integral's sole host-known Pi profile boundary. Everything inside
+ * the repository remains ordinary, opaque repository content owned by Pi.
+ */
+export async function ensurePiProfileRepository(
+  paths: IntegralPaths,
+  config: EffectiveConfig,
+): Promise<ResourceRecord> {
+  await prepareResourceStorage(paths);
+  return await withResourceLock(
+    paths,
+    `connection:${PI_PROFILE_NAME}`,
+    async () => {
+      let existing = await readResource(paths, PI_PROFILE_NAME);
+      if (existing) {
+        if (
+          existing.kind !== "host-repo" ||
+          (existing.mount !== PI_PROFILE_MOUNT &&
+            existing.mount !== LEGACY_PI_PROFILE_MOUNT) ||
+          existing.branch !== "main" ||
+          existing.writePolicy !== "direct" ||
+          !inside(paths.repositories, existing.path)
+        )
+          throw new IntegralError(
+            `${PI_PROFILE_NAME} has invalid host metadata`,
+          );
+        if (existing.mount === LEGACY_PI_PROFILE_MOUNT) {
+          const migrated: ResourceRecord = {
+            ...existing,
+            mount: PI_PROFILE_MOUNT,
+            revision: existing.revision + 1,
+            ...(existing.tombstone
+              ? {
+                  tombstone: {
+                    ...existing.tombstone,
+                    priorMount: PI_PROFILE_MOUNT,
+                  },
+                }
+              : {}),
+          };
+          if (existing.state !== "soft-deleted")
+            await migratePiProfileConnection(paths, existing.path);
+          await writeResource(paths, migrated);
+          existing = migrated;
+        }
+        return existing;
+      }
+
+      const source = join(paths.repositories, randomUUID()),
+        worktree = await mkdtemp(join(tmpdir(), "integral-pi-profile-"));
+      try {
+        await ensureDir(source);
+        await git(["init", "--bare", "--initial-branch=main", source]);
+        await git(["init", "--initial-branch=main"], worktree);
+        await git(
+          [
+            "-c",
+            "user.name=Integral",
+            "-c",
+            "user.email=integral@localhost",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Initialize Pi profile",
+          ],
+          worktree,
+        );
+        await git(["remote", "add", "origin", source], worktree);
+        await git(["push", "origin", "main"], worktree);
+        return await addHostResourceUnlocked(
+          paths,
+          {
+            name: PI_PROFILE_NAME,
+            kind: "host-repo",
+            auth: "none",
+            path: source,
+            mount: PI_PROFILE_MOUNT,
+            branch: "main",
+          },
+          config,
+        );
+      } catch (error) {
+        await rm(source, { recursive: true, force: true });
+        throw error;
+      } finally {
+        await rm(worktree, { recursive: true, force: true });
+      }
+    },
+  );
 }
 
 async function availability(
@@ -586,7 +703,7 @@ async function restoreResourceUnlocked(
     throw new IntegralError(`stale resource revision: ${name}`, 409);
   if (current.state !== "soft-deleted")
     throw new IntegralError(`resource is not soft-deleted: ${name}`, 409);
-  const validMount = validateMountPath(mount),
+  const validMount = validateMountPath(mount, current.connection),
     reason = await availability({ ...current, state: "active" });
   if (reason) throw new IntegralError(`resource_unavailable: ${reason}`, 409);
   await assertNoOverlap(paths, current.path, validMount, current.connection);
@@ -646,6 +763,14 @@ async function materializeRepository(
     ],
     checkout,
   );
+  if (record.connection === PI_PROFILE_NAME) {
+    const info = join(checkout, ".git", "info");
+    await ensureDir(info);
+    await atomicWrite(
+      join(info, "exclude"),
+      `${PI_PROFILE_CHECKOUT_EXCLUDES.join("\n")}\n`,
+    );
+  }
   return {
     resource: record,
     checkout,
@@ -676,7 +801,15 @@ export async function prepareResourceProjection(
       });
       continue;
     }
-    if (record.state !== "active") continue;
+    if (record.state !== "active") {
+      if (record.connection === PI_PROFILE_NAME)
+        result.unavailable.push({
+          name: record.connection,
+          kind: record.kind,
+          reason: "soft_deleted",
+        });
+      continue;
+    }
     await ensureDir(join(paths.resourceSessions, record.id));
     await atomicWrite(
       sessionFile(paths, record.id, sessionId),
