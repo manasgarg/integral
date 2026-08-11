@@ -5,7 +5,7 @@ access, and the default-deny network boundary.
 
 <!-- Automation note (GATEWAY-A2BBBBE8): Boundary matching, sentinel removal, credential injection, and forwarding construction are automated; a public TLS upstream is not contacted by the offline suite. -->
 <!-- Automation note (GATEWAY-EC79406A): The default suite verifies the internal-network Docker specification; `npm run test:acceptance:docker` also verifies that a live container has no direct external route. -->
-<!-- Automation note (GATEWAY-846B1000): Durable approval creation, terminal decisions, restart recovery, exact-once package execution, and replacement-session continuation are automated at component boundaries. -->
+<!-- Automation note (GATEWAY-846B1000): Durable approval creation, terminal decisions, restart recovery, exact-once package execution, and replacement-session continuation are automated at component boundaries. Discord publication and decisions are planned behavior pending the Discord implementation. -->
 
 ## GATEWAY-3F299566 — Verify the expected gateway
 
@@ -86,7 +86,7 @@ Given the gateway classifies a control operation as requiring human approval
 	When an authenticated Pi session submits an approval-required request
 		Then Integral validates it without executing it
 			And durably records an unpredictable approval ID, safe summary, canonical request digest, originating actor, session and run, model selection, current revision, and deadline
-			And broadcasts the pending approval to every attached human terminal
+			And broadcasts the pending approval to every attached human terminal and the configured Discord DM
 			And includes it in snapshots for terminals that attach later
 			And keeps the originating tool call pending while its connection remains active
 			And does not build an image, advance a protected repository ref, or modify package state before approval
@@ -108,6 +108,12 @@ Given an approval request is pending
 		Then Integral binds the decision to that terminal attachment
 			And durably records and broadcasts the denial
 			And does not execute the request
+	When the bound Discord user invokes `/approve <approval-id>` or `/deny <approval-id>` in the configured DM
+		Then Integral binds the decision to the Discord provider, user, and channel identity
+			And applies the same revalidation, exact-once execution, durable outcome, and broadcast behavior as the corresponding terminal command
+	When a Discord user or channel outside the configured identity attempts a decision
+		Then Integral ignores the attempt as unauthorized
+			And does not resolve or execute the request
 	When another human attempts to decide the resolved approval
 		Then Integral rejects the later decision
 			And does not execute the request again
@@ -136,7 +142,7 @@ Given Integral restarts with unresolved approvals
 	When the coordinator recovers durable state
 		Then it preserves every unresolved approval in its prior state
 			And does not cancel, deny, approve, or execute it merely because Integral restarted
-			And republishes it to attached human terminals
+			And republishes it to attached human terminals and the configured Discord DM
 	When it recovers a durably approved operation without a durable execution result
 		Then it resumes execution using the approval ID
 			And prevents duplicate package-state or protected-repository changes

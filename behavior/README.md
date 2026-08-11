@@ -12,6 +12,7 @@ specifications for Phase 1.
 - [`repository.md`](repository.md) — agent-visible governed Git repositories
 - [`store.md`](store.md) — durable writable host stores
 - [`email.md`](email.md) — Gmail and Mailgun account capabilities and policy
+- [`discord.md`](discord.md) — single-user Discord DM setup and conversation access
 - [`server.md`](server.md) — combined and separate component lifecycle
 - [`gateway.md`](gateway.md) — health, session identity, and governed egress
 - [`container.md`](container.md) — Pi provisioning, isolation, and RPC lifecycle
