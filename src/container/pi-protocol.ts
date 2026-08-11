@@ -35,7 +35,7 @@ export function interpretPiEvent(event: PiProtocolEvent): PiProtocolResult {
     if (delta?.type === "text_delta" && typeof delta.delta === "string")
       return { type: "text", text: delta.delta };
   }
-  return event.type === "agent_end"
+  return event.type === "agent_end" && event.willRetry !== true
     ? { type: "complete" }
     : { type: "ignored" };
 }

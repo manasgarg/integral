@@ -1950,6 +1950,37 @@ test("[FAILURE-A4C19E72] an immediate Pi prompt rejection becomes a turn error",
   );
 });
 
+/* @covers FAILURE-BE6D295B
+Given Pi is processing a chat turn
+	When Pi ends an unsuccessful attempt and reports that it will retry
+		Then integral keeps the turn in progress
+			And does not publish the unsuccessful attempt as the assistant response
+	When Pi ends the final attempt
+		Then integral completes the turn with the accumulated final-attempt text
+			And publishes that text as the assistant response
+*/
+test("[FAILURE-BE6D295B] Pi automatic retries do not complete the chat turn early", () => {
+  assert.deepEqual(
+    interpretPiProtocol(JSON.stringify({ type: "agent_end", willRetry: true })),
+    { type: "ignored" },
+  );
+  assert.deepEqual(
+    interpretPiProtocol(
+      JSON.stringify({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "answer" },
+      }),
+    ),
+    { type: "text", text: "answer" },
+  );
+  assert.deepEqual(
+    interpretPiProtocol(
+      JSON.stringify({ type: "agent_end", willRetry: false }),
+    ),
+    { type: "complete" },
+  );
+});
+
 /* @covers BOX-BE26C696
 Given Pi does not finish a turn within the configured turn timeout
 	When the timeout expires
