@@ -517,12 +517,14 @@ export class Coordinator {
     id: string,
     outcome: "approved" | "denied",
     attachmentId: string,
+    localOperator = false,
   ): Promise<PublicApproval> {
-    if (!this.attachments.has(attachmentId))
+    if (!localOperator && !this.attachments.has(attachmentId))
       throw new IntegralError(
         "approval requires an attached human terminal",
         403,
       );
+    const decisionIdentity = localOperator ? "operator" : attachmentId;
     const existing = this.approvals.get(id);
     if (
       existing.status === "pending" &&
@@ -532,7 +534,7 @@ export class Coordinator {
       throw new IntegralError(`approval ${id} is already expired`, 409);
     }
     const decided = await this.exclusiveWork(() =>
-      this.approvals.decide(id, outcome, attachmentId),
+      this.approvals.decide(id, outcome, decisionIdentity),
     );
     this.broadcast("approval.decided", publicApproval(decided));
     if (outcome === "approved") return this.executeApproval(decided);
@@ -887,6 +889,7 @@ export class Coordinator {
       );
       if (approvalDecision && req.method === "POST") {
         const body = await bodyJson(req);
+        const localOperator = stringValue(body.actor) === "operator";
         json(
           res,
           200,
@@ -894,6 +897,7 @@ export class Coordinator {
             approvalDecision[1]!,
             approvalDecision[2] === "approve" ? "approved" : "denied",
             stringValue(body.attachmentId),
+            localOperator,
           ),
         );
         return;

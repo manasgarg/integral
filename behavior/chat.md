@@ -51,7 +51,7 @@ Given the user is in `integral talk`
 
 Given the user is in `integral talk`
 	When the user enters `/help`
-		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/queue ls`, `/queue edit`, `/queue delete`, and `/exit`
+		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/connection catalog`, `/connection ls`, `/queue ls`, `/queue edit`, `/queue delete`, `/approvals`, `/approve`, `/deny`, and `/exit`
 			And handles the command on the host
 			And does not send the command to Pi
 
@@ -107,7 +107,7 @@ Given the terminal is interactive
 
 ## CHAT-C53A90D2 — Choose a provider and model with friendly matching
 
-Given integral opens the model chooser for `integral talk` or `/model`
+Given integral opens the model chooser for `integral model`, `integral talk`, or `/model`
 	When the coordinator has already discovered models for the current connection generation and configuration
 		Then it serves the cached catalog without repeating Pi version, image, or model discovery
 			And invalidates that catalog after the connection generation changes
@@ -119,7 +119,7 @@ Given integral opens the model chooser for `integral talk` or `/model`
 			And identifies the Pi runtime version that supplied the choices
 			And marks the conversation's current choice when it remains available
 			And explains that the user may enter a choice number or one or more search terms
-			And shows `integral talk [<pattern>...]` and `/model [<pattern>...]` as equivalent ways to search
+			And shows `integral model [<pattern>...]`, `integral talk [<pattern>...]`, and `/model [<pattern>...]` as equivalent ways to search
 	When no active model connection exists
 		Then integral reports that no provider and model choices are available
 			And instructs the user to run `integral connection add`

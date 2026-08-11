@@ -3,13 +3,12 @@
 These behaviors cover command discovery, implementation information, and the
 deliberate overlap between shell commands and local commands in `integral talk`.
 
-<!-- Automation note (CLI-D1B5816E): This branch defines the cross-surface contract before executable parity coverage is added. -->
 ## CLI-6001FE46 — Show top-level help
 
 Given integral is installed
 	When the user runs `integral`, `integral --help`, `integral -h`, or `integral help`
 		Then the command exits successfully
-			And lists `server`, `talk`, `queue`, `schedule`, `connection`, `image`, `config`, and `version`
+			And lists `server`, `talk`, `status`, `model`, `queue`, `approval`, `schedule`, `connection`, `image`, `config`, and `version`
 			And does not list a separate `auth` or `credential` command
 			And describes each command in plain English
 	When npm reads the package metadata
