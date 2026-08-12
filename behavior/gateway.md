@@ -5,7 +5,7 @@ access, and the default-deny network boundary.
 
 <!-- Automation note (GATEWAY-A2BBBBE8): Boundary matching, sentinel removal, credential injection, and forwarding construction are automated; a public TLS upstream is not contacted by the offline suite. -->
 <!-- Automation note (GATEWAY-EC79406A): The default suite verifies the internal-network Docker specification; `npm run test:acceptance:docker` also verifies that a live container has no direct external route. -->
-<!-- Automation note (GATEWAY-846B1000): Durable approval creation, terminal decisions, restart recovery, exact-once package execution, and replacement-session continuation are automated at component boundaries. Discord publication and decisions are planned behavior pending the Discord implementation. -->
+<!-- Automation note (GATEWAY-846B1000): Durable approval mechanics are covered at component boundaries; Discord publication and identity decisions require controlled Discord acceptance fixtures. -->
 
 ## GATEWAY-3F299566 — Verify the expected gateway
 

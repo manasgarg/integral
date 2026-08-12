@@ -24,6 +24,7 @@ export interface IntegralPaths {
   approvals: string;
   approvalAudit: string;
   queue: string;
+  channels: string;
   taskQueue: string;
   scheduler: string;
   schedules: string;
@@ -103,6 +104,7 @@ export function pathsFor(root: string): IntegralPaths {
     approvals: join(data, "approvals.json"),
     approvalAudit: join(data, "approval-audit.jsonl"),
     queue: join(data, "queue.json"),
+    channels: join(data, "channels"),
     taskQueue: join(data, "task-queue.json"),
     scheduler: join(data, "scheduler"),
     schedules: join(data, "scheduler", "schedules"),

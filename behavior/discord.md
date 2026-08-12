@@ -7,16 +7,16 @@ task routes. In this release the logical Discord conversation maps one-to-one
 to the configured native Discord DM; linking surfaces is out of scope. Discord
 does not grant the agent credentials or weaken governed-operation approvals.
 
-<!-- Automation note (DISCORD-E4BE44A7): This behavior defines planned Discord connection setup; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-E043BBDD): This behavior defines planned Discord listener lifecycle; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-E5BF908E): This behavior defines the planned single-DM authorization boundary; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-A3CB29FC): This behavior defines planned Discord conversation ingress and recovery; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-5D67C2B9): This behavior defines planned Discord response presentation; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-89FAF039): This behavior defines planned Discord slash-command behavior; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-D235BC26): This behavior defines planned Discord status and failure isolation; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-60D37149): This behavior defines planned origin-bound Discord task notifications; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-0ADC0A9D): This behavior defines the planned native Discord DM experience; executable coverage will land with implementation. -->
-<!-- Automation note (DISCORD-45EED959): This behavior defines planned in-flight Discord steering; executable coverage will land with implementation. -->
+<!-- Automation note (DISCORD-E4BE44A7): Full verification requires an isolated Discord application and credential fixture. -->
+<!-- Automation note (DISCORD-E043BBDD): Gateway reconnect and shutdown require Discord Gateway fault-injection infrastructure. -->
+<!-- Automation note (DISCORD-E5BF908E): Cross-account authorization requires multiple controlled Discord identities. -->
+<!-- Automation note (DISCORD-A3CB29FC): Crash-boundary recovery requires a controlled Discord history and process fault injection. -->
+<!-- Automation note (DISCORD-5D67C2B9): Native delivery and typing presentation require Discord client acceptance coverage. -->
+<!-- Automation note (DISCORD-89FAF039): Native command registration and private responses require a controlled Discord application. -->
+<!-- Automation note (DISCORD-D235BC26): Provider degradation requires Discord authentication and transport fault injection. -->
+<!-- Automation note (DISCORD-60D37149): End-to-end notification routing requires scheduled task and Discord delivery fixtures. -->
+<!-- Automation note (DISCORD-0ADC0A9D): Native DM presentation requires Discord client acceptance coverage. -->
+<!-- Automation note (DISCORD-45EED959): End-to-end steering timing requires a live Pi RPC turn and controlled Discord delivery. -->
 
 ## DISCORD-E4BE44A7 — Configure exactly one Discord DM
 

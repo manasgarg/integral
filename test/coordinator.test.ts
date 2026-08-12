@@ -629,7 +629,7 @@ test("[GATEWAY-846B1000] an orphaned approval survives restart and queues one li
 
 /* @covers QUEUE-31A6D84F
 Given one message is in flight with Pi
-	And one or more later messages are queued
+	And one or more later messages remain queued rather than being delivered through a surface-specific steering behavior
 	When the in-flight turn completes
 		Then the coordinator durably marks the in-flight message complete
 			And claims the oldest remaining queued message

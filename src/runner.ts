@@ -160,6 +160,9 @@ export class Runner {
   private readonly mcpCatalogs: McpCatalogRegistry;
   private piMcpCatalogs = new Map<string, string>();
   private currentMessageId: string | undefined;
+  private currentConversationId: string | undefined;
+  private piConversationId: string | undefined;
+  private steeredMessageIds: string[] = [];
   private currentTask:
     { id: string; claimId: string; attemptId?: string } | undefined;
   private activeTaskRuntime: TaskRuntime | undefined;
@@ -227,6 +230,11 @@ export class Runner {
         req.method === "POST"
       ) {
         void this.routeMcp(req, res);
+      } else if (
+        req.url === "/integral/internal/steer" &&
+        req.method === "POST"
+      ) {
+        void this.routeSteer(req, res);
       } else res.writeHead(404).end();
     });
     this.server = server;
@@ -237,6 +245,48 @@ export class Runner {
     );
     this.schedule(0);
     return server;
+  }
+  private async routeSteer(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    try {
+      if (
+        !verifyInternal(
+          req.headers,
+          "coordinator",
+          this.token,
+          deploymentId(this.paths),
+        )
+      ) {
+        res.writeHead(401).end("unauthorized\n");
+        return;
+      }
+      const body = await runnerBodyJson(req),
+        conversationId =
+          typeof body.conversationId === "string" ? body.conversationId : "",
+        messageId = typeof body.messageId === "string" ? body.messageId : "",
+        text = typeof body.text === "string" ? body.text : "";
+      if (
+        !this.busy ||
+        !this.pi ||
+        !this.pi.steer ||
+        this.currentConversationId !== conversationId ||
+        !messageId ||
+        !text.trim()
+      ) {
+        res.writeHead(409).end("turn is no longer steerable\n");
+        return;
+      }
+      await this.pi.steer(text);
+      this.steeredMessageIds.push(messageId);
+      await this.piRun?.input(text, "steering", { messageId });
+      res.writeHead(204).end();
+    } catch (error) {
+      res
+        .writeHead(409)
+        .end(`${error instanceof Error ? error.message : String(error)}\n`);
+    }
   }
   private async routeMcp(
     req: http.IncomingMessage,
@@ -683,16 +733,22 @@ export class Runner {
         message?: QueuedMessage;
         context: ConversationEvent[];
         selection?: ModelSelection | null;
+        conversationId?: string;
       };
+      const conversationId = body.conversationId ?? "terminal";
       const selection = body.selection ?? undefined;
-      if (this.pi && !sameSelection(this.piSelection, selection))
-        await this.destroyPi("selection-changed");
       item = body.message;
       if (!item) {
         this.armIdle();
         return;
       }
+      if (this.pi && this.piConversationId !== conversationId)
+        await this.destroyPi("selection-changed");
+      if (this.pi && !sameSelection(this.piSelection, selection))
+        await this.destroyPi("selection-changed");
       this.currentMessageId = item.id;
+      this.currentConversationId = conversationId;
+      this.steeredMessageIds = [];
       if (!selection)
         throw new IntegralError(
           "conversation has no selected model connection and model",
@@ -708,6 +764,7 @@ export class Runner {
         sessionGeneration,
         continuation,
       );
+      this.piConversationId = conversationId;
       const activeRun = this.piRun;
       await activeRun?.input(
         item.text,
@@ -732,11 +789,19 @@ export class Runner {
         "runner",
         "coordinator",
         `/integral/internal/work/${item.id}/complete`,
-        { method: "POST", body: JSON.stringify({ text: answer }) },
+        {
+          method: "POST",
+          body: JSON.stringify({
+            text: answer,
+            conversationId,
+            steeredMessageIds: this.steeredMessageIds,
+          }),
+        },
       );
       if (!completed.ok)
         throw new IntegralError(`completion failed: ${completed.status}`);
       this.currentMessageId = undefined;
+      this.currentConversationId = undefined;
     } catch (error) {
       await this.piRun?.failure("turn-failure", error, {
         ...(turnStarted !== undefined
@@ -758,11 +823,14 @@ export class Runner {
               method: "POST",
               body: JSON.stringify({
                 reason: error instanceof Error ? error.message : String(error),
+                conversationId: this.currentConversationId ?? "terminal",
+                steeredMessageIds: this.steeredMessageIds,
               }),
             },
           )
           .catch(() => undefined);
         this.currentMessageId = undefined;
+        this.currentConversationId = undefined;
       }
       if (
         this.pi &&
@@ -925,6 +993,7 @@ export class Runner {
           body: JSON.stringify({
             sessionId: identity.sessionId,
             state: "started",
+            conversationId: this.currentConversationId ?? "terminal",
             ...(continuation
               ? {
                   parentSessionId: continuation.originSessionId,
@@ -1169,12 +1238,14 @@ export class Runner {
     this.dependencies.clock.clearTimeout(this.idle);
     this.idle = undefined;
     const pi = this.pi;
+    const conversationId = this.piConversationId ?? "terminal";
     const recorder = this.piRun,
       historyView = this.piHistoryView,
       resources = this.piResources;
     this.pi = undefined;
     this.piSelection = undefined;
     this.piSessionGeneration = undefined;
+    this.piConversationId = undefined;
     this.piRun = undefined;
     this.piHistoryView = undefined;
     this.piResources = undefined;
@@ -1204,6 +1275,7 @@ export class Runner {
             body: JSON.stringify({
               sessionId: pi.spec.sessionId,
               state: "ended",
+              conversationId,
             }),
           },
         )

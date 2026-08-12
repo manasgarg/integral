@@ -281,6 +281,7 @@ Given integral is installed
 			And documents `--auth` for explicit setup
 			And documents `--transport`, `--command`, `--arg`, `--env`, `--secret-env`, and `--allow-url` for MCP setup
 			And documents `--path`, `--branch`, and `--mount` for host resources
+			And documents `--user-id` and `--credential-stdin` for Discord setup
 			And does not list `grant` or `revoke`
 */
 test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and removal but no grants", async () => {
@@ -297,6 +298,8 @@ test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and
     "--env",
     "--secret-env",
     "--allow-url",
+    "--user-id",
+    "--credential-stdin",
   ])
     assert.match(result.stdout, new RegExp(option));
   assert.doesNotMatch(result.stdout, /^\s+(grant|revoke)\b/m);
@@ -310,9 +313,10 @@ Given integral is installed
 			And lists generic `http` and `mcp` connection types
 			And lists the `host-repo` connection type
 			And lists the `host-store` connection type
+			And lists `discord` as a channel connection type
 			And identifies the kind of each catalog entry
 			And describes supported OAuth, device-code, key, and no-auth methods
-			And does not list channel or general host-directory connection types
+			And does not list unsupported channel or general host-directory connection types
 */
 test("[CONNECTION-75EC27E8] catalog describes model, email, HTTP, MCP and every supported authentication family", async () => {
   const result = await capture(["connection", "catalog"]);
@@ -324,6 +328,8 @@ test("[CONNECTION-75EC27E8] catalog describes model, email, HTTP, MCP and every 
     "mcp",
     "gmail",
     "mailgun",
+    "discord",
+    "channel",
     "email",
     "model",
     "oauth",

@@ -6,7 +6,13 @@ import { IntegralError } from "./errors.ts";
 import type { ModelSelection } from "./model-selection.ts";
 import { SerialExecutor } from "./persistence/serial-executor.ts";
 
-export type QueueStatus = "queued" | "in-flight";
+export type QueueStatus = "queued" | "in-flight" | "steering";
+export interface MessageOrigin {
+  provider: "discord";
+  externalId: string;
+  userId: string;
+  channelId: string;
+}
 export interface ApprovalContinuation {
   approvalId: string;
   originSessionId: string;
@@ -22,6 +28,7 @@ export interface QueuedMessage {
   attempts: number;
   createdAt: string;
   approvalContinuation?: ApprovalContinuation;
+  origin?: MessageOrigin;
 }
 interface QueueFile {
   nextOrder: number;
@@ -103,7 +110,8 @@ export class DurableQueue {
       throw new IntegralError(`invalid queue file: ${this.file}`);
     this.data = parsed;
     for (const item of this.data.items)
-      if (item.status === "in-flight") item.status = "queued";
+      if (item.status === "in-flight" || item.status === "steering")
+        item.status = "queued";
     await this.persist();
   }
   private async persist(): Promise<void> {
@@ -117,9 +125,18 @@ export class DurableQueue {
   async enqueue(
     text: string,
     approvalContinuation?: ApprovalContinuation,
+    origin?: MessageOrigin,
   ): Promise<QueuedMessage> {
     return this.operations.run(async () => {
       if (!text.trim()) throw new IntegralError("message must not be empty");
+      if (origin) {
+        const existing = this.data.items.find(
+          (item) =>
+            item.origin?.provider === origin.provider &&
+            item.origin.externalId === origin.externalId,
+        );
+        if (existing) return structuredClone(existing);
+      }
       const priorSnowflake = this.data.snowflake
           ? { ...this.data.snowflake }
           : undefined,
@@ -139,6 +156,7 @@ export class DurableQueue {
         ...(approvalContinuation
           ? { approvalContinuation: structuredClone(approvalContinuation) }
           : {}),
+        ...(origin ? { origin: structuredClone(origin) } : {}),
       };
       this.data.items.push(item);
       try {
@@ -158,7 +176,7 @@ export class DurableQueue {
     return this.operations.run(async () => {
       if (!text.trim()) throw new IntegralError("message must not be empty");
       const item = this.find(id);
-      if (item.status === "in-flight")
+      if (item.status !== "queued")
         throw new IntegralError(`message ${id} is in flight`);
       const previous = item.text;
       item.text = text;
@@ -175,7 +193,7 @@ export class DurableQueue {
   async delete(id: string): Promise<void> {
     return this.operations.run(async () => {
       const item = this.find(id);
-      if (item.status === "in-flight")
+      if (item.status !== "queued")
         throw new IntegralError(`message ${id} is in flight`);
       const index = this.data.items.indexOf(item);
       this.data.items.splice(index, 1);
@@ -212,7 +230,7 @@ export class DurableQueue {
   async complete(id: string): Promise<void> {
     return this.operations.run(async () => {
       const item = this.find(id);
-      if (item.status !== "in-flight")
+      if (item.status !== "in-flight" && item.status !== "steering")
         throw new IntegralError(`message ${id} is not in flight`);
       const index = this.data.items.indexOf(item);
       this.data.items.splice(index, 1);
@@ -223,6 +241,23 @@ export class DurableQueue {
         throw error;
       }
       this.onChange({ type: "completed", messageId: id });
+    });
+  }
+  async markSteering(id: string): Promise<void> {
+    return this.operations.run(async () => {
+      const item = this.find(id);
+      if (item.status !== "queued")
+        throw new IntegralError(`message ${id} is not queued`);
+      item.status = "steering";
+      item.attempts++;
+      try {
+        await this.persist();
+      } catch (error) {
+        item.status = "queued";
+        item.attempts--;
+        throw error;
+      }
+      this.onChange({ type: "steered", message: { ...item } });
     });
   }
   async release(id: string, reason?: string): Promise<void> {
@@ -251,7 +286,10 @@ export class DurableQueue {
 }
 
 export type QueueEvent =
-  | { type: "queued" | "edited" | "claimed"; message: QueuedMessage }
+  | {
+      type: "queued" | "edited" | "claimed" | "steered";
+      message: QueuedMessage;
+    }
   | { type: "released"; message: QueuedMessage; reason?: string }
   | { type: "deleted" | "completed"; messageId: string };
 
@@ -264,6 +302,7 @@ export interface ConversationEvent {
   parentSessionId?: string;
   approvalId?: string;
   timestamp: string;
+  origin?: MessageOrigin;
 }
 export class ConversationStore {
   private events: ConversationEvent[] = [];

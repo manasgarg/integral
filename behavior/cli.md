@@ -36,6 +36,8 @@ Given integral is installed
 			And exits successfully
 			And does not perform the command operation
 
+<!-- Automation note (CLI-D1B5816E): Shared terminal operations are covered individually; complete cross-surface equivalence requires an attached interactive terminal fixture. -->
+
 ## CLI-D1B5816E — Keep conversation operations available in the CLI and talk
 
 Given the integral coordinator is healthy

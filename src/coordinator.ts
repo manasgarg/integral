@@ -8,6 +8,7 @@ import {
 } from "./queue.ts";
 import {
   listModelChoices,
+  matchModelChoices,
   sameSelection,
   type ModelCatalog,
   type ModelCatalogProgress,
@@ -65,6 +66,30 @@ import {
   type ImageBuildResult,
   type ImageProposal,
 } from "./image-recipe.ts";
+import {
+  clearConnectionDegraded,
+  credentialFor,
+  loadConnections,
+  markConnectionDegraded,
+} from "./connections.ts";
+import {
+  DiscordIngressStore,
+  DiscordJsListener,
+  type DiscordListener,
+  type DiscordListenerCallbacks,
+  type DiscordMessage,
+} from "./discord.ts";
+
+interface ConversationScope {
+  id: string;
+  queue: DurableQueue;
+  conversation: ConversationStore;
+  modelSelection: ModelSelectionStore;
+  discord?: {
+    listener: DiscordListener;
+    ingress: DiscordIngressStore;
+  };
+}
 
 export interface CoordinatorDependencies {
   servers: HttpServerRuntime;
@@ -88,6 +113,11 @@ export interface CoordinatorDependencies {
   activateImageProposal: typeof activateImageProposal;
   imageRecipeHead: typeof imageRecipeHead;
   imageRecipeTreeDigest: typeof imageRecipeTreeDigest;
+  createDiscordListener(
+    connection: import("./connections.ts").Connection,
+    token: string,
+    callbacks: DiscordListenerCallbacks,
+  ): DiscordListener;
 }
 const productionDependencies: CoordinatorDependencies = {
   servers: nodeHttpServerRuntime,
@@ -105,6 +135,8 @@ const productionDependencies: CoordinatorDependencies = {
   activateImageProposal,
   imageRecipeHead,
   imageRecipeTreeDigest,
+  createDiscordListener: (connection, token, callbacks) =>
+    new DiscordJsListener(connection, token, callbacks),
 };
 export class Coordinator {
   readonly queue: DurableQueue;
@@ -132,6 +164,8 @@ export class Coordinator {
   private readonly modelCatalogs = new Map<string, ModelCatalog>();
   private readonly modelCatalogLoads = new Map<string, Promise<ModelCatalog>>();
   private readonly dependencies: CoordinatorDependencies;
+  private readonly scopes = new Map<string, ConversationScope>();
+  private discordScope: ConversationScope | undefined;
   constructor(
     private readonly paths: IntegralPaths,
     private readonly config: EffectiveConfig,
@@ -144,6 +178,12 @@ export class Coordinator {
     );
     this.conversation = new ConversationStore(paths.conversation);
     this.modelSelection = new ModelSelectionStore(paths.modelSelection);
+    this.scopes.set("terminal", {
+      id: "terminal",
+      queue: this.queue,
+      conversation: this.conversation,
+      modelSelection: this.modelSelection,
+    });
     this.tasks = new DurableTaskQueue(paths);
     this.approvals = new ApprovalStore(paths, () => this.dependencies.now());
   }
@@ -161,6 +201,13 @@ export class Coordinator {
       this.config.server.coordinatorPort,
       "127.0.0.1",
     );
+    await this.startDiscord().catch((error: unknown) =>
+      this.logger?.event(
+        "warn",
+        "discord.start_failed",
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
     this.refreshTimer = this.dependencies.intervals.setInterval(
       () => void this.refresh(),
       500,
@@ -174,6 +221,234 @@ export class Coordinator {
       .filter((record) => record.status === "approved"))
       this.dependencies.defer(() => void this.executeApproval(approval));
     return server;
+  }
+  private async startDiscord(): Promise<void> {
+    const loaded = await loadConnections(this.paths);
+    const connections = loaded.connections.filter(
+      (connection) =>
+        connection.kind === "channel" && connection.provider === "discord",
+    );
+    if (connections.length > 1)
+      throw new IntegralError(
+        "only one Discord channel connection may be active",
+      );
+    const connection = connections[0];
+    if (!connection?.channelId) return;
+    const token = (await credentialFor(this.paths, connection.name))?.trim();
+    if (!token) return;
+    const directory = join(
+        this.paths.channels,
+        `discord-${connection.channelId}`,
+      ),
+      scope: ConversationScope = {
+        id: `discord:${connection.channelId}`,
+        queue: new DurableQueue(join(directory, "queue.json")),
+        conversation: new ConversationStore(
+          join(directory, "conversation.jsonl"),
+        ),
+        modelSelection: new ModelSelectionStore(join(directory, "model.json")),
+      },
+      ingress = new DiscordIngressStore(join(directory, "ingress.json"));
+    await Promise.all([
+      scope.queue.load(),
+      scope.conversation.load(),
+      scope.modelSelection.load(),
+      ingress.load(),
+    ]);
+    if (!scope.modelSelection.get() && this.modelSelection.get())
+      await scope.modelSelection.set(this.modelSelection.get()!);
+    const listener = this.dependencies.createDiscordListener(
+      connection,
+      token,
+      {
+        recoveryPosition: () => ingress.position(),
+        accept: (message) => this.submitDiscord(scope, ingress, message),
+        unsupported: async () => {
+          await listener.reply("I can currently process text messages only.");
+        },
+        command: (name, subcommand, options) =>
+          this.discordCommand(scope, name, subcommand, options),
+        failure: (error) =>
+          void markConnectionDegraded(this.paths, connection.name, "listener")
+            .catch(() => undefined)
+            .finally(() =>
+              this.logger?.event(
+                "warn",
+                "discord.listener_failed",
+                error.message,
+              ),
+            ),
+      },
+    );
+    scope.discord = { listener, ingress };
+    this.discordScope = scope;
+    this.scopes.set(scope.id, scope);
+    try {
+      await listener.start();
+      await clearConnectionDegraded(this.paths, connection.name);
+    } catch (error) {
+      await markConnectionDegraded(this.paths, connection.name, "listener");
+      throw error;
+    }
+  }
+  private async discordCommand(
+    scope: ConversationScope,
+    name: string,
+    subcommand: string | undefined,
+    options: Record<string, string>,
+  ): Promise<string> {
+    if (name === "help")
+      return [
+        "/help — show this help",
+        "/status — show this Discord conversation's status",
+        "/model [search] — show or select a model",
+        "/queue ls|edit|delete — manage queued messages",
+        "/approvals ls|show|approve|deny — manage governed requests",
+      ].join("\n");
+    if (name === "status") {
+      const selection = scope.modelSelection.get(),
+        queue = scope.queue.snapshot(),
+        session = scope.conversation
+          .snapshot()
+          .filter((event) => event.type === "session")
+          .at(-1);
+      return [
+        `Discord listener: connected`,
+        `Model: ${selection ? `${selection.connection}/${selection.model}` : "not selected"}`,
+        `Queue: ${queue.length} message${queue.length === 1 ? "" : "s"}`,
+        `Session: ${session?.text === "started" ? session.sessionId : "idle"}`,
+      ].join("\n");
+    }
+    if (name === "model") {
+      const catalog = await this.modelCatalog(),
+        search = options.search?.trim(),
+        matches = matchModelChoices(
+          catalog.choices,
+          search ? search.split(/\s+/) : [],
+        );
+      if (search && matches.length === 1) {
+        await scope.modelSelection.set(matches[0]!);
+        return `Selected ${matches[0]!.connection}/${matches[0]!.model}.`;
+      }
+      const current = scope.modelSelection.get(),
+        heading = current
+          ? `Current: ${current.connection}/${current.model}`
+          : "Current: not selected";
+      if (!matches.length)
+        return `${heading}\nNo models matched; narrow or change the search.`;
+      return `${heading}\n${matches.map((choice) => `${choice.connection}/${choice.model}`).join("\n")}${search && matches.length > 1 ? "\nMore than one model matched; narrow the search." : ""}`;
+    }
+    if (name === "queue") {
+      if (!subcommand || subcommand === "ls") {
+        const items = scope.queue.snapshot();
+        return items.length
+          ? items
+              .map((item) => `${item.id}  ${item.status}  ${item.text}`)
+              .join("\n")
+          : "The Discord conversation queue is empty.";
+      }
+      if (!options.id)
+        throw new IntegralError("A queue message ID is required.");
+      if (subcommand === "edit") {
+        if (!options.text)
+          throw new IntegralError("Replacement text is required.");
+        await scope.queue.edit(options.id, options.text);
+        return `Updated queue message ${options.id}.`;
+      }
+      if (subcommand === "delete") {
+        await scope.queue.delete(options.id);
+        return `Deleted queue message ${options.id}.`;
+      }
+    }
+    if (name === "approvals") {
+      // Approval records pre-dating conversation scoping must never be disclosed
+      // or decided from a remote channel.
+      if (!subcommand || subcommand === "ls")
+        return "There are no pending approvals for this Discord conversation.";
+      throw new IntegralError(
+        "Approval not found in this Discord conversation.",
+        404,
+      );
+    }
+    throw new IntegralError("Unsupported Discord command.", 400);
+  }
+  private async deliverDiscord(
+    scope: ConversationScope,
+    text: string,
+  ): Promise<void> {
+    const listener = scope.discord?.listener;
+    if (!listener) return;
+    await listener.typing(false).catch(() => undefined);
+    await listener
+      .reply(text)
+      .catch((error: unknown) =>
+        this.logger?.event(
+          "warn",
+          "discord.delivery_failed",
+          error instanceof Error ? error.message : String(error),
+          { conversation_id: scope.id },
+        ),
+      );
+  }
+  private async submitDiscord(
+    scope: ConversationScope,
+    ingress: DiscordIngressStore,
+    message: DiscordMessage,
+  ): Promise<boolean> {
+    return this.exclusiveWork(async () => {
+      if (ingress.has(message.id)) return false;
+      const origin = {
+          provider: "discord" as const,
+          externalId: message.id,
+          userId: message.userId,
+          channelId: message.channelId,
+        },
+        item = await scope.queue.enqueue(message.text, undefined, origin),
+        alreadyRecorded = scope.conversation
+          .snapshot()
+          .some((event) => event.origin?.externalId === message.id);
+      if (!alreadyRecorded)
+        await scope.conversation.append({
+          type: "user",
+          messageId: item.id,
+          text: item.text,
+          origin,
+        });
+      await ingress.record(message.id);
+      await scope.discord?.listener.typing(true).catch(() => undefined);
+      if (!scope.modelSelection.get()) {
+        await this.deliverDiscord(
+          scope,
+          "Select a model with /model before I can process this message.",
+        );
+        return true;
+      }
+      if (
+        scope.queue
+          .snapshot()
+          .some((candidate) => candidate.status === "in-flight")
+      ) {
+        await scope.queue.markSteering(item.id);
+        const response = await this.dependencies
+          .internalFetch(
+            this.paths,
+            "coordinator",
+            "runner",
+            "/integral/internal/steer",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                conversationId: scope.id,
+                messageId: item.id,
+                text: item.text,
+              }),
+            },
+          )
+          .catch(() => undefined);
+        if (!response?.ok) await scope.queue.release(item.id);
+      }
+      return true;
+    });
   }
   private async refresh(): Promise<void> {
     await Promise.all([
@@ -1022,16 +1297,21 @@ export class Coordinator {
         req.method === "POST"
       ) {
         if (!this.internal(req)) return unauthorized(res);
-        const result = await this.exclusiveWork(async () => ({
-          item: this.modelSelection.get()
-            ? await this.queue.claim()
-            : undefined,
-          selection: this.modelSelection.get(),
-        }));
+        const result = await this.exclusiveWork(async () => {
+          for (const scope of this.scopes.values()) {
+            const selection = scope.modelSelection.get();
+            if (!selection) continue;
+            const item = await scope.queue.claim();
+            if (item) return { item, selection, scope };
+          }
+          const scope = this.scopes.get("terminal")!;
+          return { item: undefined, selection: undefined, scope };
+        });
         json(res, 200, {
           message: result.item,
           selection: result.selection ?? null,
-          context: this.conversation.context(
+          conversationId: result.scope.id,
+          context: result.scope.conversation.context(
             this.config.conversation.contextMaxMessages,
             this.config.conversation.contextMaxChars,
           ),
@@ -1045,10 +1325,12 @@ export class Coordinator {
         if (!this.internal(req)) return unauthorized(res);
         const body = await bodyJson(req),
           sessionId = stringValue(body.sessionId),
-          state = stringValue(body.state);
+          state = stringValue(body.state),
+          scope = this.scopes.get(stringValue(body.conversationId, "terminal"));
         if (!sessionId || !["started", "ended"].includes(state))
           throw new IntegralError("invalid session event", 400);
-        const event = await this.conversation.append({
+        if (!scope) throw new IntegralError("unknown conversation", 404);
+        const event = await scope.conversation.append({
           type: "session",
           sessionId,
           text: state,
@@ -1059,7 +1341,8 @@ export class Coordinator {
             ? { approvalId: stringValue(body.approvalId) }
             : {}),
         });
-        this.broadcast("conversation.session", event);
+        if (scope.id === "terminal")
+          this.broadcast("conversation.session", event);
         res.writeHead(204).end();
         return;
       }
@@ -1070,25 +1353,50 @@ export class Coordinator {
         if (!this.internal(req)) return unauthorized(res);
         const [, id, action] = workMatch;
         const body = await bodyJson(req);
+        const scope = this.scopes.get(
+          stringValue(body.conversationId, "terminal"),
+        );
+        if (!scope) throw new IntegralError("unknown conversation", 404);
         if (action === "complete") {
-          const event = await this.conversation.append({
+          const event = await scope.conversation.append({
             type: "assistant",
             messageId: id!,
             text: stringValue(body.text),
           });
-          await this.queue.complete(id!);
-          this.broadcast("conversation.assistant", event);
+          await scope.queue.complete(id!);
+          const steered = Array.isArray(body.steeredMessageIds)
+            ? body.steeredMessageIds.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [];
+          for (const steeredId of steered)
+            await scope.queue.complete(steeredId);
+          if (scope.id === "terminal")
+            this.broadcast("conversation.assistant", event);
+          else await this.deliverDiscord(scope, event.text ?? "");
         } else {
-          await this.queue.release(
+          await scope.queue.release(
             id!,
             stringValue(body.reason, "interrupted"),
           );
-          const event = await this.conversation.append({
+          const steered = Array.isArray(body.steeredMessageIds)
+            ? body.steeredMessageIds.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [];
+          for (const steeredId of steered) await scope.queue.release(steeredId);
+          const event = await scope.conversation.append({
             type: "error",
             messageId: id!,
             text: stringValue(body.reason, "turn interrupted"),
           });
-          this.broadcast("conversation.error", event);
+          if (scope.id === "terminal")
+            this.broadcast("conversation.error", event);
+          else
+            await this.deliverDiscord(
+              scope,
+              "I couldn't complete that request. It remains queued when retrying is safe; check /status and try again.",
+            );
         }
         res.writeHead(204).end();
         return;
@@ -1163,6 +1471,7 @@ export class Coordinator {
         new IntegralError("coordinator stopped; approval remains pending", 503),
       );
     this.approvalWaiters.clear();
+    await this.discordScope?.discord?.listener.stop();
     const server = this.server;
     this.server = undefined;
     if (server) await this.dependencies.servers.close(server);

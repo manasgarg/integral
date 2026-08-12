@@ -6,7 +6,7 @@ import { IntegralError } from "./errors.ts";
 import type { IntegralPaths } from "./paths.ts";
 
 export type ConnectionKind =
-  "model" | "http" | "mcp" | "email" | "host-repo" | "host-store";
+  "model" | "http" | "mcp" | "email" | "channel" | "host-repo" | "host-store";
 export type AuthMethod = "oauth" | "device-code" | "key" | "none";
 export type EmailCapability = "read" | "search" | "send";
 export type McpTransport = "streamable-http" | "sse" | "stdio";
@@ -48,6 +48,10 @@ export interface Connection {
   path?: string;
   branch?: string;
   mount?: string;
+  applicationId?: string;
+  botUserId?: string;
+  userId?: string;
+  channelId?: string;
 }
 export interface ListedConnection extends Connection {
   state:
@@ -63,7 +67,7 @@ export interface ListedConnection extends Connection {
 }
 
 export type ConnectionHealthStage =
-  "authorization" | "negotiation" | "discovery" | "sidecar";
+  "authorization" | "negotiation" | "discovery" | "sidecar" | "listener";
 
 function connectionHealthFile(paths: IntegralPaths, name: string): string {
   return join(paths.state, "connection-health", `${name}.json`);
@@ -94,9 +98,13 @@ async function connectionHealth(
   const raw = await readText(connectionHealthFile(paths, name));
   if (!raw) return undefined;
   const value = JSON.parse(raw) as { stage?: unknown };
-  return ["authorization", "negotiation", "discovery", "sidecar"].includes(
-    String(value.stage),
-  )
+  return [
+    "authorization",
+    "negotiation",
+    "discovery",
+    "sidecar",
+    "listener",
+  ].includes(String(value.stage))
     ? (value.stage as ConnectionHealthStage)
     : undefined;
 }
@@ -125,6 +133,7 @@ export const CATALOG = [
   { name: "mcp", kind: "mcp", auth: ["oauth", "device-code", "key", "none"] },
   { name: "gmail", kind: "email", auth: ["oauth"] },
   { name: "mailgun", kind: "email", auth: ["key"] },
+  { name: "discord", kind: "channel", auth: ["key"] },
   { name: "host-repo", kind: "host-repo", auth: ["none"] },
   { name: "host-store", kind: "host-store", auth: ["none"] },
 ] as const;
@@ -164,6 +173,10 @@ const knownKeys = new Set([
   "path",
   "branch",
   "mount",
+  "application_id",
+  "bot_user_id",
+  "user_id",
+  "channel_id",
 ]);
 
 const emailAddressPattern = /^[^\s<>@,;]+@[^\s<>@,;]+$/;
@@ -251,10 +264,18 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     );
   const kind = requiredString(value.kind, "kind") as ConnectionKind;
   if (
-    !["model", "http", "mcp", "email", "host-repo", "host-store"].includes(kind)
+    ![
+      "model",
+      "http",
+      "mcp",
+      "email",
+      "channel",
+      "host-repo",
+      "host-store",
+    ].includes(kind)
   )
     throw new IntegralError(
-      "kind must be model, http, mcp, email, host-repo, or host-store",
+      "kind must be model, http, mcp, email, channel, host-repo, or host-store",
     );
   const provider =
     value.provider === undefined
@@ -284,6 +305,10 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
     );
   if (provider === "github" && auth !== "key")
     throw new IntegralError("GitHub connections require key authentication");
+  if (kind === "channel" && (provider !== "discord" || auth !== "key"))
+    throw new IntegralError(
+      "channel connections currently require Discord key authentication",
+    );
   const hostResource = kind === "host-repo" || kind === "host-store";
   if (hostResource && auth !== "none")
     throw new IntegralError("host resources use no authentication");
@@ -336,6 +361,30 @@ export function validateConnection(raw: unknown, stem?: string): Connection {
   if (hosts) result.hosts = hosts;
   if (methods) result.methods = methods;
   if (pathPrefix) result.pathPrefix = pathPrefix;
+  if (kind === "channel") {
+    for (const [key, property] of [
+      ["application_id", "applicationId"],
+      ["bot_user_id", "botUserId"],
+      ["user_id", "userId"],
+      ["channel_id", "channelId"],
+    ] as const) {
+      const identifier = requiredString(value[key], key);
+      if (!/^\d{16,22}$/.test(identifier))
+        throw new IntegralError(`${key} must be a Discord snowflake`);
+      result[property] = identifier;
+    }
+  } else {
+    for (const key of [
+      "application_id",
+      "bot_user_id",
+      "user_id",
+      "channel_id",
+    ])
+      if (value[key] !== undefined)
+        throw new IntegralError(
+          `${key} is supported only by channel connections`,
+        );
+  }
   if (auth === "key" && kind !== "email") {
     result.header =
       value.header === undefined
@@ -614,6 +663,10 @@ export function connectionToml(c: Connection): string {
     ["path_prefix", c.pathPrefix],
     ["header", c.header],
     ["scheme", c.scheme],
+    ["application_id", c.applicationId],
+    ["bot_user_id", c.botUserId],
+    ["user_id", c.userId],
+    ["channel_id", c.channelId],
     ["authorization_url", c.authorizationUrl],
     ["token_url", c.tokenUrl],
     ["device_authorization_url", c.deviceAuthorizationUrl],

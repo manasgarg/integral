@@ -51,6 +51,7 @@ export interface PiRuntime {
   readonly spec: ContainerSpec;
   start(): Promise<void>;
   prompt(text: string): Promise<string>;
+  steer?(text: string): Promise<void>;
   stop(): Promise<void>;
 }
 export interface TaskRuntime extends PiRuntime {
@@ -1004,6 +1005,11 @@ export class PiContainer {
       }
     | undefined;
   private exit: Promise<number | null> | undefined;
+  private readonly steering: Array<{
+    resolve(): void;
+    reject(error: Error): void;
+    timer: NodeJS.Timeout;
+  }> = [];
   constructor(
     readonly spec: ContainerSpec,
     private readonly config: EffectiveConfig,
@@ -1033,6 +1039,11 @@ export class PiContainer {
       );
       this.pending?.reject(error);
       this.pending = undefined;
+      for (const steering of this.steering) {
+        clearTimeout(steering.timer);
+        steering.reject(error);
+      }
+      this.steering.length = 0;
       this.child = undefined;
     });
     await new Promise<void>((resolve, reject) => {
@@ -1053,6 +1064,28 @@ export class PiContainer {
       this.diagnostic(
         `run event observer failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+    }
+    const response = raw as unknown as {
+      type?: unknown;
+      command?: unknown;
+      success?: unknown;
+      error?: unknown;
+    };
+    if (response.type === "response" && response.command === "steer") {
+      const steering = this.steering.shift();
+      if (steering) {
+        clearTimeout(steering.timer);
+        if (response.success === false)
+          steering.reject(
+            new IntegralError(
+              typeof response.error === "string"
+                ? response.error
+                : "Pi rejected steering input",
+            ),
+          );
+        else steering.resolve();
+      }
+      return;
     }
     if (!this.pending) return;
     const event = interpretPiEvent(raw);
@@ -1089,6 +1122,34 @@ export class PiContainer {
       this.pending = { resolve, reject, timer };
     });
   }
+  steer(text: string): Promise<void> {
+    if (!this.child)
+      return Promise.reject(new IntegralError("Pi container is not running"));
+    if (!this.pending)
+      return Promise.reject(new IntegralError("Pi turn is not in flight"));
+    return new Promise((resolve, reject) => {
+      const request = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          const index = this.steering.indexOf(request);
+          if (index >= 0) this.steering.splice(index, 1);
+          reject(new IntegralError("Pi steering acknowledgement timed out"));
+        }, 5_000),
+      };
+      this.steering.push(request);
+      this.child!.stdin.write(
+        `${JSON.stringify({ type: "steer", message: text })}\n`,
+        (error) => {
+          if (!error) return;
+          clearTimeout(request.timer);
+          const index = this.steering.indexOf(request);
+          if (index >= 0) this.steering.splice(index, 1);
+          reject(error);
+        },
+      );
+    });
+  }
   async finish(): Promise<number> {
     const child = this.child,
       exit = this.exit;
@@ -1116,6 +1177,11 @@ export class PiContainer {
       clearTimeout(pending.timer);
       pending.reject(new IntegralError("Pi container stopped"));
     }
+    for (const steering of this.steering) {
+      clearTimeout(steering.timer);
+      steering.reject(new IntegralError("Pi container stopped"));
+    }
+    this.steering.length = 0;
     if (child) {
       const exited = new Promise<boolean>((resolve) =>
         child.once("exit", () => resolve(true)),
