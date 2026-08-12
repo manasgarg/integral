@@ -112,7 +112,7 @@ Given an approval request is pending
 			And durably records the denial
 			And publishes that outcome only to the originating conversation
 			And does not execute the request
-	When the bound Discord user invokes `/approve <approval-id>` or `/deny <approval-id>` in the configured DM
+	When the bound Discord user invokes `/approvals approve <approval-id>` or `/approvals deny <approval-id>` in the configured DM
 		Then Integral binds the decision to the Discord provider, user, and channel identity
 			And requires the approval to belong to the Discord conversation
 			And applies the same revalidation, exact-once execution, and durable outcome behavior as the corresponding terminal command
