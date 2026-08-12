@@ -21,7 +21,7 @@ Given the integral coordinator is healthy
 ## QUEUE-31A6D84F — Serialize messages through one Pi conversation
 
 Given one message is in flight with Pi
-	And one or more later messages are queued
+	And one or more later messages remain queued rather than being delivered through a surface-specific steering behavior
 	When the in-flight turn completes
 		Then the coordinator durably marks the in-flight message complete
 			And claims the oldest remaining queued message

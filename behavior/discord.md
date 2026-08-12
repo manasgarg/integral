@@ -16,6 +16,7 @@ does not grant the agent credentials or weaken governed-operation approvals.
 <!-- Automation note (DISCORD-D235BC26): This behavior defines planned Discord status and failure isolation; executable coverage will land with implementation. -->
 <!-- Automation note (DISCORD-60D37149): This behavior defines planned origin-bound Discord task notifications; executable coverage will land with implementation. -->
 <!-- Automation note (DISCORD-0ADC0A9D): This behavior defines the planned native Discord DM experience; executable coverage will land with implementation. -->
+<!-- Automation note (DISCORD-45EED959): This behavior defines planned in-flight Discord steering; executable coverage will land with implementation. -->
 
 ## DISCORD-E4BE44A7 — Configure exactly one Discord DM
 
@@ -143,10 +144,6 @@ Given the Discord listener is healthy
 			And the typing indication stops before or when Integral posts the reply or error
 			And the reply appears as one or more ordinary bot messages in that DM
 			And Integral does not add transport labels, protocol details, message IDs, or routing instructions to the visible reply
-	When the user sends more text while Pi is working
-		Then Integral adds it to the Discord conversation's ordered queue
-			And processes queued messages one at a time in accepted order
-			And posts each completed turn's reply before processing the next queued message
 Given the Discord listener reconnects after being offline
 	When Integral imports messages that the user sent during the outage
 		Then the recovered messages produce the same typing, queue, and reply experience as live messages
@@ -163,6 +160,33 @@ Given Integral cannot start or complete the Pi turn for a Discord message
 		Then it posts one concise warning in plain language
 			And tells the user whether retrying the message is appropriate
 			And does not expose stack traces, container details, credentials, or raw provider errors
+
+## DISCORD-45EED959 — Steer an active Discord turn
+
+Given Pi is processing a message in the Discord conversation
+	And the bound user sends another non-empty text message in the configured DM
+	When Integral durably accepts the later message
+		Then Integral records it in the same Discord conversation with its Discord message ID and reply route
+			And immediately sends it to the active Pi session as a steering message
+			And does not wait for the active turn to finish before delivering the steering message to Pi
+			And does not start another Pi session or container
+			And records the input as steering within the same Pi run
+			And keeps Discord's typing indication active
+Given Pi is processing a message in the Discord conversation
+	And the bound user sends two or more later text messages
+	When Integral delivers them as steering
+		Then it delivers the steering messages to the active Pi session in durable acceptance order
+			And Pi may produce one consolidated response to the original message and its steering messages
+			And Integral does not promise one assistant response per steering message
+			And it posts the resulting assistant response only to the configured Discord DM
+Given the Discord conversation has a warm Pi session with no turn in flight
+	When the bound user sends another non-empty text message
+		Then Integral sends the message to that session as the next follow-up prompt rather than as steering
+Given Integral has durably accepted a Discord message for steering
+	When the active turn or Pi session ends before Integral can deliver that steering message
+		Then Integral keeps the message in the Discord conversation's queue
+			And delivers it as the next follow-up prompt to the current or replacement session
+			And does not lose it, move it to another conversation, or start a duplicate turn for it
 
 ## DISCORD-60D37149 — Route task notifications to their channel of origin
 
