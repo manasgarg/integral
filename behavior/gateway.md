@@ -86,8 +86,8 @@ Given the gateway classifies a control operation as requiring human approval
 	When an authenticated Pi session submits an approval-required request
 		Then Integral validates it without executing it
 			And durably records an unpredictable approval ID, safe summary, canonical request digest, originating actor, conversation and reply route, session and run, model selection, current revision, and deadline
-			And publishes the pending approval only to human surfaces belonging to the originating conversation
-			And includes it only in snapshots for clients that later attach to the originating conversation
+			And proactively publishes the pending approval only to the originating conversation
+			And includes the non-secret approval state in the shared host-command view
 			And keeps the originating tool call pending while its connection remains active
 			And does not build an image, advance a protected repository ref, or modify package state before approval
 Given authenticated host automation or a remote API submits an approval-required request outside Pi
@@ -101,22 +101,22 @@ Given a trusted local operator invokes `integral image edit` or `integral image 
 Given an approval request is pending
 	When an attached human runs `/approve <approval-id>`
 		Then Integral binds the decision to that terminal attachment
-			And requires the approval to belong to that terminal's conversation
+			And permits deciding any request visible in the shared approval view
 			And revalidates the exact request and expected revision
 			And executes it exactly once using the approval ID as its idempotency key
 			And durably records the result or failure
 			And publishes that outcome only to the originating conversation
 	When an attached human runs `/deny <approval-id>`
 		Then Integral binds the decision to that terminal attachment
-			And requires the approval to belong to that terminal's conversation
+			And permits deciding any request visible in the shared approval view
 			And durably records the denial
 			And publishes that outcome only to the originating conversation
 			And does not execute the request
 	When the bound Discord user invokes `/approvals approve <approval-id>` or `/approvals deny <approval-id>` in the configured DM
 		Then Integral binds the decision to the Discord provider, user, and channel identity
-			And requires the approval to belong to the Discord conversation
+			And permits deciding any request visible in the shared approval view
 			And applies the same revalidation, exact-once execution, and durable outcome behavior as the corresponding terminal command
-			And publishes that outcome only to the originating Discord DM
+			And publishes that outcome only to the request's originating conversation
 	When a Discord user or channel outside the configured identity attempts a decision
 		Then Integral ignores the attempt as unauthorized
 			And does not resolve or execute the request
@@ -148,7 +148,7 @@ Given Integral restarts with unresolved approvals
 	When the coordinator recovers durable state
 		Then it preserves every unresolved approval in its prior state
 			And does not cancel, deny, approve, or execute it merely because Integral restarted
-			And republishes it only to human surfaces belonging to its originating conversation
+			And proactively republishes it only to its originating conversation
 	When it recovers a durably approved operation without a durable execution result
 		Then it resumes execution using the approval ID
 			And prevents duplicate package-state or protected-repository changes

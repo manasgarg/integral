@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { IntegralError } from "./errors.ts";
 import { atomicWrite, ensureDir, readText } from "./fs.ts";
 import type { ModelSelection } from "./model-selection.ts";
+import type { ConversationOriginRoute } from "./schedule-types.ts";
 import type { IntegralPaths } from "./paths.ts";
 import type { ContainerPackageOperation } from "./container-packages.ts";
 
@@ -53,6 +54,7 @@ export interface ApprovalRecord {
     sessionId: string;
     runId?: string;
     selection: ModelSelection;
+    route?: ConversationOriginRoute;
   };
   createdAt: string;
   expiresAt: string;
@@ -177,6 +179,7 @@ export class ApprovalStore {
     sessionId: string;
     runId?: string;
     selection: ModelSelection;
+    route?: ConversationOriginRoute;
     deadlineMs?: number;
   }): Promise<ApprovalRecord> {
     const created = this.now(),
@@ -198,6 +201,7 @@ export class ApprovalStore {
           sessionId: input.sessionId,
           ...(input.runId ? { runId: input.runId } : {}),
           selection: structuredClone(input.selection),
+          ...(input.route ? { route: structuredClone(input.route) } : {}),
         },
         createdAt: new Date(created).toISOString(),
         expiresAt: new Date(
@@ -338,7 +342,19 @@ function validRecord(value: unknown): value is ApprovalRecord {
     validRequest(record.request) &&
     typeof record.origin?.sessionId === "string" &&
     record.origin.sessionId.length > 0 &&
-    typeof record.origin.selection?.piImage === "string"
+    typeof record.origin.selection?.piImage === "string" &&
+    (record.origin.route === undefined || validOriginRoute(record.origin.route))
+  );
+}
+
+function validOriginRoute(value: unknown): value is ConversationOriginRoute {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const route = value as Record<string, unknown>;
+  return (
+    route.provider === "discord" &&
+    ["conversationId", "externalId", "userId", "channelId"].every(
+      (key) => typeof route[key] === "string" && route[key].length > 0,
+    )
   );
 }
 

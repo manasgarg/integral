@@ -2,7 +2,7 @@
 
 These behaviors cover one trusted Discord direct-message channel as its own
 durable Integral conversation. The Discord DM and the default terminal
-conversation keep separate histories, queues, model selections, sessions, and
+conversation keep separate histories, queues, sessions, and
 task routes. In this release the logical Discord conversation maps one-to-one
 to the configured native Discord DM; linking surfaces is out of scope. Discord
 does not grant the agent credentials or weaken governed-operation approvals.
@@ -233,11 +233,12 @@ Given the Discord connection becomes active
 Given the bound Discord user invokes a supported slash command in the configured DM
 	When Integral handles the interaction
 		Then it acknowledges the interaction immediately with Discord's private deferred-response state
-			And executes the equivalent command against the Discord conversation
-			And `/model` reads or changes only the Discord conversation's model selection
-			And `/queue` lists, edits, or deletes only the Discord conversation's messages using their stable queue IDs
-			And `/approvals` lists only unresolved governed requests originating in the Discord conversation without secret values
-			And `/approvals approve` and `/approvals deny` act only on governed requests belonging to the Discord conversation
+			And executes the equivalent deployment-wide host command
+			And `/status`, `/model`, `/queue`, and `/approvals` present the same durable host state from every authorized human channel
+			And `/model` reads or changes the deployment's shared model selection
+			And `/queue` identifies each queued conversation message by its conversation and stable queue ID
+			And `/approvals` lists unresolved governed requests without secret values regardless of their notification route
+			And `/approvals approve` and `/approvals deny` may decide any listed request under the same human-approval policy
 			And it replaces the deferred response with the command result
 			And it keeps the command result private to the bound user
 			And it splits a result longer than 2,000 characters into ordered private follow-up messages
@@ -245,16 +246,16 @@ Given the bound Discord user invokes a supported slash command in the configured
 	When the user invokes `/help`
 		Then Integral lists every supported Discord command, subcommand, required argument, and purpose
 	When the user invokes `/model` without search terms
-		Then Integral privately reports the Discord conversation's current connection and model when selected
+		Then Integral privately reports the deployment's current connection and model when selected
 			And lists the available connection and model choices
 	When the user invokes `/model <search-terms>`
 		Then Integral applies the same case-insensitive matching rules as the terminal model chooser
 			And selects the model when the terms resolve to exactly one choice
 			And otherwise privately lists the matching choices and tells the user how to narrow the search
-			And leaves the Discord conversation's selection unchanged when the search is ambiguous or has no match
-	When the user omits a required argument or names a message or approval outside the Discord conversation
+			And leaves the deployment's selection unchanged when the search is ambiguous or has no match
+	When the user omits a required argument or names an unknown message or approval
 		Then Integral returns concise usage or not-found guidance in the private command response
-			And does not reveal whether the identifier exists in another conversation
+			And does not reveal secret request values
 	When command execution fails after Integral deferred the interaction
 		Then Integral replaces the waiting state with a private failure message
 			And does not leave Discord showing an indefinite pending response
@@ -267,7 +268,7 @@ Given the core Integral server is healthy
 			And reports the Discord connection as degraded with a redacted failure reason
 			And never includes the bot token in logs, status, command output, or conversation events
 	When the bound Discord user invokes `/status`
-		Then Integral reports the Discord conversation's model, queue, and session state
+		Then Integral reports deployment-wide model, queue, task, and session state
 			And includes Discord listener health
 			And identifies the configured bot, user, and DM without printing credentials
-			And does not include messages, queue entries, or session state from the default terminal conversation
+			And reports conversation-specific queue and session state with an unambiguous conversation label

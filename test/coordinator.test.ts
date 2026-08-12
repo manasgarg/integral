@@ -7,6 +7,13 @@ import { saveConnection, validateConnection } from "../src/connections.ts";
 import { Logger } from "../src/logging.ts";
 import { EventEmitter } from "node:events";
 import type { ServerResponse } from "node:http";
+import {
+  ConversationStore,
+  DurableQueue,
+  ModelSelectionStore,
+} from "../src/queue.ts";
+import { join } from "node:path";
+import { ApprovalStore } from "../src/approval-store.ts";
 
 async function until(check: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -35,6 +42,119 @@ async function coordinatorFixture(
   internals.events.on("event", (event: ClientEvent) => events.push(event));
   return { coordinator, events };
 }
+
+test("Discord host commands use shared model, queue, and approval state", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    coordinator = new Coordinator(paths, config),
+    directory = join(paths.channels, "discord-test"),
+    queue = new DurableQueue(join(directory, "queue.json")),
+    conversation = new ConversationStore(join(directory, "conversation.jsonl")),
+    modelSelection = new ModelSelectionStore(join(directory, "model.json")),
+    discordReplies: string[] = [],
+    scope = {
+      id: "discord:100000000000000004",
+      queue,
+      conversation,
+      modelSelection,
+      discord: {
+        listener: {
+          async typing() {},
+          async reply(text: string) {
+            discordReplies.push(text);
+          },
+        },
+        ingress: {},
+        userId: "100000000000000003",
+        channelId: "100000000000000004",
+      },
+    };
+  await Promise.all([
+    coordinator.queue.load(),
+    coordinator.conversation.load(),
+    coordinator.modelSelection.load(),
+    queue.load(),
+    conversation.load(),
+    modelSelection.load(),
+    coordinator.approvals.load(),
+  ]);
+  (coordinator as any).scopes.set(scope.id, scope);
+  const terminal = await coordinator.queue.enqueue("terminal message"),
+    discord = await queue.enqueue("discord message");
+  await coordinator.conversation.append({
+    type: "user",
+    messageId: terminal.id,
+    text: terminal.text,
+  });
+  await conversation.append({
+    type: "user",
+    messageId: discord.id,
+    text: discord.text,
+  });
+
+  const listing = String(
+    await (coordinator as any).discordCommand(scope, "queue", "ls", {}),
+  );
+  assert.match(listing, new RegExp(`terminal  ${terminal.id}`));
+  assert.match(listing, new RegExp(`${scope.id}  ${discord.id}`));
+  await (coordinator as any).discordCommand(scope, "queue", "edit", {
+    id: terminal.id,
+    text: "edited from Discord",
+  });
+  assert.equal(coordinator.queue.snapshot()[0]?.text, "edited from Discord");
+
+  const selection = {
+    connection: "shared",
+    provider: "anthropic",
+    model: "claude",
+    piVersion: "1",
+    piImage: "image",
+  };
+  await (coordinator as any).setSharedModelSelection(selection);
+  assert.deepEqual(coordinator.modelSelection.get(), selection);
+  assert.deepEqual(modelSelection.get(), selection);
+
+  const approval = await coordinator.approvals.create({
+    request: {
+      kind: "container-packages",
+      operation: "install",
+      packages: ["jq"],
+      expectedRevision: 1,
+    },
+    sessionId: "session",
+    selection,
+    route: {
+      provider: "discord",
+      conversationId: scope.id,
+      externalId: "message",
+      userId: scope.discord.userId,
+      channelId: scope.discord.channelId,
+    },
+  });
+  const approvals = String(
+    await (coordinator as any).discordCommand(scope, "approvals", "ls", {}),
+  );
+  assert.match(approvals, new RegExp(approval.id));
+  const restoredApprovals = new ApprovalStore(paths);
+  await restoredApprovals.load();
+  assert.deepEqual(restoredApprovals.get(approval.id).origin.route, {
+    provider: "discord",
+    conversationId: scope.id,
+    externalId: "message",
+    userId: scope.discord.userId,
+    channelId: scope.discord.channelId,
+  });
+  await (coordinator as any).discordCommand(scope, "approvals", "deny", {
+    id: approval.id,
+  });
+  const denied = coordinator.approvals.snapshot()[0]!;
+  assert.equal(denied.status, "denied");
+  assert.equal(
+    denied.decision?.terminalId,
+    `discord:${scope.discord.userId}:${scope.discord.channelId}`,
+  );
+  assert.ok(discordReplies.some((text) => text.includes(approval.id)));
+});
 
 /* @covers CHAT-54B8A1C3
 Given one `integral talk` terminal is attached to the deployment conversation

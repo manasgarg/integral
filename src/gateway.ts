@@ -618,6 +618,8 @@ export class Gateway {
       body.originSessionId = sessionId;
       const runId = this.sessionRunIds.get(sessionId);
       if (runId) body.originRunId = runId;
+      const origin = this.sessionOrigins.get(sessionId);
+      if (origin) body.origin = origin;
     }
     const abort = new AbortController();
     res.once("close", () => {
@@ -948,6 +950,8 @@ export class Gateway {
     body.originSessionId = sessionId;
     const runId = this.sessionRunIds.get(sessionId);
     if (runId) body.originRunId = runId;
+    const origin = this.sessionOrigins.get(sessionId);
+    if (origin) body.origin = origin;
     const abort = new AbortController();
     res.once("close", () => {
       if (!res.writableEnded) abort.abort();
