@@ -763,6 +763,7 @@ export class Runner {
         selection,
         sessionGeneration,
         continuation,
+        item.origin,
       );
       this.piConversationId = conversationId;
       const activeRun = this.piRun;
@@ -880,6 +881,7 @@ export class Runner {
     selection: ModelSelection,
     sessionGeneration: number,
     continuation?: ApprovalContinuation,
+    origin?: QueuedMessage["origin"],
   ): Promise<void> {
     if (this.pi) return;
     const resolvedImage = await this.dependencies.containers.ensureImage(
@@ -961,6 +963,15 @@ export class Runner {
             token: identity.sessionToken,
             sessionId: identity.sessionId,
             runId: recorder.runId,
+            conversationId: this.currentConversationId ?? "terminal",
+            ...(origin
+              ? {
+                  origin: {
+                    ...origin,
+                    conversationId: this.currentConversationId ?? "terminal",
+                  },
+                }
+              : {}),
           }),
         },
       );

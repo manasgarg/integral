@@ -296,6 +296,20 @@ function createInput(body: Record<string, unknown>): CreateSchedule {
     trigger: trigger(body.trigger),
     prompt: string(body.prompt),
     profile: profile(body.profile),
+    ...(body.origin === undefined ? {} : { origin: origin(body.origin) }),
+  };
+}
+
+function origin(value: unknown): NonNullable<CreateSchedule["origin"]> {
+  const item = record(value);
+  if (item.provider !== "discord")
+    throw new IntegralError("unsupported conversation origin", 400);
+  return {
+    provider: "discord",
+    conversationId: string(item.conversationId),
+    externalId: string(item.externalId),
+    userId: string(item.userId),
+    channelId: string(item.channelId),
   };
 }
 

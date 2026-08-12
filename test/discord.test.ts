@@ -8,6 +8,7 @@ import {
   verifyDiscordBot,
 } from "../src/discord.ts";
 import { DurableQueue } from "../src/queue.ts";
+import { DurableTaskQueue } from "../src/task-queue.ts";
 import { fixture } from "./helpers.ts";
 
 test("Discord connection binds immutable application, bot, user, and DM IDs", () => {
@@ -153,4 +154,40 @@ test("Discord reply chunks preserve order, Unicode pairs, and the message limit"
   assert.ok(chunks.every((chunk) => chunk.length <= 2_000));
   assert.ok(chunks.every((chunk) => !/^[\uDC00-\uDFFF]/.test(chunk)));
   assert.equal(chunks.join("").replace(/\s/g, ""), text.replace(/\s/g, ""));
+});
+
+test("Discord task origin survives acceptance and completion outbox persistence", async (t) => {
+  const paths = await fixture(t),
+    tasks = new DurableTaskQueue(paths),
+    origin = {
+      provider: "discord" as const,
+      conversationId: "discord:100000000000000004",
+      externalId: "110000000000000001",
+      userId: "100000000000000003",
+      channelId: "100000000000000004",
+    };
+  await tasks.load();
+  const task = await tasks.accept({
+    executionId: "execution-1",
+    scheduleId: "schedule-1",
+    scheduleRevision: 1,
+    triggerType: "once",
+    scheduledFor: new Date().toISOString(),
+    prompt: "prepare report",
+    profile: {
+      connection: "model",
+      provider: "anthropic",
+      model: "claude",
+      piVersion: "1",
+      piImage: "image",
+    },
+    state: "pending",
+    dispatchAttempts: 0,
+    createdAt: new Date().toISOString(),
+    origin,
+  });
+  assert.deepEqual(task.origin, origin);
+  await tasks.cancel(task.executionId);
+  assert.deepEqual(tasks.outbox()[0]?.origin, origin);
+  assert.equal(tasks.outbox()[0]?.taskId, task.id);
 });

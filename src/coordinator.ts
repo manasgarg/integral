@@ -88,6 +88,8 @@ interface ConversationScope {
   discord?: {
     listener: DiscordListener;
     ingress: DiscordIngressStore;
+    userId: string;
+    channelId: string;
   };
 }
 
@@ -280,7 +282,12 @@ export class Coordinator {
             ),
       },
     );
-    scope.discord = { listener, ingress };
+    scope.discord = {
+      listener,
+      ingress,
+      userId: connection.userId!,
+      channelId: connection.channelId,
+    };
     this.discordScope = scope;
     this.scopes.set(scope.id, scope);
     try {
@@ -375,20 +382,22 @@ export class Coordinator {
   private async deliverDiscord(
     scope: ConversationScope,
     text: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const listener = scope.discord?.listener;
-    if (!listener) return;
+    if (!listener) return false;
     await listener.typing(false).catch(() => undefined);
-    await listener
-      .reply(text)
-      .catch((error: unknown) =>
-        this.logger?.event(
-          "warn",
-          "discord.delivery_failed",
-          error instanceof Error ? error.message : String(error),
-          { conversation_id: scope.id },
-        ),
+    try {
+      await listener.reply(text);
+      return true;
+    } catch (error) {
+      this.logger?.event(
+        "warn",
+        "discord.delivery_failed",
+        error instanceof Error ? error.message : String(error),
+        { conversation_id: scope.id },
       );
+      return false;
+    }
   }
   private async submitDiscord(
     scope: ConversationScope,
@@ -471,6 +480,14 @@ export class Coordinator {
 
   async flushTaskOutbox(): Promise<void> {
     for (const entry of this.tasks.outbox()) {
+      if (entry.origin) {
+        const scope = this.scopes.get(entry.origin.conversationId);
+        if (scope?.discord) {
+          const text = `Task ${entry.taskId ?? entry.executionId} ${entry.outcome}${entry.result ? `: ${entry.result}` : entry.error ? ": see /status for retry guidance" : "."}`;
+          if (!(await this.deliverDiscord(scope, text))) continue;
+          await scope.conversation.append({ type: "notification", text });
+        }
+      }
       const response = await this.dependencies
         .internalFetch(
           this.paths,
@@ -500,13 +517,15 @@ export class Coordinator {
   private broadcast(type: string, data: unknown): ClientEvent {
     return this.eventStream.broadcast(type, data);
   }
-  private snapshot(): Record<string, unknown> {
+  private snapshot(
+    scope: ConversationScope = this.scopes.get("terminal")!,
+  ): Record<string, unknown> {
     return {
       deploymentId: deploymentId(this.paths),
-      conversation: this.conversation.snapshot(),
-      queue: this.queue.snapshot(),
+      conversation: scope.conversation.snapshot(),
+      queue: scope.queue.snapshot(),
       tasks: this.tasks.snapshot(),
-      modelSelection: this.modelSelection.get() ?? null,
+      modelSelection: scope.modelSelection.get() ?? null,
       approvals: this.approvals.snapshot(),
       eventSequence: this.eventStream.sequence,
       attached: this.eventStream.attached,
@@ -1080,7 +1099,14 @@ export class Coordinator {
         return;
       }
       if (url.pathname === "/integral/snapshot" && req.method === "GET") {
-        json(res, 200, this.snapshot());
+        const conversationId = url.searchParams.get("conversationId");
+        if (conversationId && !this.internal(req, "gateway"))
+          return unauthorized(res);
+        const scope = conversationId
+          ? this.scopes.get(conversationId)
+          : this.scopes.get("terminal");
+        if (!scope) throw new IntegralError("unknown conversation", 404);
+        json(res, 200, this.snapshot(scope));
         return;
       }
       if (url.pathname === "/integral/events" && req.method === "GET") {
@@ -1316,6 +1342,31 @@ export class Coordinator {
             this.config.conversation.contextMaxChars,
           ),
         });
+        return;
+      }
+      if (
+        url.pathname === "/integral/internal/channel-notification" &&
+        req.method === "POST"
+      ) {
+        if (!this.internal(req, "gateway")) return unauthorized(res);
+        const body = await bodyJson(req),
+          scope = this.scopes.get(stringValue(body.conversationId));
+        if (
+          !scope?.discord ||
+          scope.discord.userId !== stringValue(body.userId) ||
+          scope.discord.channelId !== stringValue(body.channelId)
+        )
+          throw new IntegralError(
+            "unknown conversation notification route",
+            404,
+          );
+        const text = stringValue(body.text);
+        if (!text)
+          throw new IntegralError("notification text is required", 400);
+        if (!(await this.deliverDiscord(scope, text)))
+          throw new IntegralError("Discord notification delivery failed", 503);
+        await scope.conversation.append({ type: "notification", text });
+        res.writeHead(204).end();
         return;
       }
       if (

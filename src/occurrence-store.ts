@@ -3,6 +3,7 @@ import { atomicWrite, readText } from "./fs.ts";
 import type { ModelSelection } from "./model-selection.ts";
 import type { IntegralPaths } from "./paths.ts";
 import type { ScheduleDefinition } from "./schedule-types.ts";
+import type { ConversationOriginRoute } from "./schedule-types.ts";
 import { IntegralError } from "./errors.ts";
 import { SerialExecutor } from "./persistence/serial-executor.ts";
 
@@ -24,6 +25,7 @@ export interface ScheduledOccurrence {
   completedAt?: string;
   coordinatorTaskId?: string;
   lastError?: string;
+  origin?: ConversationOriginRoute;
 }
 
 interface OccurrenceFile {
@@ -103,6 +105,9 @@ export class OccurrenceStore {
         state,
         dispatchAttempts: 0,
         createdAt: new Date(this.now()).toISOString(),
+        ...(schedule.origin
+          ? { origin: structuredClone(schedule.origin) }
+          : {}),
       };
       this.data.occurrences.push(occurrence);
       await this.persist();

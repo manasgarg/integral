@@ -295,7 +295,7 @@ export type QueueEvent =
 
 export interface ConversationEvent {
   sequence: number;
-  type: "user" | "assistant" | "error" | "session";
+  type: "user" | "assistant" | "error" | "session" | "notification";
   messageId?: string;
   text?: string;
   sessionId?: string;
