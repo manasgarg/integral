@@ -39,7 +39,7 @@ Given integral is installed
 ## CLI-D1B5816E — Keep conversation operations available in the CLI and talk
 
 Given the integral coordinator is healthy
-	And an operation concerns the shared conversation rather than host administration or terminal lifecycle
+	And an operation concerns the default terminal conversation rather than host administration or terminal lifecycle
 	When the user invokes `integral status` or enters `/status` in `integral talk`
 		Then integral reports the same conversation and component status from either surface
 	When the user invokes `integral model [<pattern>...]` or enters `/model [<pattern>...]` in `integral talk`

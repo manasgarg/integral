@@ -85,9 +85,9 @@ Given the gateway classifies a control operation as requiring human approval
 	And read-only repository operations are not approval-required
 	When an authenticated Pi session submits an approval-required request
 		Then Integral validates it without executing it
-			And durably records an unpredictable approval ID, safe summary, canonical request digest, originating actor, session and run, model selection, current revision, and deadline
-			And broadcasts the pending approval to every attached human terminal and the configured Discord DM
-			And includes it in snapshots for terminals that attach later
+			And durably records an unpredictable approval ID, safe summary, canonical request digest, originating actor, conversation and reply route, session and run, model selection, current revision, and deadline
+			And publishes the pending approval only to human surfaces belonging to the originating conversation
+			And includes it only in snapshots for clients that later attach to the originating conversation
 			And keeps the originating tool call pending while its connection remains active
 			And does not build an image, advance a protected repository ref, or modify package state before approval
 Given authenticated host automation or a remote API submits an approval-required request outside Pi
@@ -101,16 +101,22 @@ Given a trusted local operator invokes `integral image edit` or `integral image 
 Given an approval request is pending
 	When an attached human runs `/approve <approval-id>`
 		Then Integral binds the decision to that terminal attachment
+			And requires the approval to belong to that terminal's conversation
 			And revalidates the exact request and expected revision
 			And executes it exactly once using the approval ID as its idempotency key
-			And durably records and broadcasts the result or failure
+			And durably records the result or failure
+			And publishes that outcome only to the originating conversation
 	When an attached human runs `/deny <approval-id>`
 		Then Integral binds the decision to that terminal attachment
-			And durably records and broadcasts the denial
+			And requires the approval to belong to that terminal's conversation
+			And durably records the denial
+			And publishes that outcome only to the originating conversation
 			And does not execute the request
 	When the bound Discord user invokes `/approve <approval-id>` or `/deny <approval-id>` in the configured DM
 		Then Integral binds the decision to the Discord provider, user, and channel identity
-			And applies the same revalidation, exact-once execution, durable outcome, and broadcast behavior as the corresponding terminal command
+			And requires the approval to belong to the Discord conversation
+			And applies the same revalidation, exact-once execution, and durable outcome behavior as the corresponding terminal command
+			And publishes that outcome only to the originating Discord DM
 	When a Discord user or channel outside the configured identity attempts a decision
 		Then Integral ignores the attempt as unauthorized
 			And does not resolve or execute the request
@@ -142,7 +148,7 @@ Given Integral restarts with unresolved approvals
 	When the coordinator recovers durable state
 		Then it preserves every unresolved approval in its prior state
 			And does not cancel, deny, approve, or execute it merely because Integral restarted
-			And republishes it to attached human terminals and the configured Discord DM
+			And republishes it only to human surfaces belonging to its originating conversation
 	When it recovers a durably approved operation without a durable execution result
 		Then it resumes execution using the approval ID
 			And prevents duplicate package-state or protected-repository changes
@@ -153,4 +159,5 @@ Given an unresolved approval reaches its ten-minute deadline
 			And delivers the outcome through the live tool call or a replacement-session continuation
 When an approval changes state
 	Then Integral writes a durable audit record with its safe summary, request digest, lineage, decision identity, execution state, and timestamps
+		And sends any human-facing notification only to the approval's originating conversation
 		And never records credentials or secret request values

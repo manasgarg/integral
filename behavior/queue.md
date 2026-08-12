@@ -1,7 +1,8 @@
 # Message queue behaviors
 
-These behaviors cover the coordinator-owned durable queue for the one logical
-conversation in an `$INTEGRAL_HOME` deployment.
+These behaviors cover the coordinator-owned durable queue within each logical
+conversation in an `$INTEGRAL_HOME` deployment. Queue order, in-flight state,
+and mutations are scoped to one conversation and do not cross into another.
 
 ## QUEUE-5B7C2E91 — Enqueue every submitted message durably
 
