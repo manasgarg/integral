@@ -1,7 +1,8 @@
 # Terminal chat behaviors
 
 These behaviors cover interchangeable terminal views over the coordinator-owned
-single-user conversation.
+default terminal conversation. Channel-provider conversations remain separate
+unless a future behavior explicitly links them.
 
 <!-- Automation note (CHAT-888AFAE0): Prompt, local-command, queue, and rendering contracts are automated; keystroke-level PTY interaction is not run by the non-interactive default suite. -->
 <!-- Automation note (CHAT-54B8A1C3): Shared coordinator snapshots and broadcasts are automated; two real PTYs are an acceptance test. -->

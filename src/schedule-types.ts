@@ -1,5 +1,13 @@
 import type { ModelSelection } from "./model-selection.ts";
 
+export interface ConversationOriginRoute {
+  conversationId: string;
+  provider: "discord";
+  externalId: string;
+  userId: string;
+  channelId: string;
+}
+
 export type ScheduleTrigger =
   | { type: "recurring"; cron: string; timezone: string }
   | { type: "once"; runAt: string };
@@ -14,6 +22,7 @@ export interface ScheduleDefinition {
   deleted: boolean;
   createdAt: string;
   updatedAt: string;
+  origin?: ConversationOriginRoute;
 }
 
 export type ScheduleOperation =
@@ -33,6 +42,7 @@ export interface CreateSchedule {
   trigger: ScheduleTrigger;
   prompt: string;
   profile: ModelSelection;
+  origin?: ConversationOriginRoute;
 }
 
 export interface UpdateSchedule {

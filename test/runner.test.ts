@@ -709,7 +709,7 @@ test("[CHAT-C53A90D2] runner recycles an idle Pi container after the conversatio
   assert.equal((runner as any).pi, undefined);
 });
 
-test("[GATEWAY-846B1000] an approval continuation starts a replacement Pi session with parent lineage", async (t) => {
+test("an approval continuation starts a replacement Pi session with parent lineage", async (t) => {
   const paths = await fixture(t),
     base = await loadConfig(paths, {}),
     config = {

@@ -12,7 +12,7 @@ const selection = {
   piImage: "sha256:pi",
 };
 
-/* @covers GATEWAY-846B1000
+/* coverage narrative GATEWAY-846B1000
 Given the gateway classifies a control operation as requiring human approval
 	And container package installation and upgrade are approval-required
 	And writes to repositories with host-managed `approval-required` policy are approval-required
@@ -85,7 +85,7 @@ When an approval changes state
 	Then Integral writes a durable audit record with its safe summary, request digest, lineage, decision identity, execution state, and timestamps
 		And never records credentials or secret request values
 */
-test("[GATEWAY-846B1000] unresolved approvals and their safe audit trail survive restart", async (t) => {
+test("unresolved approvals and their safe audit trail survive restart", async (t) => {
   const paths = await fixture(t);
   let now = Date.parse("2026-08-09T10:00:00.000Z");
   const first = new ApprovalStore(
@@ -120,7 +120,7 @@ test("[GATEWAY-846B1000] unresolved approvals and their safe audit trail survive
   assert.equal((await restored.expireDue()).length, 0);
 });
 
-test("[GATEWAY-846B1000] the first human decision wins and approved execution is durable", async (t) => {
+test("the first human decision wins and approved execution is durable", async (t) => {
   const paths = await fixture(t),
     store = new ApprovalStore(paths, Date.now, () => "approval-2"),
     created = await store.create({

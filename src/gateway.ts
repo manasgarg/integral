@@ -95,6 +95,7 @@ export function allowsConnect(
 export class Gateway {
   readonly sessions = new Map<string, string>();
   readonly sessionRunIds = new Map<string, string>();
+  readonly sessionOrigins = new Map<string, Record<string, string>>();
   readonly taskSessions = new Map<
     string,
     { executionId: string; attemptId: string }
@@ -265,6 +266,7 @@ export class Gateway {
         runId = stringValue(body.runId),
         executionId = stringValue(body.executionId),
         attemptId = stringValue(body.attemptId);
+      const origin = body.origin;
       if (!token || !sessionId) {
         res.writeHead(400).end("invalid session\n");
         return;
@@ -275,6 +277,27 @@ export class Gateway {
       }
       this.sessions.set(token, sessionId);
       if (runId) this.sessionRunIds.set(sessionId, runId);
+      if (origin && typeof origin === "object" && !Array.isArray(origin)) {
+        const value = origin as Record<string, unknown>;
+        if (
+          value.provider === "discord" &&
+          ["conversationId", "externalId", "userId", "channelId"].every(
+            (key) => typeof value[key] === "string",
+          )
+        )
+          this.sessionOrigins.set(
+            sessionId,
+            Object.fromEntries(
+              [
+                "provider",
+                "conversationId",
+                "externalId",
+                "userId",
+                "channelId",
+              ].map((key) => [key, String(value[key])]),
+            ),
+          );
+      }
       if (executionId && attemptId)
         this.taskSessions.set(sessionId, { executionId, attemptId });
       res.writeHead(204).end();
@@ -336,6 +359,7 @@ export class Gateway {
       this.sessions.delete(token);
       if (sessionId) {
         this.sessionRunIds.delete(sessionId);
+        this.sessionOrigins.delete(sessionId);
         this.taskSessions.delete(sessionId);
         await this.releaseSessionLocks(sessionId);
       }
@@ -594,6 +618,8 @@ export class Gateway {
       body.originSessionId = sessionId;
       const runId = this.sessionRunIds.get(sessionId);
       if (runId) body.originRunId = runId;
+      const origin = this.sessionOrigins.get(sessionId);
+      if (origin) body.origin = origin;
     }
     const abort = new AbortController();
     res.once("close", () => {
@@ -924,6 +950,8 @@ export class Gateway {
     body.originSessionId = sessionId;
     const runId = this.sessionRunIds.get(sessionId);
     if (runId) body.originRunId = runId;
+    const origin = this.sessionOrigins.get(sessionId);
+    if (origin) body.origin = origin;
     const abort = new AbortController();
     res.once("close", () => {
       if (!res.writableEnded) abort.abort();
@@ -968,11 +996,12 @@ export class Gateway {
       delete body.profile;
     }
     if (method === "POST" && schedulerPath === "/integral/schedules") {
+      const origin = this.sessionOrigins.get(sessionId);
       const snapshot = await this.dependencies.internalFetch(
         this.paths,
         "gateway",
         "coordinator",
-        "/integral/snapshot",
+        `/integral/snapshot${origin ? `?conversationId=${encodeURIComponent(origin.conversationId!)}` : ""}`,
       );
       if (!snapshot.ok)
         throw new IntegralError("conversation model is unavailable", 409);
@@ -983,8 +1012,9 @@ export class Gateway {
           409,
         );
       body.profile = data.modelSelection;
+      if (origin) body.origin = origin;
     }
-    return this.dependencies.internalFetch(
+    const response = await this.dependencies.internalFetch(
       this.paths,
       "gateway",
       "scheduler",
@@ -994,6 +1024,35 @@ export class Gateway {
         ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
       },
     );
+    const origin = this.sessionOrigins.get(sessionId);
+    if (
+      origin &&
+      response.ok &&
+      method === "POST" &&
+      schedulerPath === "/integral/schedules"
+    ) {
+      const created = (await response.clone().json()) as {
+        id?: unknown;
+        prompt?: unknown;
+      };
+      if (typeof created.id === "string")
+        await this.dependencies
+          .internalFetch(
+            this.paths,
+            "gateway",
+            "coordinator",
+            "/integral/internal/channel-notification",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                ...origin,
+                text: `Created task ${created.id}: ${typeof created.prompt === "string" ? created.prompt.slice(0, 160) : "scheduled work"}`,
+              }),
+            },
+          )
+          .catch(() => undefined);
+    }
+    return response;
   }
   private async forward(
     req: IncomingMessage,

@@ -34,6 +34,7 @@
     "test:coverage": "npm run build && node --experimental-test-coverage --test --test-concurrency=1 --test-coverage-include=dist/src/**/*.js --test-coverage-lines=50 --test-coverage-branches=75 --test-coverage-functions=60 dist/test/*.test.js"
   },
   "dependencies": {
+    "discord.js": "14.22.1",
     "smol-toml": "1.4.2"
   },
   "devDependencies": {

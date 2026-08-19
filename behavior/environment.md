@@ -36,7 +36,7 @@ Given two integral processes receive paths that resolve to the same deployment r
 	When they resolve their deployment identity
 		Then they use the same normalized absolute root
 			And contend for the same per-component locks
-			And attach to the same conversation and queue
+			And resolve the same durable conversation registry and per-conversation queues
 
 ## ENV-0E6A92C4 — Keep discovery commands independent of deployment state
 

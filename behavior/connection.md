@@ -2,9 +2,11 @@
 
 These behaviors preserve the source project's connection CLI ergonomics for a
 single user. Connections may describe model providers, email accounts, generic
-HTTP endpoints, remote or stdio MCP servers, governed host Git repositories, or durable
-writable host stores. Every active connection is available to Pi; integral has
-no grant or revoke concept.
+HTTP endpoints, remote or stdio MCP servers, governed host Git repositories, durable
+writable host stores, or the deployment's Discord DM. Service and host-resource
+connections are available to Pi; the Discord connection is a trusted host-side
+conversation surface and is never exposed to Pi. Integral has no grant or revoke
+concept.
 
 <!-- Automation note (CONNECTION-03C4E791): Guided setup validation and its explicit equivalent are automated; keystroke-level interactive selection is not driven by the non-interactive default suite. -->
 <!-- Automation note (CONNECTION-1D691391): Commit-after-verification behavior is automated with a controlled failing endpoint; no real provider is contacted. -->
@@ -20,6 +22,7 @@ Given integral is installed
 			And documents `--auth` for explicit setup
 			And documents `--transport`, `--command`, `--arg`, `--env`, `--secret-env`, and `--allow-url` for MCP setup
 			And documents `--path`, `--branch`, and `--mount` for host resources
+			And documents `--user-id` and `--credential-stdin` for Discord setup
 			And does not list `grant` or `revoke`
 
 ## CONNECTION-75EC27E8 — Show the connection catalog
@@ -31,9 +34,10 @@ Given integral is installed
 			And lists generic `http` and `mcp` connection types
 			And lists the `host-repo` connection type
 			And lists the `host-store` connection type
+			And lists `discord` as a channel connection type
 			And identifies the kind of each catalog entry
 			And describes supported OAuth, device-code, key, and no-auth methods
-			And does not list channel or general host-directory connection types
+			And does not list unsupported channel or general host-directory connection types
 
 ## CONNECTION-03C4E791 — Open guided connection setup
 

@@ -7,6 +7,13 @@ import { saveConnection, validateConnection } from "../src/connections.ts";
 import { Logger } from "../src/logging.ts";
 import { EventEmitter } from "node:events";
 import type { ServerResponse } from "node:http";
+import {
+  ConversationStore,
+  DurableQueue,
+  ModelSelectionStore,
+} from "../src/queue.ts";
+import { join } from "node:path";
+import { ApprovalStore } from "../src/approval-store.ts";
 
 async function until(check: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -35,6 +42,119 @@ async function coordinatorFixture(
   internals.events.on("event", (event: ClientEvent) => events.push(event));
   return { coordinator, events };
 }
+
+test("Discord host commands use shared model, queue, and approval state", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    coordinator = new Coordinator(paths, config),
+    directory = join(paths.channels, "discord-test"),
+    queue = new DurableQueue(join(directory, "queue.json")),
+    conversation = new ConversationStore(join(directory, "conversation.jsonl")),
+    modelSelection = new ModelSelectionStore(join(directory, "model.json")),
+    discordReplies: string[] = [],
+    scope = {
+      id: "discord:100000000000000004",
+      queue,
+      conversation,
+      modelSelection,
+      discord: {
+        listener: {
+          async typing() {},
+          async reply(text: string) {
+            discordReplies.push(text);
+          },
+        },
+        ingress: {},
+        userId: "100000000000000003",
+        channelId: "100000000000000004",
+      },
+    };
+  await Promise.all([
+    coordinator.queue.load(),
+    coordinator.conversation.load(),
+    coordinator.modelSelection.load(),
+    queue.load(),
+    conversation.load(),
+    modelSelection.load(),
+    coordinator.approvals.load(),
+  ]);
+  (coordinator as any).scopes.set(scope.id, scope);
+  const terminal = await coordinator.queue.enqueue("terminal message"),
+    discord = await queue.enqueue("discord message");
+  await coordinator.conversation.append({
+    type: "user",
+    messageId: terminal.id,
+    text: terminal.text,
+  });
+  await conversation.append({
+    type: "user",
+    messageId: discord.id,
+    text: discord.text,
+  });
+
+  const listing = String(
+    await (coordinator as any).discordCommand(scope, "queue", "ls", {}),
+  );
+  assert.match(listing, new RegExp(`terminal  ${terminal.id}`));
+  assert.match(listing, new RegExp(`${scope.id}  ${discord.id}`));
+  await (coordinator as any).discordCommand(scope, "queue", "edit", {
+    id: terminal.id,
+    text: "edited from Discord",
+  });
+  assert.equal(coordinator.queue.snapshot()[0]?.text, "edited from Discord");
+
+  const selection = {
+    connection: "shared",
+    provider: "anthropic",
+    model: "claude",
+    piVersion: "1",
+    piImage: "image",
+  };
+  await (coordinator as any).setSharedModelSelection(selection);
+  assert.deepEqual(coordinator.modelSelection.get(), selection);
+  assert.deepEqual(modelSelection.get(), selection);
+
+  const approval = await coordinator.approvals.create({
+    request: {
+      kind: "container-packages",
+      operation: "install",
+      packages: ["jq"],
+      expectedRevision: 1,
+    },
+    sessionId: "session",
+    selection,
+    route: {
+      provider: "discord",
+      conversationId: scope.id,
+      externalId: "message",
+      userId: scope.discord.userId,
+      channelId: scope.discord.channelId,
+    },
+  });
+  const approvals = String(
+    await (coordinator as any).discordCommand(scope, "approvals", "ls", {}),
+  );
+  assert.match(approvals, new RegExp(approval.id));
+  const restoredApprovals = new ApprovalStore(paths);
+  await restoredApprovals.load();
+  assert.deepEqual(restoredApprovals.get(approval.id).origin.route, {
+    provider: "discord",
+    conversationId: scope.id,
+    externalId: "message",
+    userId: scope.discord.userId,
+    channelId: scope.discord.channelId,
+  });
+  await (coordinator as any).discordCommand(scope, "approvals", "deny", {
+    id: approval.id,
+  });
+  const denied = coordinator.approvals.snapshot()[0]!;
+  assert.equal(denied.status, "denied");
+  assert.equal(
+    denied.decision?.terminalId,
+    `discord:${scope.discord.userId}:${scope.discord.channelId}`,
+  );
+  assert.ok(discordReplies.some((text) => text.includes(approval.id)));
+});
 
 /* @covers CHAT-54B8A1C3
 Given one `integral talk` terminal is attached to the deployment conversation
@@ -282,7 +402,7 @@ test("[BOX-40521095] package changes rebuild the selected exact Pi image and per
   assert.equal(builds[2]?.rebuild, false);
 });
 
-test("[GATEWAY-846B1000] a live Pi package request waits for an attached human and returns the durable result", async (t) => {
+test("a live Pi package request waits for an attached human and returns the durable result", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     builds: string[] = [],
@@ -337,7 +457,7 @@ test("[GATEWAY-846B1000] a live Pi package request waits for an attached human a
   assert.equal(builds.length, 1);
 });
 
-test("[CLI-D1B5816E] a trusted local operator can decide an approval without a talk attachment", async (t) => {
+test("a trusted local operator can decide an approval without a talk attachment", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     coordinator = new Coordinator(paths, config),
@@ -371,7 +491,7 @@ test("[CLI-D1B5816E] a trusted local operator can decide an approval without a t
   assert.equal((await waiting).status, "denied");
 });
 
-test("[GATEWAY-846B1000] denial is durable and never executes the package request", async (t) => {
+test("denial is durable and never executes the package request", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
   let builds = 0;
@@ -565,7 +685,7 @@ test("[BOX-6A91C3E7] a fresh unchanged-recipe rebuild is approval-gated without 
   assert.deepEqual(calls, ["build"]);
 });
 
-test("[GATEWAY-846B1000] an orphaned approval survives restart and queues one lineage-aware continuation", async (t) => {
+test("an orphaned approval survives restart and queues one lineage-aware continuation", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     selection = {
@@ -629,7 +749,7 @@ test("[GATEWAY-846B1000] an orphaned approval survives restart and queues one li
 
 /* @covers QUEUE-31A6D84F
 Given one message is in flight with Pi
-	And one or more later messages are queued
+	And one or more later messages remain queued rather than being delivered through a surface-specific steering behavior
 	When the in-flight turn completes
 		Then the coordinator durably marks the in-flight message complete
 			And claims the oldest remaining queued message

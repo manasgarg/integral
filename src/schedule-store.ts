@@ -195,6 +195,7 @@ export class ScheduleStore {
           deleted: false,
           createdAt: timestamp,
           updatedAt: timestamp,
+          ...(input.origin ? { origin: structuredClone(input.origin) } : {}),
         };
       await this.commit(definition, "create", actor);
       return structuredClone(definition);

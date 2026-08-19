@@ -36,10 +36,12 @@ Given integral is installed
 			And exits successfully
 			And does not perform the command operation
 
+<!-- Automation note (CLI-D1B5816E): Shared terminal operations are covered individually; complete cross-surface equivalence requires an attached interactive terminal fixture. -->
+
 ## CLI-D1B5816E — Keep conversation operations available in the CLI and talk
 
 Given the integral coordinator is healthy
-	And an operation concerns the shared conversation rather than host administration or terminal lifecycle
+	And an operation concerns the default terminal conversation rather than host administration or terminal lifecycle
 	When the user invokes `integral status` or enters `/status` in `integral talk`
 		Then integral reports the same conversation and component status from either surface
 	When the user invokes `integral model [<pattern>...]` or enters `/model [<pattern>...]` in `integral talk`

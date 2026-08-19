@@ -1,7 +1,8 @@
 # Message queue behaviors
 
-These behaviors cover the coordinator-owned durable queue for the one logical
-conversation in an `$INTEGRAL_HOME` deployment.
+These behaviors cover the coordinator-owned durable queue within each logical
+conversation in an `$INTEGRAL_HOME` deployment. Queue order, in-flight state,
+and mutations are scoped to one conversation and do not cross into another.
 
 ## QUEUE-5B7C2E91 — Enqueue every submitted message durably
 
@@ -20,7 +21,7 @@ Given the integral coordinator is healthy
 ## QUEUE-31A6D84F — Serialize messages through one Pi conversation
 
 Given one message is in flight with Pi
-	And one or more later messages are queued
+	And one or more later messages remain queued rather than being delivered through a surface-specific steering behavior
 	When the in-flight turn completes
 		Then the coordinator durably marks the in-flight message complete
 			And claims the oldest remaining queued message

@@ -380,7 +380,8 @@ export class RunRecorder {
       | "follow-up"
       | "retry-instruction"
       | "task-outcome-reminder"
-      | "approval-resolution",
+      | "approval-resolution"
+      | "steering",
     relationships: Record<string, string> = {},
   ): Promise<void> {
     return this.event("user", "input", { category, text, relationships });

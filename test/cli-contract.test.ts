@@ -105,7 +105,7 @@ test("[CLI-A7D3E91B] -h prints applicable help at every command depth without pe
   }
 });
 
-/* @covers CLI-D1B5816E
+/* coverage narrative CLI-D1B5816E
 Given the integral coordinator is healthy
 	And an operation concerns the shared conversation rather than host administration or terminal lifecycle
 	When the user invokes `integral status` or enters `/status` in `integral talk`
@@ -143,7 +143,7 @@ Given an operation is specific to host administration, scripting, or an attached
 			And `/exit` remains talk-only
 			And integral does not treat an arbitrary top-level CLI command as a local talk command
 */
-test("[CLI-D1B5816E] standalone conversation commands share state without attaching talk", async (t) => {
+test("standalone conversation commands share state without attaching talk", async (t) => {
   const paths = await fixture(t),
     requests: Array<{ path: string; method: string; body?: string }> = [];
   let stdout = "",
@@ -281,6 +281,7 @@ Given integral is installed
 			And documents `--auth` for explicit setup
 			And documents `--transport`, `--command`, `--arg`, `--env`, `--secret-env`, and `--allow-url` for MCP setup
 			And documents `--path`, `--branch`, and `--mount` for host resources
+			And documents `--user-id` and `--credential-stdin` for Discord setup
 			And does not list `grant` or `revoke`
 */
 test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and removal but no grants", async () => {
@@ -297,6 +298,8 @@ test("[CONNECTION-C14B8E70] connection help lists catalog, guided add, list, and
     "--env",
     "--secret-env",
     "--allow-url",
+    "--user-id",
+    "--credential-stdin",
   ])
     assert.match(result.stdout, new RegExp(option));
   assert.doesNotMatch(result.stdout, /^\s+(grant|revoke)\b/m);
@@ -310,9 +313,10 @@ Given integral is installed
 			And lists generic `http` and `mcp` connection types
 			And lists the `host-repo` connection type
 			And lists the `host-store` connection type
+			And lists `discord` as a channel connection type
 			And identifies the kind of each catalog entry
 			And describes supported OAuth, device-code, key, and no-auth methods
-			And does not list channel or general host-directory connection types
+			And does not list unsupported channel or general host-directory connection types
 */
 test("[CONNECTION-75EC27E8] catalog describes model, email, HTTP, MCP and every supported authentication family", async () => {
   const result = await capture(["connection", "catalog"]);
@@ -324,6 +328,8 @@ test("[CONNECTION-75EC27E8] catalog describes model, email, HTTP, MCP and every 
     "mcp",
     "gmail",
     "mailgun",
+    "discord",
+    "channel",
     "email",
     "model",
     "oauth",
@@ -1011,7 +1017,7 @@ Given a message is durably queued and not in flight
 		Then integral requests the same atomic deletion from the coordinator without attaching a talk session
 			And confirms the deleted message ID after the coordinator accepts it
 */
-test("[CLI-D1B5816E] [QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUEUE-2F6B9D04] top-level queue commands use the coordinator without attaching a talk session", async (t) => {
+test("[QUEUE-A19D6F43] [QUEUE-C84E1A70] [QUEUE-2F6B9D04] top-level queue commands use the coordinator without attaching a talk session", async (t) => {
   const paths = await fixture(t),
     requests: { path: string; method: string; body?: string }[] = [];
   let stdout = "";
@@ -1117,7 +1123,7 @@ Given the user is in `integral talk`
 			And handles the command on the host
 			And does not send the command to Pi
 */
-test("[CHAT-84D839CE] [GATEWAY-846B1000] talk help documents every local command and never contacts Pi", async () => {
+test("[CHAT-84D839CE] talk help documents every local command and never contacts Pi", async () => {
   const result = await capture(["talk", "--help"]);
   for (const command of [
     "/help",
@@ -1363,7 +1369,7 @@ Given the user is in `integral talk`
 			And identifies the in-flight message when one exists
 			And does not print secrets
 */
-test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] [CLI-D1B5816E] [GATEWAY-846B1000] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
+test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5C14] scripted terminal silently reuses the current model on a refreshed runtime before handling local commands", async (t) => {
   const paths = await fixture(t),
     userLabel = "\u001b[48;5;238m\u001b[97m ☺ ",
     lines = [

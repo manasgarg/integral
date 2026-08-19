@@ -44,6 +44,7 @@ export { queueCommand, type QueueDependencies } from "./cli/queue.ts";
 import { scheduleCommand } from "./cli/schedule.ts";
 export { scheduleCommand, type ScheduleDependencies } from "./cli/schedule.ts";
 import { fetchJson, requestOk } from "./cli/http.ts";
+import { verifyDiscordBot } from "./discord.ts";
 import {
   approvalCommand,
   healthyCoordinator,
@@ -107,6 +108,9 @@ MCP options:
 Email examples:
   integral connection add gmail --auth oauth --account <email> --client-id <id> --capabilities read,search,send --allowed-recipients <addresses>
   integral connection add mailgun --auth key --domain <domain> --from <email> --capabilities send --allowed-recipients <addresses>
+
+Discord DM:
+  integral connection add discord --user-id <discord-user-id> [--credential-stdin]
 
 Host-resource paths:
   --path resolves relative paths from the current directory
@@ -435,6 +439,44 @@ export async function connectionCommand(args: string[]): Promise<number> {
   }
   if (command === "add") {
     await prepareStorage(paths);
+    if (args[1] === "discord") {
+      const existing = (await loadConnections(paths)).connections.find(
+        (connection) => connection.kind === "channel",
+      );
+      const name = flag(args, "--name") ?? "discord";
+      if (existing && existing.name !== name)
+        throw new IntegralError(
+          "only one channel connection may be configured",
+        );
+      let userId = flag(args, "--user-id");
+      if (!userId && input.isTTY) {
+        const rl = createInterface({ input, output });
+        try {
+          userId = (await rl.question("Discord user ID: ")).trim();
+        } finally {
+          rl.close();
+        }
+      }
+      if (!userId)
+        throw new IntegralError("Discord user ID is required; use --user-id");
+      const credential = await readCredential(has(args, "--credential-stdin"));
+      const verified = await verifyDiscordBot(credential, userId);
+      const setup = validateConnection({
+        name,
+        kind: "channel",
+        provider: "discord",
+        auth: "key",
+        application_id: verified.applicationId,
+        bot_user_id: verified.botUserId,
+        user_id: verified.userId,
+        channel_id: verified.channelId,
+      });
+      const result = await saveConnection(paths, setup, credential);
+      process.stdout.write(
+        `${result.rotated ? "Rotated" : "Added"} ${name} (bot ${verified.botUserId}, user ${verified.userId}, DM ${verified.channelId}). Start or restart integral server start to begin listening.\n`,
+      );
+      return 0;
+    }
     let setup = args[1]
       ? await explicitConnection(args.slice(1))
       : await guidedConnection();

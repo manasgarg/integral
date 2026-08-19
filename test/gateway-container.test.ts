@@ -739,7 +739,7 @@ test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the 
   assert.deepEqual(forwarded, ["/integral/schedules"]);
 });
 
-test("[BOX-40521095] [GATEWAY-846B1000] authenticated package controls bind session and run lineage at the gateway", async (t) => {
+test("[BOX-40521095] authenticated package controls bind session and run lineage at the gateway", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
   let forwarded:

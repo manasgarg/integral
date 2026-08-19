@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { atomicWrite, readText } from "./fs.ts";
 import type { ModelSelection } from "./model-selection.ts";
 import type { ScheduledOccurrence } from "./occurrence-store.ts";
+import type { ConversationOriginRoute } from "./schedule-types.ts";
 import type { IntegralPaths } from "./paths.ts";
 import { IntegralError } from "./errors.ts";
 import { SerialExecutor } from "./persistence/serial-executor.ts";
@@ -49,6 +50,7 @@ export interface ScheduledTask {
   completedAt?: string;
   result?: string;
   lastError?: string;
+  origin?: ConversationOriginRoute;
 }
 
 export interface TaskOutboxEntry {
@@ -56,6 +58,10 @@ export interface TaskOutboxEntry {
   outcome: "succeeded" | "failed" | "cancelled";
   error?: string;
   createdAt: string;
+  taskId?: string;
+  scheduleId?: string;
+  result?: string;
+  origin?: ConversationOriginRoute;
 }
 
 interface TaskFile {
@@ -72,6 +78,7 @@ function immutableTask(task: ScheduledTask): unknown {
     scheduledFor: task.scheduledFor,
     prompt: task.prompt,
     profile: task.profile,
+    origin: task.origin,
   };
 }
 
@@ -148,6 +155,9 @@ export class DurableTaskQueue {
         state: "queued",
         attempts: [],
         createdAt: new Date(this.now()).toISOString(),
+        ...(occurrence.origin
+          ? { origin: structuredClone(occurrence.origin) }
+          : {}),
       };
       if (existing) {
         if (
@@ -440,6 +450,14 @@ export class DurableTaskQueue {
     this.data.outbox.push({
       executionId,
       outcome,
+      taskId: this.find(executionId).id,
+      scheduleId: this.find(executionId).scheduleId,
+      ...(this.find(executionId).result
+        ? { result: this.find(executionId).result }
+        : {}),
+      ...(this.find(executionId).origin
+        ? { origin: structuredClone(this.find(executionId).origin) }
+        : {}),
       ...(error ? { error } : {}),
       createdAt: new Date(this.now()).toISOString(),
     });
