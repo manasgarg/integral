@@ -402,7 +402,7 @@ test("[BOX-40521095] package changes rebuild the selected exact Pi image and per
   assert.equal(builds[2]?.rebuild, false);
 });
 
-test("[GATEWAY-846B1000] a live Pi package request waits for an attached human and returns the durable result", async (t) => {
+test("a live Pi package request waits for an attached human and returns the durable result", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     builds: string[] = [],
@@ -457,7 +457,7 @@ test("[GATEWAY-846B1000] a live Pi package request waits for an attached human a
   assert.equal(builds.length, 1);
 });
 
-test("[CLI-D1B5816E] a trusted local operator can decide an approval without a talk attachment", async (t) => {
+test("a trusted local operator can decide an approval without a talk attachment", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     coordinator = new Coordinator(paths, config),
@@ -491,7 +491,7 @@ test("[CLI-D1B5816E] a trusted local operator can decide an approval without a t
   assert.equal((await waiting).status, "denied");
 });
 
-test("[GATEWAY-846B1000] denial is durable and never executes the package request", async (t) => {
+test("denial is durable and never executes the package request", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
   let builds = 0;
@@ -685,7 +685,7 @@ test("[BOX-6A91C3E7] a fresh unchanged-recipe rebuild is approval-gated without 
   assert.deepEqual(calls, ["build"]);
 });
 
-test("[GATEWAY-846B1000] an orphaned approval survives restart and queues one lineage-aware continuation", async (t) => {
+test("an orphaned approval survives restart and queues one lineage-aware continuation", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     selection = {
