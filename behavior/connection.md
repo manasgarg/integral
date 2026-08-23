@@ -22,7 +22,8 @@ Given integral is installed
 			And documents `--auth` for explicit setup
 			And documents `--transport`, `--command`, `--arg`, `--env`, `--secret-env`, and `--allow-url` for MCP setup
 			And documents `--path`, `--branch`, and `--mount` for host resources
-			And documents `--user-id` and `--credential-stdin` for Discord setup
+			And documents `--user-id` as the numeric ID of the human allowed to DM the bot
+			And documents `--credential-stdin` for Discord setup
 			And does not list `grant` or `revoke`
 
 ## CONNECTION-75EC27E8 — Show the connection catalog
@@ -53,6 +54,7 @@ Given an interactive terminal
 			And treats MCP authentication and transport choices as advanced compatibility overrides
 			And requires a mount path for a host resource
 			And routes a selected Discord entry through verified Discord setup
+			And identifies the Discord user ID as the numeric ID of the human allowed to DM the bot
 			And runs the selected authentication flow
 			And completes the same setup as explicit `connection add <entry>`
 

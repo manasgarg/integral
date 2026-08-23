@@ -110,7 +110,8 @@ Email examples:
   integral connection add mailgun --auth key --domain <domain> --from <email> --capabilities send --allowed-recipients <addresses>
 
 Discord DM:
-  integral connection add discord --user-id <discord-user-id> [--credential-stdin]
+  integral connection add discord --user-id <human-user-id> [--credential-stdin]
+  --user-id is the numeric Discord ID of the human allowed to DM the bot
 
 Host-resource paths:
   --path resolves relative paths from the current directory
@@ -450,17 +451,21 @@ export async function connectionCommand(args: string[]): Promise<number> {
         throw new IntegralError(
           "only one channel connection may be configured",
         );
-      let userId = flag(setupArgs, "--user-id");
-      if (!userId && input.isTTY) {
-        const rl = createInterface({ input, output });
-        try {
-          userId = (await rl.question("Discord user ID: ")).trim();
-        } finally {
-          rl.close();
-        }
+      let askForUserId: ((message: string) => Promise<string>) | undefined;
+      let userIdInput: ReturnType<typeof createInterface> | undefined;
+      if (input.isTTY) {
+        userIdInput = createInterface({ input, output });
+        askForUserId = (message) => userIdInput!.question(message);
       }
-      if (!userId)
-        throw new IntegralError("Discord user ID is required; use --user-id");
+      let userId: string;
+      try {
+        userId = await selectDiscordUserId(
+          flag(setupArgs, "--user-id"),
+          askForUserId,
+        );
+      } finally {
+        userIdInput?.close();
+      }
       const credential = await readCredential(
         has(setupArgs, "--credential-stdin"),
       );
@@ -748,6 +753,25 @@ export async function selectAuthentication(
     );
   return selected as AuthMethod;
 }
+
+export async function selectDiscordUserId(
+  provided?: string,
+  ask?: (message: string) => Promise<string>,
+): Promise<string> {
+  const userId =
+    provided?.trim() ??
+    (
+      await ask?.("Human allowed to DM the bot (numeric Discord user ID): ")
+    )?.trim();
+  if (!userId)
+    throw new IntegralError("Discord user ID is required; use --user-id");
+  if (!/^\d{16,22}$/.test(userId))
+    throw new IntegralError(
+      "Discord user ID must be the 16-22 digit numeric ID of the human allowed to DM the bot, not a username",
+    );
+  return userId;
+}
+
 export async function guidedConnection(overrides?: {
   ask(message: string): Promise<string>;
   write(text: string): void;
