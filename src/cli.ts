@@ -43,6 +43,8 @@ import { queueCommand, runQueueCommand } from "./cli/queue.ts";
 export { queueCommand, type QueueDependencies } from "./cli/queue.ts";
 import { scheduleCommand } from "./cli/schedule.ts";
 export { scheduleCommand, type ScheduleDependencies } from "./cli/schedule.ts";
+import { runTaskCommand, taskCommand } from "./cli/task.ts";
+export { taskCommand, type TaskDependencies } from "./cli/task.ts";
 import { fetchJson, requestOk } from "./cli/http.ts";
 import { verifyDiscordBot } from "./discord.ts";
 import {
@@ -70,6 +72,7 @@ Commands:
   status       show shared conversation and component status (in talk: /status)
   model        show or change the conversation model (in talk: /model)
   queue        inspect or change queued messages (in talk: /queue)
+  task         inspect or cancel task executions (in talk: /tasks)
   approval     inspect or decide requests (in talk: /approvals, /approve, /deny)
   schedule     manage schedules and inspect task executions
   connection   configure connections (in talk: /connection catalog or ls)
@@ -131,6 +134,9 @@ const TALK_HELP = `/help                         show this help
 /queue ls                     list messages (integral queue ls)
 /queue edit <id> <text>       edit a message (integral queue edit ...)
 /queue delete <id>            delete a message (integral queue delete ...)
+/tasks [ls]                   list task executions (integral task ls)
+/tasks show <id>              show a task (integral task show <id>)
+/tasks cancel <id>            cancel a task (integral task cancel <id>)
 /approvals                    list requests (integral approval ls)
 /approve <id>                 approve (integral approval approve <id>)
 /deny <id>                    deny (integral approval deny <id>)
@@ -295,6 +301,7 @@ export async function main(args: string[]): Promise<number> {
     if (command === "status") return await statusCommand(rest);
     if (command === "model") return await modelCommand(rest);
     if (command === "queue") return await queueCommand(rest);
+    if (command === "task") return await taskCommand(rest);
     if (command === "approval") return await approvalCommand(rest);
     if (command === "schedule") return await scheduleCommand(rest);
     if (command === "talk") return await talkCommand(rest);
@@ -1359,6 +1366,16 @@ export async function talkCommand(
               "structured output flags are available only in the CLI",
             );
           await runQueueCommand(queueArgs, endpoint, dependencies);
+          continue;
+        }
+        const tasks = text.match(/^\/tasks(?:\s+(.*))?$/);
+        if (tasks) {
+          const taskArgs = tasks[1]?.trim().split(/\s+/).filter(Boolean) ?? [];
+          if (taskArgs.includes("--json"))
+            throw new IntegralError(
+              "structured output flags are available only in the CLI",
+            );
+          await runTaskCommand(taskArgs, endpoint, dependencies);
           continue;
         }
         if (text === "/approvals") {

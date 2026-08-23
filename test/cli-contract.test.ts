@@ -15,6 +15,7 @@ import {
   selectAuthentication,
   selectDiscordUserId,
   statusCommand,
+  taskCommand,
   talkCommand,
 } from "../src/cli.ts";
 import { loadConfig } from "../src/config.ts";
@@ -93,6 +94,8 @@ test("[CLI-A7D3E91B] -h prints applicable help at every command depth without pe
     ["model", "-h"],
     ["queue", "-h"],
     ["queue", "ls", "-h"],
+    ["task", "-h"],
+    ["task", "ls", "-h"],
     ["approval", "-h"],
     ["approval", "ls", "-h"],
     ["talk", "-h"],
@@ -1151,10 +1154,117 @@ test("[QUEUE-947D3AC0] top-level queue commands report coordinator rejections", 
   );
 });
 
+/* @covers TASK-FC4DA418
+Given the durable task queue contains zero or more scheduled task executions
+	When the user runs `integral task ls` or enters `/tasks` or `/tasks ls` in `integral talk`
+		Then Integral lists every task in queue order
+			And shows each task's state, execution ID, scheduled time, and prompt
+			And reports an empty task queue without error
+	When the user runs `integral task show <id>` or enters `/tasks show <id>` in `integral talk`
+		Then Integral shows the complete task record for that execution ID
+			And reports when the task does not exist
+	When the user runs `integral task cancel <id>` or enters `/tasks cancel <id>` in `integral talk`
+		Then Integral asks the coordinator to cancel that task
+			And shows the resulting task state
+	When the user runs `integral task ls --json` or `integral task show <id> --json`
+		Then Integral prints the selected task data as JSON
+	When the user includes `--json` in a `/tasks` command
+		Then Integral explains that structured output is available only in the CLI
+	When Integral handles a `/tasks` command locally
+		Then it does not send the command to Pi
+*/
+test("[TASK-FC4DA418] top-level task commands inspect and cancel durable tasks", async (t) => {
+  const paths = await fixture(t),
+    requests: Array<{ path: string; method: string }> = [],
+    task = {
+      id: "execution-1",
+      executionId: "execution-1",
+      scheduleId: "schedule-1",
+      scheduleRevision: 1,
+      triggerType: "once" as const,
+      scheduledFor: "2026-08-23T10:00:00.000Z",
+      prompt: "prepare report",
+      profile: {
+        connection: "work",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+      },
+      state: "queued" as const,
+      attempts: [],
+      createdAt: "2026-08-23T09:00:00.000Z",
+    };
+  let stdout = "",
+    tasks = [task];
+  const dependencies = {
+    resolvePaths: () => paths,
+    componentEndpoint: async () => "http://coordinator.test",
+    verifiedFetch: async () => new Response("ok"),
+    writeOutput(text: string) {
+      stdout += text;
+    },
+    async fetch(input: string | URL | Request, init?: RequestInit) {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input
+            : input.url,
+      );
+      requests.push({ path: url.pathname, method: init?.method ?? "GET" });
+      if (url.pathname === "/integral/snapshot")
+        return Response.json({ tasks });
+      if (url.pathname === "/integral/tasks/execution-1/cancel")
+        return Response.json({ ...task, state: "cancelled" });
+      throw new Error(`unexpected request: ${url.pathname}`);
+    },
+  };
+
+  assert.equal(await taskCommand(["ls"], dependencies), 0);
+  assert.equal(
+    stdout,
+    "queued\texecution-1\t2026-08-23T10:00:00.000Z\tprepare report\n",
+  );
+  stdout = "";
+  assert.equal(await taskCommand(["show", "execution-1"], dependencies), 0);
+  assert.match(stdout, /executionId: execution-1/);
+  assert.match(stdout, /profile: \{"connection":"work"/);
+  stdout = "";
+  assert.equal(await taskCommand(["ls", "--json"], dependencies), 0);
+  assert.deepEqual(JSON.parse(stdout), [task]);
+  stdout = "";
+  assert.equal(
+    await taskCommand(["show", "execution-1", "--json"], dependencies),
+    0,
+  );
+  assert.deepEqual(JSON.parse(stdout), task);
+  stdout = "";
+  assert.equal(await taskCommand(["cancel", "execution-1"], dependencies), 0);
+  assert.match(stdout, /state: cancelled/);
+  tasks = [];
+  stdout = "";
+  assert.equal(await taskCommand([], dependencies), 0);
+  assert.equal(stdout, "No tasks.\n");
+  await assert.rejects(
+    taskCommand(["show", "missing"], dependencies),
+    /task not found: missing/,
+  );
+  assert.equal(
+    requests.some((request) => request.path === "/integral/events"),
+    false,
+  );
+  assert.ok(
+    requests.some(
+      (request) =>
+        request.method === "POST" &&
+        request.path === "/integral/tasks/execution-1/cancel",
+    ),
+  );
+});
+
 /* @covers CHAT-84D839CE
 Given the user is in `integral talk`
 	When the user enters `/help`
-		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/connection catalog`, `/connection ls`, `/queue ls`, `/queue edit`, `/queue delete`, `/approvals`, `/approve`, `/deny`, and `/exit`
+		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/connection catalog`, `/connection ls`, `/queue ls`, `/queue edit`, `/queue delete`, `/tasks`, `/tasks show`, `/tasks cancel`, `/approvals`, `/approve`, `/deny`, and `/exit`
 			And handles the command on the host
 			And does not send the command to Pi
 */
@@ -1169,6 +1279,9 @@ test("[CHAT-84D839CE] talk help documents every local command and never contacts
     "/queue ls",
     "/queue edit",
     "/queue delete",
+    "/tasks",
+    "/tasks show",
+    "/tasks cancel",
     "/approvals",
     "/approve",
     "/deny",
@@ -1418,6 +1531,10 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
       "/queue ls",
       "/queue edit message-1 revised text",
       "/queue delete message-1",
+      "/tasks ls --json",
+      "/tasks",
+      "/tasks show execution-1",
+      "/tasks cancel execution-1",
       "/approvals",
       "/approve approval-1",
       "/deny approval-2",
@@ -1531,6 +1648,34 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
       if (url.pathname === "/integral/snapshot")
         return Response.json({
           queue: [{ id: "message-1", text: "queued", status: "queued" }],
+          tasks: [
+            {
+              id: "execution-1",
+              executionId: "execution-1",
+              scheduleId: "schedule-1",
+              scheduleRevision: 1,
+              triggerType: "once",
+              scheduledFor: "2026-08-23T10:00:00.000Z",
+              prompt: "prepare report",
+              profile: {
+                connection: "work",
+                provider: "openai-codex",
+                model: "gpt-5.5",
+              },
+              state: "queued",
+              attempts: [],
+              createdAt: "2026-08-23T09:00:00.000Z",
+            },
+          ],
+        });
+      if (url.pathname === "/integral/tasks/execution-1/cancel")
+        return Response.json({
+          id: "execution-1",
+          executionId: "execution-1",
+          state: "cancelled",
+          scheduledFor: "2026-08-23T10:00:00.000Z",
+          prompt: "prepare report",
+          attempts: [],
         });
       if (url.pathname === "/integral/approvals")
         return Response.json([
@@ -1565,6 +1710,12 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
   assert.match(stdout, /openai-codex\tmodel/);
   assert.match(stdout, /docs\thttp\tnone\tactive/);
   assert.match(stdout, /queued\tmessage-1\tqueued/);
+  assert.match(
+    stdout,
+    /queued\texecution-1\t2026-08-23T10:00:00.000Z\tprepare report/,
+  );
+  assert.match(stdout, /executionId: execution-1/);
+  assert.match(stdout, /state: cancelled/);
   assert.match(stdout, /approval approval-1 \[pending\]/);
   assert.match(stdout, /approval approval-1 \[succeeded\]/);
   assert.match(stdout, /approval approval-2 \[denied\]/);
@@ -1586,6 +1737,7 @@ test("[BOX-E1F472A1] [CHAT-6E91B4C7] [CHAT-888AFAE0] [CHAT-84D839CE] [CHAT-989F5
         JSON.stringify({ text: "revised text" }),
       ],
       ["DELETE", "/integral/queue/message-1", undefined],
+      ["POST", "/integral/tasks/execution-1/cancel", "{}"],
       [
         "POST",
         "/integral/approvals/approval-1/approve",

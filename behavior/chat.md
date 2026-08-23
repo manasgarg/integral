@@ -52,7 +52,7 @@ Given the user is in `integral talk`
 
 Given the user is in `integral talk`
 	When the user enters `/help`
-		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/connection catalog`, `/connection ls`, `/queue ls`, `/queue edit`, `/queue delete`, `/approvals`, `/approve`, `/deny`, and `/exit`
+		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/connection catalog`, `/connection ls`, `/queue ls`, `/queue edit`, `/queue delete`, `/tasks`, `/tasks show`, `/tasks cancel`, `/approvals`, `/approve`, `/deny`, and `/exit`
 			And handles the command on the host
 			And does not send the command to Pi
 

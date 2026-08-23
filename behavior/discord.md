@@ -223,20 +223,22 @@ Given a governed request originates from the Discord conversation
 
 Given the Discord connection becomes active
 	When Integral registers commands for the configured application
-		Then it registers `/help`, `/status`, `/model`, `/queue`, and `/approvals` as native Discord application commands
+		Then it registers `/help`, `/status`, `/model`, `/queue`, `/tasks`, and `/approvals` as native Discord application commands
 			And limits the registered commands to bot direct messages
 			And gives every command, subcommand, and argument a concise description in Discord's command picker
 			And gives `/model` optional search terms matching the terminal model chooser
 			And provides `/queue ls`, `/queue edit`, and `/queue delete` as subcommands
+			And provides `/tasks ls`, `/tasks show`, and `/tasks cancel` as subcommands
 			And provides `/approvals ls`, `/approvals show`, `/approvals approve`, and `/approvals deny` as subcommands
 			And does not register `/exit` because leaving a DM does not detach or end the conversation
 Given the bound Discord user invokes a supported slash command in the configured DM
 	When Integral handles the interaction
 		Then it acknowledges the interaction immediately with Discord's private deferred-response state
 			And executes the equivalent deployment-wide host command
-			And `/status`, `/model`, `/queue`, and `/approvals` present the same durable host state from every authorized human channel
+			And `/status`, `/model`, `/queue`, `/tasks`, and `/approvals` present the same durable host state from every authorized human channel
 			And `/model` reads or changes the deployment's shared model selection
 			And `/queue` identifies each queued conversation message by its conversation and stable queue ID
+			And `/tasks` identifies each durable task by its execution ID and can cancel an active task
 			And `/approvals` lists unresolved governed requests without secret values regardless of their notification route
 			And `/approvals approve` and `/approvals deny` may decide any listed request under the same human-approval policy
 			And it replaces the deferred response with the command result

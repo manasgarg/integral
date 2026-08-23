@@ -32,7 +32,7 @@ import {
   type IntervalRuntime,
 } from "./runtime.ts";
 import { internalFetch } from "./http-client.ts";
-import { DurableTaskQueue } from "./task-queue.ts";
+import { DurableTaskQueue, type ScheduledTask } from "./task-queue.ts";
 import type { ScheduledOccurrence } from "./occurrence-store.ts";
 import type { ConversationOriginRoute } from "./schedule-types.ts";
 import { DEFAULT_PI_IMAGE, type Component } from "./constants.ts";
@@ -312,6 +312,7 @@ export class Coordinator {
         "/status — show deployment and conversation status",
         "/model [search] — show or select the shared model",
         "/queue ls|edit|delete — manage queued conversation messages",
+        "/tasks ls|show|cancel — inspect or cancel durable tasks",
         "/approvals ls|show|approve|deny — manage all governed requests",
       ].join("\n");
     if (name === "status") {
@@ -393,6 +394,23 @@ export class Coordinator {
         await owner.conversation.deleteUser(options.id);
         return `Deleted queue message ${options.id}.`;
       }
+    }
+    if (name === "tasks") {
+      const tasks = this.tasks.snapshot(),
+        render = (task: ScheduledTask) =>
+          `${task.state}  ${task.executionId}  ${task.scheduledFor}  ${task.prompt}`;
+      if (!subcommand || subcommand === "ls")
+        return tasks.length
+          ? tasks.map(render).join("\n")
+          : "There are no tasks.";
+      if (!options.id) throw new IntegralError("A task ID is required.");
+      const task = tasks.find(
+        (candidate) => candidate.executionId === options.id,
+      );
+      if (!task) throw new IntegralError("Task not found.", 404);
+      if (subcommand === "show") return JSON.stringify(task, null, 2);
+      if (subcommand === "cancel")
+        return render(await this.tasks.cancel(options.id));
     }
     if (name === "approvals") {
       const approvals = this.approvals.snapshot(),

@@ -43,7 +43,7 @@ async function coordinatorFixture(
   return { coordinator, events };
 }
 
-test("Discord host commands use shared model, queue, and approval state", async (t) => {
+test("Discord host commands use shared model, queue, task, and approval state", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     coordinator = new Coordinator(paths, config),
@@ -76,6 +76,7 @@ test("Discord host commands use shared model, queue, and approval state", async 
     queue.load(),
     conversation.load(),
     modelSelection.load(),
+    coordinator.tasks.load(),
     coordinator.approvals.load(),
   ]);
   (coordinator as any).scopes.set(scope.id, scope);
@@ -102,6 +103,41 @@ test("Discord host commands use shared model, queue, and approval state", async 
     text: "edited from Discord",
   });
   assert.equal(coordinator.queue.snapshot()[0]?.text, "edited from Discord");
+
+  await coordinator.tasks.accept({
+    executionId: "execution-1",
+    scheduleId: "schedule-1",
+    scheduleRevision: 1,
+    triggerType: "once",
+    scheduledFor: "2026-08-23T10:00:00.000Z",
+    prompt: "prepare report",
+    state: "accepted",
+    dispatchAttempts: 1,
+    createdAt: "2026-08-23T09:00:00.000Z",
+    profile: {
+      connection: "shared",
+      provider: "anthropic",
+      model: "claude",
+      piVersion: "1",
+      piImage: "image",
+    },
+  });
+  const tasks = String(
+    await (coordinator as any).discordCommand(scope, "tasks", "ls", {}),
+  );
+  assert.match(tasks, /queued {2}execution-1.*prepare report/);
+  const shownTask = String(
+    await (coordinator as any).discordCommand(scope, "tasks", "show", {
+      id: "execution-1",
+    }),
+  );
+  assert.match(shownTask, /"executionId": "execution-1"/);
+  const cancelledTask = String(
+    await (coordinator as any).discordCommand(scope, "tasks", "cancel", {
+      id: "execution-1",
+    }),
+  );
+  assert.match(cancelledTask, /^cancelled {2}execution-1/);
 
   const selection = {
     connection: "shared",
