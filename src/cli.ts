@@ -415,10 +415,13 @@ async function showConnections(
       )}\n`,
     );
   else
-    for (const row of rows)
+    for (const row of rows) {
+      const isHostResource =
+        row.kind === "host-repo" || row.kind === "host-store";
       writeOutput(
-        `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${row.mount ? `\t${row.availabilityReason ?? "-"}\trestorable=${row.restorationPossible ? "yes" : "no"}\t${row.mount}` : ""}\n`,
+        `${row.name}\t${row.provider ?? row.kind}\t${row.auth}\t${row.state}${isHostResource ? `\t${row.availabilityReason ?? "-"}\trestorable=${row.restorationPossible ? "yes" : "no"}\thost-path=${row.path}\tpi-mount=${row.mount}` : ""}\n`,
       );
+    }
 }
 
 export async function connectionCommand(args: string[]): Promise<number> {

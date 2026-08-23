@@ -428,8 +428,8 @@ Given a host-repository or host-store connection exists
 		Then integral identifies it as `host-repo` or `host-store`
 			And reports whether it is active, unavailable, or soft-deleted
 			And reports a bounded availability reason and whether restoration is currently possible
-			And reports its Pi mount path
-			And does not print its canonical host path unless the user requests JSON output
+			And labels and reports its canonical host path
+			And labels and reports its Pi mount path
 	When the user runs `integral connection rm <name>` in an interactive terminal
 		Then integral identifies the resource kind
 			And displays the lifecycle revision to be removed

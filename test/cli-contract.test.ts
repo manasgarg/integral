@@ -591,8 +591,8 @@ Given a host-repository or host-store connection exists
 		Then integral identifies it as `host-repo` or `host-store`
 			And reports whether it is active, unavailable, or soft-deleted
 			And reports a bounded availability reason and whether restoration is currently possible
-			And reports its Pi mount path
-			And does not print its canonical host path unless the user requests JSON output
+			And labels and reports its canonical host path
+			And labels and reports its Pi mount path
 	When the user runs `integral connection rm <name>` in an interactive terminal
 		Then integral identifies the resource kind
 			And displays the lifecycle revision to be removed
@@ -606,7 +606,7 @@ Given a host-repository or host-store connection exists
 	When the lifecycle revision changes while confirmation is pending
 		Then integral rejects the stale confirmation without changing the connection
 */
-test("[CONNECTION-06B6AE14] host-resource listing reports bounded health and restoration data without exposing host paths in text", async (t) => {
+test("[CONNECTION-06B6AE14] host-resource listing labels its host path, Pi mount, health, and restoration data", async (t) => {
   const paths = await fixture(t),
     backing = `${paths.root}-listed-store`,
     env = { INTEGRAL_HOME: paths.root };
@@ -625,11 +625,10 @@ test("[CONNECTION-06B6AE14] host-resource listing reports bounded health and res
   );
 
   const human = await capture(["connection", "ls"], env);
-  assert.match(
+  assert.equal(
     human.stdout,
-    /listed\thost-store\tnone\tactive\t-\trestorable=no\t\/home\/pi\/listed/,
+    `listed\thost-store\tnone\tactive\t-\trestorable=no\thost-path=${backing}\tpi-mount=/home/pi/listed\n`,
   );
-  assert.doesNotMatch(human.stdout, new RegExp(backing));
 
   await softDeleteResource(paths, "listed", resource.revision, "operator");
   const json = JSON.parse(
