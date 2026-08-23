@@ -6,7 +6,8 @@ import { fixture } from "./helpers.ts";
 import { saveConnection, validateConnection } from "../src/connections.ts";
 import { Logger } from "../src/logging.ts";
 import { EventEmitter } from "node:events";
-import type { ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import {
   ConversationStore,
   DurableQueue,
@@ -41,6 +42,35 @@ async function coordinatorFixture(
   const internals = coordinator as any;
   internals.events.on("event", (event: ClientEvent) => events.push(event));
   return { coordinator, events };
+}
+
+async function coordinatorGet(
+  coordinator: Coordinator,
+  path: string,
+): Promise<{ status: number; body: unknown }> {
+  const request = Readable.from([]) as unknown as IncomingMessage;
+  request.url = path;
+  request.method = "GET";
+  request.headers = {};
+  let status = 200,
+    text = "";
+  const response = {
+    setHeader() {},
+    writeHead(value: number) {
+      status = value;
+      return response;
+    },
+    end(value?: string) {
+      text = value ?? "";
+      return response;
+    },
+  } as unknown as ServerResponse;
+  await (
+    coordinator as unknown as {
+      route(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).route(request, response);
+  return { status, body: text ? (JSON.parse(text) as unknown) : undefined };
 }
 
 test("Discord host commands use shared model, queue, task, and approval state", async (t) => {
@@ -139,6 +169,54 @@ test("Discord host commands use shared model, queue, task, and approval state", 
   );
   assert.match(cancelledTask, /^cancelled {2}execution-1/);
 
+  await coordinator.tasks.accept({
+    executionId: "execution-failed",
+    scheduleId: "schedule-recurring",
+    scheduleRevision: 2,
+    triggerType: "recurring",
+    scheduledFor: "2026-08-23T11:00:00.000Z",
+    prompt: "prepare another report",
+    state: "accepted",
+    dispatchAttempts: 1,
+    createdAt: "2026-08-23T10:00:00.000Z",
+    profile: {
+      connection: "shared",
+      provider: "anthropic",
+      model: "claude",
+      piVersion: "1",
+      piImage: "image",
+    },
+    origin: {
+      provider: "discord",
+      conversationId: scope.id,
+      externalId: "message-1",
+      userId: scope.discord.userId,
+      channelId: scope.discord.channelId,
+    },
+  });
+  const claim = await coordinator.tasks.claim(),
+    running = await coordinator.tasks.start(
+      claim!.executionId,
+      claim!.claimId!,
+    );
+  await coordinator.tasks.fail(
+    running.executionId,
+    running.attempts[0]!.attemptId,
+    "request failed at https://private-token@example.test/api",
+    1,
+  );
+  await coordinator.flushTaskOutbox();
+  const failureNotice = discordReplies.find((text) =>
+    text.includes("execution-failed"),
+  );
+  assert.match(failureNotice ?? "", /request failed/);
+  assert.match(
+    failureNotice ?? "",
+    /https:\/\/\[redacted\]@example\.test\/api/,
+  );
+  assert.match(failureNotice ?? "", /\/tasks show/);
+  assert.doesNotMatch(failureNotice ?? "", /\/status/);
+
   const selection = {
     connection: "shared",
     provider: "anthropic",
@@ -190,6 +268,60 @@ test("Discord host commands use shared model, queue, task, and approval state", 
     `discord:${scope.discord.userId}:${scope.discord.channelId}`,
   );
   assert.ok(discordReplies.some((text) => text.includes(approval.id)));
+});
+
+test("[SCHEDULE-F13C33A0] coordinator exposes complete durable task inspection", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    coordinator = new Coordinator(paths, config);
+  await coordinator.tasks.load();
+  await coordinator.tasks.accept({
+    executionId: "execution-1",
+    scheduleId: "schedule-1",
+    scheduleRevision: 1,
+    triggerType: "once",
+    scheduledFor: "2026-08-23T10:00:00.000Z",
+    prompt: "prepare report",
+    profile: {
+      connection: "work",
+      provider: "anthropic",
+      model: "claude",
+      piVersion: "1",
+      piImage: "image",
+    },
+    state: "accepted",
+    dispatchAttempts: 1,
+    createdAt: "2026-08-23T09:00:00.000Z",
+  });
+
+  const listing = await coordinatorGet(coordinator, "/integral/tasks");
+  assert.equal(listing.status, 200);
+  assert.equal(
+    (listing.body as Array<{ executionId: string }>)[0]?.executionId,
+    "execution-1",
+  );
+  const shown = await coordinatorGet(
+    coordinator,
+    "/integral/tasks/execution-1",
+  );
+  assert.equal(shown.status, 200);
+  assert.deepEqual(
+    Object.fromEntries(
+      ["executionId", "scheduleId", "state", "attempts"].map((key) => [
+        key,
+        (shown.body as Record<string, unknown>)[key],
+      ]),
+    ),
+    {
+      executionId: "execution-1",
+      scheduleId: "schedule-1",
+      state: "queued",
+      attempts: [],
+    },
+  );
+  const missing = await coordinatorGet(coordinator, "/integral/tasks/missing");
+  assert.equal(missing.status, 404);
+  assert.deepEqual(missing.body, { error: "task not found: missing" });
 });
 
 /* @covers CHAT-54B8A1C3

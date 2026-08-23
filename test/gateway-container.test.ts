@@ -604,7 +604,9 @@ test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only a
 });
 
 /* @covers SCHEDULE-55BD779F
-Given Pi has an active integral session
+Given Pi has an authenticated Integral session
+	And the session may be an interactive conversation or isolated scheduled-task attempt
+	And the invocation may have originated from the terminal, Discord, or another supported human channel
 	When Pi creates a recurring schedule with a five-field cron expression, IANA timezone, and self-contained task prompt
 		Then the request passes through the authenticated gateway control boundary
 			And the scheduler validates the expression, timezone, minimum frequency, and task size
@@ -618,6 +620,8 @@ Given Pi has an active integral session
 			And an update requires the expected current revision
 			And an accepted mutation is durable before it is reported to Pi
 			And disabling or deleting a schedule prevents new occurrences without discarding an occurrence already due
+			And the same operation is available in an interactive conversation and a scheduled-task attempt
+			And a scheduled-task attempt may change the definition that created it without changing the immutable current occurrence
 */
 test("[SCHEDULE-55BD779F] gateway attributes Pi schedule mutations and injects the selected execution profile", async (t) => {
   const paths = await fixture(t),
@@ -682,6 +686,109 @@ test("[SCHEDULE-55BD779F] gateway attributes Pi schedule mutations and injects t
     (forwardedBody.profile as Record<string, unknown>).provider,
     "anthropic",
   );
+});
+
+test("[SCHEDULE-55BD779F] [SCHEDULE-F13C33A0] scheduled attempts inspect and mutate current scheduling state", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    forwarded: Array<{
+      target: string;
+      path: string;
+      body?: Record<string, unknown>;
+    }> = [],
+    profile = {
+      connection: "task-model",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      piVersion: "1.2.3",
+      piImage: "sha256:task",
+    },
+    origin = {
+      provider: "discord",
+      conversationId: "discord:channel-1",
+      externalId: "message-1",
+      userId: "user-1",
+      channelId: "channel-1",
+    },
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path, init) {
+          forwarded.push({
+            target,
+            path,
+            ...(typeof init?.body === "string"
+              ? { body: JSON.parse(init.body) as Record<string, unknown> }
+              : {}),
+          });
+          if (
+            target === "coordinator" &&
+            path === "/integral/tasks/execution-1"
+          )
+            return Response.json({
+              executionId: "execution-1",
+              profile,
+              origin,
+              state: "running",
+              attempts: [],
+            });
+          if (path === "/integral/schedules")
+            return Response.json(
+              { id: "nested-schedule", prompt: "later work" },
+              { status: 201 },
+            );
+          return Response.json([]);
+        },
+      },
+    );
+  gateway.taskSessions.set("task-session", {
+    executionId: "execution-1",
+    attemptId: "attempt-1",
+  });
+
+  for (const [target, path] of [
+    ["scheduler", "/integral/schedules/schedule-1"],
+    ["scheduler", "/integral/schedules/schedule-1/history"],
+    ["scheduler", "/integral/occurrences?scheduleId=schedule-1"],
+    ["coordinator", "/integral/tasks"],
+    ["coordinator", "/integral/tasks/execution-1"],
+  ] as const) {
+    const response = await gateway.scheduleControl(
+      "task-session",
+      "GET",
+      path,
+      {},
+    );
+    assert.equal(response.ok, true);
+    assert.deepEqual(forwarded.at(-1), { target, path });
+  }
+
+  const created = await gateway.scheduleControl(
+    "task-session",
+    "POST",
+    "/integral/schedules",
+    {
+      prompt: "later work",
+      trigger: { type: "once", runAt: "2026-08-24T10:00:00Z" },
+      profile: { provider: "forged" },
+    },
+  );
+  assert.equal(created.status, 201);
+  const creation = forwarded.find(
+    (request) => request.path === "/integral/schedules",
+  );
+  assert.equal(creation?.target, "scheduler");
+  assert.equal(creation?.body?.actor, "pi:task-session");
+  assert.deepEqual(creation?.body?.profile, profile);
+  assert.deepEqual(creation?.body?.origin, origin);
 });
 
 test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the scheduler", async (t) => {
@@ -1516,7 +1623,24 @@ Given the user has the URL of a remote MCP server
 		Then integral treats them as compatibility overrides
 			And still verifies the resulting MCP connection before committing it
 */
-test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi extensions expose remote MCP and authenticated control tools", async (t) => {
+/* @covers SCHEDULE-F13C33A0
+Given Pi has an authenticated Integral session in an interactive conversation or isolated scheduled-task attempt
+	When Pi lists or shows schedule definitions
+		Then Integral returns the same deployment-wide definitions, stable IDs, revisions, triggers, prompts, enabled states, and deletion states available to the host CLI
+	When Pi inspects a schedule's definition history
+		Then Integral returns its committed revisions and operations in order
+	When Pi lists task occurrences or narrows them by schedule ID
+		Then Integral returns their stable execution IDs, trigger types, states, scheduled instants, dispatch history, completion times, and recorded errors
+	When Pi lists durable tasks or shows one by execution ID
+		Then Integral returns the coordinator's current task state, attempts, declarations, results, retry timing, and recorded failure reason
+			And the execution ID can be used to find the corresponding retained agent runs
+	When scheduling state changes after the current container was provisioned
+		Then a later query in that session sees the durable current state without restarting Pi
+	When Pi inspects or changes scheduling state
+		Then the authenticated gateway performs the operation without exposing component credentials or host paths
+			And applies the same validation, optimistic revision checks, persistence, and audit attribution regardless of invocation kind or conversation origin
+*/
+test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [SCHEDULE-F13C33A0] [BOX-40521095] temporary Pi extensions expose remote MCP and authenticated control tools", async (t) => {
   const paths = await fixture(t),
     mcp = validateConnection({
       name: "work-docs",
@@ -1551,7 +1675,14 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi exte
   assert.match(source, /"properties":\{"query":\{"type":"string"\}\}/);
   assert.match(source, /\/integral\/mcp/);
   assert.match(source, /schedule_create/);
+  assert.match(source, /schedule_show/);
+  assert.match(source, /schedule_history/);
+  assert.match(source, /schedule_runs/);
   assert.match(source, /schedule_update/);
+  assert.match(source, /schedule_restore/);
+  assert.match(source, /task_list/);
+  assert.match(source, /task_show/);
+  assert.match(source, /task_cancel/);
   assert.match(source, /container_package_list/);
   assert.match(source, /container_package_" \+ operation/);
   assert.match(source, /\["install", "upgrade"\]/);

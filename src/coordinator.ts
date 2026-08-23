@@ -70,10 +70,12 @@ import {
 } from "./image-recipe.ts";
 import {
   clearConnectionDegraded,
+  credentialSecretValues,
   credentialFor,
   loadConnections,
   markConnectionDegraded,
 } from "./connections.ts";
+import { redactText } from "./runs/redaction.ts";
 import {
   DiscordIngressStore,
   DiscordJsListener,
@@ -537,11 +539,19 @@ export class Coordinator {
   }
 
   async flushTaskOutbox(): Promise<void> {
-    for (const entry of this.tasks.outbox()) {
+    const outbox = this.tasks.outbox();
+    if (!outbox.length) return;
+    const secrets = await credentialSecretValues(this.paths);
+    for (const entry of outbox) {
       if (entry.origin) {
         const scope = this.scopes.get(entry.origin.conversationId);
         if (scope?.discord) {
-          const text = `Task ${entry.taskId ?? entry.executionId} ${entry.outcome}${entry.result ? `: ${entry.result}` : entry.error ? ": see /status for retry guidance" : "."}`;
+          const detail = entry.result
+            ? `: ${entry.result}`
+            : entry.error
+              ? `: ${redactText(entry.error, secrets).replace(/\s+/g, " ").trim().slice(0, 300)}`
+              : "";
+          const text = `Task ${entry.taskId ?? entry.executionId} ${entry.outcome}${detail}. Inspect the complete task record with /tasks show.`;
           if (!(await this.deliverDiscord(scope, text))) continue;
           await scope.conversation.append({ type: "notification", text });
         }
@@ -1443,7 +1453,26 @@ export class Coordinator {
         /^\/integral\/tasks\/([^/]+)\/cancel$/,
       );
       if (taskCancel && req.method === "POST") {
-        json(res, 200, await this.tasks.cancel(taskCancel[1]!));
+        json(
+          res,
+          200,
+          await this.tasks.cancel(decodeURIComponent(taskCancel[1]!)),
+        );
+        return;
+      }
+      if (url.pathname === "/integral/tasks" && req.method === "GET") {
+        json(res, 200, this.tasks.snapshot());
+        return;
+      }
+      const taskInspection = url.pathname.match(/^\/integral\/tasks\/([^/]+)$/);
+      if (taskInspection && req.method === "GET") {
+        const executionId = decodeURIComponent(taskInspection[1]!),
+          task = this.tasks
+            .snapshot()
+            .find((candidate) => candidate.executionId === executionId);
+        if (!task)
+          throw new IntegralError(`task not found: ${executionId}`, 404);
+        json(res, 200, task);
         return;
       }
       if (

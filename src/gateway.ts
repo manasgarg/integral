@@ -521,6 +521,8 @@ export class Gateway {
     }
     if (
       req.url?.startsWith("/integral/control/schedules") ||
+      req.url?.startsWith("/integral/control/occurrences") ||
+      req.url?.startsWith("/integral/control/tasks") ||
       req.url === "/integral/control/container-packages" ||
       req.url === "/integral/control/image-rebuild" ||
       req.url?.startsWith("/integral/control/resources/")
@@ -582,9 +584,15 @@ export class Gateway {
       await this.resourceControl(req, res, target, sessionId);
       return;
     }
-    if (!target.pathname.startsWith("/integral/control/schedules"))
+    if (
+      ![
+        "/integral/control/schedules",
+        "/integral/control/occurrences",
+        "/integral/control/tasks",
+      ].some((prefix) => target.pathname.startsWith(prefix))
+    )
       throw new IntegralError("unknown integral control endpoint", 404);
-    const schedulerPath = target.pathname.replace(
+    const schedulingPath = target.pathname.replace(
         "/integral/control",
         "/integral",
       ),
@@ -592,7 +600,7 @@ export class Gateway {
     const upstream = await this.scheduleControl(
       sessionId,
       req.method ?? "GET",
-      `${schedulerPath}${target.search}`,
+      `${schedulingPath}${target.search}`,
       body,
     );
     const responseBody = await upstream.text();
@@ -988,48 +996,73 @@ export class Gateway {
   async scheduleControl(
     sessionId: string,
     method: string,
-    schedulerPath: string,
+    schedulingPath: string,
     body: Record<string, unknown>,
   ): Promise<Response> {
     if (method !== "GET") {
       body.actor = `pi:${sessionId}`;
       delete body.profile;
     }
-    if (method === "POST" && schedulerPath === "/integral/schedules") {
-      const origin = this.sessionOrigins.get(sessionId);
-      const snapshot = await this.dependencies.internalFetch(
-        this.paths,
-        "gateway",
-        "coordinator",
-        `/integral/snapshot${origin ? `?conversationId=${encodeURIComponent(origin.conversationId!)}` : ""}`,
-      );
-      if (!snapshot.ok)
-        throw new IntegralError("conversation model is unavailable", 409);
-      const data = (await snapshot.json()) as { modelSelection?: unknown };
-      if (!data.modelSelection)
-        throw new IntegralError(
-          "select a model before creating a schedule",
-          409,
+    let origin = this.sessionOrigins.get(sessionId);
+    if (method === "POST" && schedulingPath === "/integral/schedules") {
+      const taskSession = this.taskSessions.get(sessionId);
+      if (taskSession) {
+        const response = await this.dependencies.internalFetch(
+          this.paths,
+          "gateway",
+          "coordinator",
+          `/integral/tasks/${encodeURIComponent(taskSession.executionId)}`,
         );
-      body.profile = data.modelSelection;
-      if (origin) body.origin = origin;
+        if (!response.ok)
+          throw new IntegralError("task execution profile is unavailable", 409);
+        const task = (await response.json()) as {
+          profile?: unknown;
+          origin?: unknown;
+        };
+        if (!task.profile)
+          throw new IntegralError("task execution profile is unavailable", 409);
+        body.profile = task.profile;
+        if (task.origin && typeof task.origin === "object") {
+          body.origin = task.origin;
+          origin = task.origin as Record<string, string>;
+        }
+      } else {
+        const snapshot = await this.dependencies.internalFetch(
+          this.paths,
+          "gateway",
+          "coordinator",
+          `/integral/snapshot${origin ? `?conversationId=${encodeURIComponent(origin.conversationId!)}` : ""}`,
+        );
+        if (!snapshot.ok)
+          throw new IntegralError("conversation model is unavailable", 409);
+        const data = (await snapshot.json()) as { modelSelection?: unknown };
+        if (!data.modelSelection)
+          throw new IntegralError(
+            "select a model before creating a schedule",
+            409,
+          );
+        body.profile = data.modelSelection;
+        if (origin) body.origin = origin;
+      }
     }
+    const target = schedulingPath.startsWith("/integral/tasks")
+      ? "coordinator"
+      : "scheduler";
     const response = await this.dependencies.internalFetch(
       this.paths,
       "gateway",
-      "scheduler",
-      schedulerPath,
+      target,
+      schedulingPath,
       {
         method,
         ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
       },
     );
-    const origin = this.sessionOrigins.get(sessionId);
     if (
       origin &&
       response.ok &&
       method === "POST" &&
-      schedulerPath === "/integral/schedules"
+      schedulingPath === "/integral/schedules"
     ) {
       const created = (await response.clone().json()) as {
         id?: unknown;

@@ -5,7 +5,9 @@ isolated run-to-completion task execution.
 
 ## SCHEDULE-55BD779F — Manage schedules through the gateway
 
-Given Pi has an active integral session
+Given Pi has an authenticated Integral session
+	And the session may be an interactive conversation or isolated scheduled-task attempt
+	And the invocation may have originated from the terminal, Discord, or another supported human channel
 	When Pi creates a recurring schedule with a five-field cron expression, IANA timezone, and self-contained task prompt
 		Then the request passes through the authenticated gateway control boundary
 			And the scheduler validates the expression, timezone, minimum frequency, and task size
@@ -19,6 +21,26 @@ Given Pi has an active integral session
 			And an update requires the expected current revision
 			And an accepted mutation is durable before it is reported to Pi
 			And disabling or deleting a schedule prevents new occurrences without discarding an occurrence already due
+			And the same operation is available in an interactive conversation and a scheduled-task attempt
+			And a scheduled-task attempt may change the definition that created it without changing the immutable current occurrence
+
+## SCHEDULE-F13C33A0 — Inspect complete scheduling state from every agent invocation
+
+Given Pi has an authenticated Integral session in an interactive conversation or isolated scheduled-task attempt
+	When Pi lists or shows schedule definitions
+		Then Integral returns the same deployment-wide definitions, stable IDs, revisions, triggers, prompts, enabled states, and deletion states available to the host CLI
+	When Pi inspects a schedule's definition history
+		Then Integral returns its committed revisions and operations in order
+	When Pi lists task occurrences or narrows them by schedule ID
+		Then Integral returns their stable execution IDs, trigger types, states, scheduled instants, dispatch history, completion times, and recorded errors
+	When Pi lists durable tasks or shows one by execution ID
+		Then Integral returns the coordinator's current task state, attempts, declarations, results, retry timing, and recorded failure reason
+			And the execution ID can be used to find the corresponding retained agent runs
+	When scheduling state changes after the current container was provisioned
+		Then a later query in that session sees the durable current state without restarting Pi
+	When Pi inspects or changes scheduling state
+		Then the authenticated gateway performs the operation without exposing component credentials or host paths
+			And applies the same validation, optimistic revision checks, persistence, and audit attribution regardless of invocation kind or conversation origin
 
 ## SCHEDULE-22FF69D9 — Preserve schedule definition history in Git
 

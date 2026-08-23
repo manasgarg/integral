@@ -200,6 +200,9 @@ Given a task carries a Discord origin route
 	When Integral emits a task progress, approval, completion, or failure notification
 		Then Integral identifies the task by its stable ID and current state
 			And summarizes the outcome or next required action in plain language
+			And a failure includes the concise redacted recorded reason when available
+			And tells the user to inspect the complete task record with `/tasks show`
+			And does not direct the user to `/status` for a task-specific failure reason
 			And sends the notification only to the stored Discord DM route
 			And records a successfully delivered notification in the same Discord conversation's history
 			And does not display the notification in the default terminal conversation or another channel

@@ -1180,6 +1180,11 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] [RUN-B1D837E0]
         },
         createTaskPi(value) {
           calls.push("task:create");
+          assert.ok(
+            value.args.includes(
+              "/home/pi/.integral/extensions/integral-mcp.ts",
+            ),
+          );
           assert.match(value.args.at(-1)!, /Schedule ID: schedule-1/);
           assert.match(value.args.at(-1)!, /Execution ID: execution-1/);
           assert.match(value.args.at(-1)!, /Attempt: 1/);
