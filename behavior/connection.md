@@ -52,6 +52,7 @@ Given an interactive terminal
 			And collects a command and arguments when the selected type is stdio MCP
 			And treats MCP authentication and transport choices as advanced compatibility overrides
 			And requires a mount path for a host resource
+			And routes a selected Discord entry through verified Discord setup
 			And runs the selected authentication flow
 			And completes the same setup as explicit `connection add <entry>`
 

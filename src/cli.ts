@@ -439,16 +439,18 @@ export async function connectionCommand(args: string[]): Promise<number> {
   }
   if (command === "add") {
     await prepareStorage(paths);
-    if (args[1] === "discord") {
+    const guided = !args[1],
+      setupArgs = guided ? await guidedConnection() : args.slice(1);
+    if (setupArgs[0] === "discord") {
       const existing = (await loadConnections(paths)).connections.find(
         (connection) => connection.kind === "channel",
       );
-      const name = flag(args, "--name") ?? "discord";
+      const name = flag(setupArgs, "--name") ?? "discord";
       if (existing && existing.name !== name)
         throw new IntegralError(
           "only one channel connection may be configured",
         );
-      let userId = flag(args, "--user-id");
+      let userId = flag(setupArgs, "--user-id");
       if (!userId && input.isTTY) {
         const rl = createInterface({ input, output });
         try {
@@ -459,7 +461,9 @@ export async function connectionCommand(args: string[]): Promise<number> {
       }
       if (!userId)
         throw new IntegralError("Discord user ID is required; use --user-id");
-      const credential = await readCredential(has(args, "--credential-stdin"));
+      const credential = await readCredential(
+        has(setupArgs, "--credential-stdin"),
+      );
       const verified = await verifyDiscordBot(credential, userId);
       const setup = validateConnection({
         name,
@@ -477,13 +481,11 @@ export async function connectionCommand(args: string[]): Promise<number> {
       );
       return 0;
     }
-    let setup = args[1]
-      ? await explicitConnection(args.slice(1))
-      : await guidedConnection();
+    let setup = await explicitConnection(setupArgs);
     if (
       setup.kind === "mcp" &&
       setup.transport !== "stdio" &&
-      !flag(args, "--auth")
+      (guided || !flag(setupArgs, "--auth"))
     )
       setup = (await discoverMcpAuthorization(setup)) ?? setup;
     const entry = CATALOG.find(
@@ -508,10 +510,10 @@ export async function connectionCommand(args: string[]): Promise<number> {
     if (setup.transport === "stdio" && setup.secretEnv?.length)
       credential = await readStdioCredentials(
         setup.secretEnv,
-        has(args, "--credential-stdin"),
+        has(setupArgs, "--credential-stdin"),
       );
     else if (setup.auth === "key")
-      credential = await readCredential(has(args, "--credential-stdin"));
+      credential = await readCredential(has(setupArgs, "--credential-stdin"));
     else if (setup.auth === "oauth" || setup.auth === "device-code")
       credential = await authenticateOAuth(paths, setup);
     if (setup.kind === "mcp" && setup.transport !== "stdio")
@@ -519,7 +521,7 @@ export async function connectionCommand(args: string[]): Promise<number> {
         setup,
         credential ? (oauthAccess(credential) ?? credential) : undefined,
       );
-    if (has(args, "--verify")) await verifySetup(setup, credential);
+    if (has(setupArgs, "--verify")) await verifySetup(setup, credential);
     const result = await saveConnection(paths, setup, credential);
     process.stdout.write(
       `${result.rotated ? "Rotated" : "Added"} ${setup.name} (${setup.provider ?? setup.kind}, ${setup.auth}${catalog ? `, ${catalog.protocolVersion}, ${catalog.tools.length} tools` : ""})\n`,
@@ -746,48 +748,49 @@ export async function selectAuthentication(
     );
   return selected as AuthMethod;
 }
-async function guidedConnection(): Promise<Connection> {
-  if (!input.isTTY)
+export async function guidedConnection(overrides?: {
+  ask(message: string): Promise<string>;
+  write(text: string): void;
+}): Promise<string[]> {
+  if (!overrides && !input.isTTY)
     throw new IntegralError(
       "guided connection setup requires an interactive terminal",
     );
-  const rl = createInterface({ input, output });
+  const rl = overrides ? undefined : createInterface({ input, output }),
+    ask = overrides
+      ? (message: string) => overrides.ask(message)
+      : (message: string) => rl!.question(message),
+    write = overrides
+      ? (text: string) => overrides.write(text)
+      : (text: string) => process.stdout.write(text);
   try {
-    process.stdout.write(
+    write(
       CATALOG.map(
         (e, i) => `${i + 1}. ${e.name} (${e.kind}; ${e.auth.join(", ")})`,
       ).join("\n") + "\n",
     );
-    const selected = Number(await rl.question("Select connection: ")) - 1,
+    const selected = Number(await ask("Select connection: ")) - 1,
       entry = CATALOG[selected];
     if (!entry) throw new IntegralError("invalid selection");
-    const name =
-      (await rl.question(`Name [${entry.name}]: `)).trim() || entry.name;
+    const name = (await ask(`Name [${entry.name}]: `)).trim() || entry.name;
     if (entry.kind === "mcp") {
       const transport = (
-          await rl.question(
-            "Transport (auto/streamable-http/sse/stdio) [auto]: ",
-          )
+          await ask("Transport (auto/streamable-http/sse/stdio) [auto]: ")
         ).trim(),
         args = [entry.name, "--name", name, "--auth", "none"];
       if (transport === "stdio") {
-        args.push(
-          "--transport",
-          "stdio",
-          "--command",
-          await rl.question("Command: "),
-        );
+        args.push("--transport", "stdio", "--command", await ask("Command: "));
         while (true) {
-          const argument = await rl.question("Argument [done]: ");
+          const argument = await ask("Argument [done]: ");
           if (!argument) break;
           args.push("--arg", argument);
         }
       } else {
-        args.push("--url", await rl.question("URL: "));
+        args.push("--url", await ask("URL: "));
         if (transport && transport !== "auto")
           args.push("--transport", transport);
       }
-      return explicitConnection(args);
+      return args;
     }
     const defaultAuth =
         "defaultAuth" in entry ? entry.defaultAuth : entry.auth[0],
@@ -795,14 +798,14 @@ async function guidedConnection(): Promise<Connection> {
         entry.auth.length === 1
           ? entry.auth[0]
           : (
-              await rl.question(
+              await ask(
                 `Authentication (${entry.auth.join("/")}) [${defaultAuth}]: `,
               )
             ).trim() || defaultAuth;
     const args = [entry.name, "--name", name, "--auth", chosenAuth];
     if (entry.kind === "http" && entry.name !== "github") {
-      args.push("--url", await rl.question("URL: "));
-      const path = (await rl.question("Path prefix [URL path]: ")).trim();
+      args.push("--url", await ask("URL: "));
+      const path = (await ask("Path prefix [URL path]: ")).trim();
       if (path) args.push("--path-prefix", path);
     }
     if (
@@ -811,65 +814,60 @@ async function guidedConnection(): Promise<Connection> {
     ) {
       args.push(
         "--authorization-url",
-        await rl.question("Authorization URL: "),
+        await ask("Authorization URL: "),
         "--token-url",
-        await rl.question("Token URL: "),
+        await ask("Token URL: "),
         "--client-id",
-        await rl.question("Client ID: "),
+        await ask("Client ID: "),
       );
       if (chosenAuth === "device-code")
         args.push(
           "--device-authorization-url",
-          await rl.question("Device authorization URL: "),
+          await ask("Device authorization URL: "),
         );
     }
     if (entry.kind === "email") {
       const defaultCapabilities =
           entry.name === "gmail" ? "read,search,send" : "send",
         capabilities =
-          (
-            await rl.question(`Capabilities [${defaultCapabilities}]: `)
-          ).trim() || defaultCapabilities;
+          (await ask(`Capabilities [${defaultCapabilities}]: `)).trim() ||
+          defaultCapabilities;
       args.push("--capabilities", capabilities);
       if (entry.name === "gmail")
         args.push(
           "--account",
-          await rl.question("Account email: "),
+          await ask("Account email: "),
           "--client-id",
-          await rl.question("OAuth client ID: "),
+          await ask("OAuth client ID: "),
         );
       else
         args.push(
           "--domain",
-          await rl.question("Mailgun domain: "),
+          await ask("Mailgun domain: "),
           "--from",
-          await rl.question("From address: "),
+          await ask("From address: "),
         );
       if (capabilities.split(",").includes("send"))
         args.push(
           "--allowed-recipients",
-          await rl.question("Allowed recipients (comma-separated): "),
+          await ask("Allowed recipients (comma-separated): "),
         );
     }
     if (entry.kind === "host-repo" || entry.kind === "host-store") {
       args.push(
         "--path",
-        await rl.question(
-          "Host path (absolute or relative to current directory): ",
-        ),
+        await ask("Host path (absolute or relative to current directory): "),
         "--mount",
-        await rl.question("Pi mount path (absolute or relative to /home/pi): "),
+        await ask("Pi mount path (absolute or relative to /home/pi): "),
       );
       if (entry.kind === "host-repo") {
-        const branch = (
-          await rl.question("Canonical branch [symbolic HEAD]: ")
-        ).trim();
+        const branch = (await ask("Canonical branch [symbolic HEAD]: ")).trim();
         if (branch) args.push("--branch", branch);
       }
     }
-    return await explicitConnection(args);
+    return args;
   } finally {
-    rl.close();
+    rl?.close();
   }
 }
 async function readCredential(fromStdin: boolean): Promise<string> {

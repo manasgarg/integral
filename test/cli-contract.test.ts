@@ -7,6 +7,7 @@ import {
   completeEmailOptions,
   createTalkTerminal,
   explicitConnection,
+  guidedConnection,
   imageCommand,
   main,
   modelCommand,
@@ -815,6 +816,7 @@ Given an interactive terminal
 			And collects a command and arguments when the selected type is stdio MCP
 			And treats MCP authentication and transport choices as advanced compatibility overrides
 			And requires a mount path for a host resource
+			And routes a selected Discord entry through verified Discord setup
 			And runs the selected authentication flow
 			And completes the same setup as explicit `connection add <entry>`
 */
@@ -828,6 +830,22 @@ test("[CONNECTION-03C4E791] bare add clearly requires the guided interactive ter
     result.stderr,
     /guided connection setup requires an interactive terminal/,
   );
+});
+
+test("[CONNECTION-03C4E791] guided Discord selection enters dedicated setup", async () => {
+  const answers = ["8", ""],
+    prompts: string[] = [],
+    output: string[] = [];
+  const args = await guidedConnection({
+    ask: async (message) => {
+      prompts.push(message);
+      return answers.shift()!;
+    },
+    write: (text) => output.push(text),
+  });
+  assert.deepEqual(args, ["discord", "--name", "discord", "--auth", "key"]);
+  assert.match(output.join(""), /8\. discord \(channel; key\)/);
+  assert.deepEqual(prompts, ["Select connection: ", "Name [discord]: "]);
 });
 
 /* @covers CONNECTION-1D691391
