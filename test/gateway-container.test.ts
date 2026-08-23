@@ -1349,20 +1349,20 @@ Given a chat container is running
 /* @covers RUN-01CA16F2
 Given one or more runs were finalized before integral prepares a new agent environment
 	When integral provisions an interactive or scheduled-task container
-		Then it makes every earlier finalized run in that deployment available under `$HOME/history/runs`
+		Then it mounts the deployment's agent-safe durable run archive read-only at `$HOME/history/runs`
+			And makes every retained finalized run in that deployment available there
 			And provides a machine-readable index ordered by run start time
 			And provides each run's metadata, ordered activity, learning-signal summary, usage, and outcome under its run ID
 			And includes successful, failed, interrupted, cancelled, and timed-out runs
 			And includes earlier attempts of the same one-time scheduled task
-			And mounts the history view read-only
 			And does not require the agent to call a host tool or network service to inspect it
-Given no run was finalized before integral prepares a new agent environment
+Given no earlier run was retained before integral prepares a new agent environment
 	When integral provisions the container
-		Then `$HOME/history/runs` exists as an empty readable history view
-			And the machine-readable index contains no finalized runs
+		Then `$HOME/history/runs` exists as a readable archive mount containing the new current run
+			And the machine-readable index identifies that run as running and contains no finalized runs
 Given integral has begun the run for a new agent environment
 	When it provisions the container
-		Then it makes that run available under `$HOME/history/current`
+		Then it makes `$HOME/history/current` a read-only view of that run's archive record
 			And exposes its running metadata, ordered activity, and provisional learning-signal and usage summary
 	When the current run records input, output, tool activity, provider usage, feedback, or failure
 		Then `$HOME/history/current` reflects the newly recorded evidence while the session remains active
@@ -1370,13 +1370,13 @@ Given integral has begun the run for a new agent environment
 		Then `$HOME/history/current` reflects its final status, outcome, elapsed time, and final learning-signal summary before the environment is removed
 */
 /* @covers RUN-79BACB0C
-Given integral is constructing the agent-visible history view
-	When it projects a durable run record into that view
+Given integral is recording agent-visible run evidence in the durable archive
+	When it writes metadata or activity that Pi may later inspect
 		Then it includes the prompts, agent-visible tool inputs and results, assistant output, and host-observed outcome
 			And excludes gateway session tokens, real provider credentials, component authentication, and credential-bearing proxy URLs
 			And excludes host-only configuration, locks, and mutable queue state
-			And does not mount `<INTEGRAL_HOME>` or the host run archive itself into the container
-			And updates the current-run projection without exposing a writable path back to the durable record
+			And mounts only the agent-safe run archive rather than `<INTEGRAL_HOME>` or unrelated host state
+			And exposes the current run without providing a writable path back to the durable record
 	When an agent attempts to modify, rename, or delete history content
 		Then the container filesystem refuses the change
 			And the durable host record remains unchanged
@@ -1397,7 +1397,8 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] Docker spe
       caCert: "/ca",
       caBundle: "/bundle",
       sessionHome: "/fresh",
-      historyView: "/host/projected-history",
+      historyArchive: "/host/runs",
+      currentRun: "/host/runs/current-run",
       ...newSessionIdentity(),
       model,
       mcp: [],
@@ -1422,7 +1423,12 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] Docker spe
   assert.equal(args.includes(process.cwd()), false);
   assert.ok(
     args.includes(
-      "type=bind,source=/host/projected-history,target=/home/pi/history,readonly",
+      "type=bind,source=/host/runs,target=/home/pi/history/runs,readonly",
+    ),
+  );
+  assert.ok(
+    args.includes(
+      "type=bind,source=/host/runs/current-run,target=/home/pi/history/current,readonly",
     ),
   );
 });

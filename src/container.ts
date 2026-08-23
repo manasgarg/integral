@@ -140,7 +140,8 @@ export function buildContainerSpec(options: {
   image?: string;
   mcp: Connection[];
   connections?: Connection[];
-  historyView?: string;
+  historyArchive?: string;
+  currentRun?: string;
 }): ContainerSpec {
   const proxy = new URL(options.gatewayUrl);
   proxy.username = "integral";
@@ -198,10 +199,16 @@ export function buildContainerSpec(options: {
       readonly: true,
     },
   ];
-  if (options.historyView)
+  if (options.historyArchive)
     mounts.push({
-      source: options.historyView,
-      target: "/home/pi/history",
+      source: options.historyArchive,
+      target: "/home/pi/history/runs",
+      readonly: true,
+    });
+  if (options.currentRun)
+    mounts.push({
+      source: options.currentRun,
+      target: "/home/pi/history/current",
       readonly: true,
     });
   return {

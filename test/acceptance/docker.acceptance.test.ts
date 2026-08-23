@@ -30,17 +30,21 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
     config = await loadConfig(paths, {}),
     network = `integral-acceptance-${deploymentId(paths)}`,
     sessionHome = join(paths.root, "session"),
-    historyView = join(paths.root, "history"),
+    historyArchive = join(paths.root, "runs"),
+    currentRun = join(historyArchive, "current-run"),
     caCert = join(paths.root, "ca.pem"),
     caBundle = join(paths.root, "bundle.pem");
   await mkdir(sessionHome, { recursive: true });
-  await mkdir(join(historyView, "current"), { recursive: true });
-  await mkdir(join(historyView, "runs"), { recursive: true });
-  await writeFile(join(historyView, "index.json"), '{"runs":[]}\n');
+  await mkdir(join(sessionHome, ".integral"), { recursive: true });
+  await mkdir(join(sessionHome, ".pi", "agent"), { recursive: true });
+  await mkdir(join(sessionHome, "history"), { recursive: true });
+  await writeFile(join(sessionHome, ".integral", "auth.json"), "{}\n");
+  await mkdir(currentRun, { recursive: true });
   await writeFile(
-    join(historyView, "current", "run.json"),
-    '{"status":"running"}\n',
+    join(historyArchive, "index.json"),
+    '{"runs":[{"runId":"current-run","status":"running"}]}\n',
   );
+  await writeFile(join(currentRun, "run.json"), '{"status":"running"}\n');
   await writeFile(caCert, "acceptance CA fixture\n");
   await writeFile(caBundle, "acceptance CA fixture\n");
   const image = ensureContainerImage(config, "0.80.3");
@@ -55,7 +59,8 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
       caCert,
       caBundle,
       sessionHome,
-      historyView,
+      historyArchive,
+      currentRun,
       ...identity,
       model: validateConnection({
         name: "acceptance-model",
@@ -87,7 +92,7 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
       /* network did not reach creation */
     }
   });
-  execFileSync("docker", createArgs, { stdio: "ignore" });
+  execFileSync("docker", createArgs);
   execFileSync("docker", ["start", name], { stdio: "ignore" });
   const inspection = JSON.parse(
     execFileSync("docker", ["inspect", name], {
@@ -126,8 +131,15 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
     false,
   );
   assert.equal(
-    inspection.Mounts.find((mount) => mount.Destination === "/home/pi/history")
-      ?.RW,
+    inspection.Mounts.find(
+      (mount) => mount.Destination === "/home/pi/history/runs",
+    )?.RW,
+    false,
+  );
+  assert.equal(
+    inspection.Mounts.find(
+      (mount) => mount.Destination === "/home/pi/history/current",
+    )?.RW,
     false,
   );
   assert.doesNotThrow(() =>
@@ -138,14 +150,40 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
         name,
         "node",
         "-e",
-        `require("node:fs").readFileSync("/home/pi/history/index.json"); try { require("node:fs").writeFileSync("/home/pi/history/change", "bad"); process.exit(1); } catch (error) { process.exit(error.code === "EROFS" || error.code === "EACCES" ? 0 : 2); }`,
+        `require("node:fs").readFileSync("/home/pi/history/runs/index.json"); try { require("node:fs").writeFileSync("/home/pi/history/runs/change", "bad"); process.exit(1); } catch (error) { process.exit(error.code === "EROFS" || error.code === "EACCES" ? 0 : 2); }`,
       ],
       { stdio: "ignore" },
     ),
   );
   await writeFile(
-    join(historyView, "current", "run.json"),
+    join(currentRun, "run.json"),
     '{"status":"finalized","termination":"completed"}\n',
+  );
+  const laterRun = join(historyArchive, "later-run");
+  await mkdir(laterRun);
+  await writeFile(
+    join(laterRun, "run.json"),
+    '{"runId":"later-run","status":"finalized","termination":"failed"}\n',
+  );
+  await writeFile(join(laterRun, "activity.jsonl"), '{"type":"failure"}\n');
+  await writeFile(join(laterRun, "signals.json"), '{"outcome":"failed"}\n');
+  await writeFile(
+    join(historyArchive, "index.json"),
+    '{"runs":[{"runId":"current-run","status":"finalized"},{"runId":"later-run","status":"finalized"}]}\n',
+  );
+  assert.equal(
+    execFileSync(
+      "docker",
+      [
+        "exec",
+        name,
+        "node",
+        "-e",
+        `process.stdout.write(require("node:fs").readFileSync("/home/pi/history/runs/later-run/run.json", "utf8"))`,
+      ],
+      { encoding: "utf8" },
+    ),
+    '{"runId":"later-run","status":"finalized","termination":"failed"}\n',
   );
   assert.equal(
     execFileSync(

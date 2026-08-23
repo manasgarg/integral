@@ -612,11 +612,18 @@ export class Runner {
     try {
       historyView = await this.runs.createHistoryView(recorder);
       this.taskHistoryView = historyView;
-      spec.mounts.push({
-        source: historyView,
-        target: "/home/pi/history",
-        readonly: true,
-      });
+      spec.mounts.push(
+        {
+          source: historyView,
+          target: "/home/pi/history/runs",
+          readonly: true,
+        },
+        {
+          source: join(historyView, recorder.runId),
+          target: "/home/pi/history/current",
+          readonly: true,
+        },
+      );
       runtime = this.dependencies.containers.createTaskPi(
         spec,
         this.config,
@@ -926,11 +933,18 @@ export class Runner {
     let historyView: string | undefined, pi: PiRuntime | undefined;
     try {
       historyView = await this.runs.createHistoryView(recorder);
-      spec.mounts.push({
-        source: historyView,
-        target: "/home/pi/history",
-        readonly: true,
-      });
+      spec.mounts.push(
+        {
+          source: historyView,
+          target: "/home/pi/history/runs",
+          readonly: true,
+        },
+        {
+          source: join(historyView, recorder.runId),
+          target: "/home/pi/history/current",
+          readonly: true,
+        },
+      );
       pi = this.dependencies.containers.createPi(
         spec,
         this.config,

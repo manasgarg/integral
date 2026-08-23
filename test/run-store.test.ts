@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { access, readFile, readdir } from "node:fs/promises";
-import { constants } from "node:fs";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { RunStore, type RunEvent } from "../src/run-store.ts";
@@ -170,19 +169,33 @@ test("[RUN-B1D837E0] [RUN-88706C0D] finalized runs retain ordered evidence, reda
 });
 
 /* @covers RUN-770B8FFA
-Given integral has selected the finalized runs visible to a new agent environment
-	When another run finishes while that agent is still active
-		Then the active agent's finalized-runs index and `$HOME/history/runs` snapshot do not change
-			And a later agent environment includes the newly finalized run
+Given integral has mounted the durable run archive into an active agent environment
+	When any run starts, records activity, or finalizes while that agent remains active
+		Then the corresponding archive changes become visible under `$HOME/history/runs` without restarting Pi
+			And the machine-readable index reflects each durable run state in run-start order
+			And readers never observe an index entry before its run record exists
+			And readers never observe a finalized index state before the final metadata, outcome, usage, and learning signals are durable
 	When the current run writes evidence or reaches its outcome
-		Then only `$HOME/history/current` changes in that environment
-			And the run appears under `$HOME/history/runs/<run-id>` only in agent environments prepared after finalization
+		Then `$HOME/history/current` and its record under `$HOME/history/runs/<run-id>` reflect the same durable evidence
 Given integral restarts with an existing durable run archive
 	When it prepares the next agent environment
-		Then the environment receives the same finalized history as before the restart
-			And temporary session-home cleanup does not remove that history
+		Then the environment receives the same retained run history as before the restart
+			And container or temporary session-home cleanup does not remove that history
 */
-test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view combines stable finalized runs with a live current-run projection", async (t) => {
+/* @covers RUN-B13114A3
+Given Pi is running in an authenticated interactive session or isolated scheduled-task attempt
+	And the session may have originated from the terminal, Discord, or another supported human channel
+	When Integral provisions the Pi environment
+		Then `$HOME/history/runs` exposes the complete live deployment archive without requiring a host tool or network request
+			And each run exposes its metadata, ordered agent-visible activity, learning-signal summary, usage, declared outcome, and host-observed termination or failure
+			And run metadata identifies its kind, start and finish times, outcome, and applicable schedule, execution, attempt, and prior-run identities
+			And Pi can locate all attempts for a task by execution ID using the machine-readable index and run metadata
+			And the same archive is available to terminal conversations, Discord conversations, and scheduled-task attempts
+	When Pi reads the mounted archive
+		Then Integral applies the same credential redaction and authority boundaries to every record
+			And Pi cannot alter, rename, or delete durable run evidence through the mount
+*/
+test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] [RUN-B13114A3] the mounted archive stays live and complete", async (t) => {
   const paths = await fixture(t),
     config = await loadConfig(paths, {});
   let id = 0;
@@ -209,17 +222,21 @@ test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view combines stabl
   });
   const view = await store.createHistoryView(current),
     initialIndex = JSON.parse(await readFile(join(view, "index.json"), "utf8"));
+  assert.equal(view, paths.runs);
   assert.deepEqual(
-    initialIndex.runs.map((run: { runId: string }) => run.runId),
-    [earlier.runId],
+    initialIndex.runs.map((run: { runId: string; status: string }) => [
+      run.runId,
+      run.status,
+    ]),
+    [
+      [earlier.runId, "finalized"],
+      [current.runId, "running"],
+    ],
   );
-  assert.deepEqual((await readdir(view)).sort(), [
-    "current",
-    "index.json",
-    "runs",
-  ]);
-  assert.deepEqual(await readdir(join(view, "runs")), [earlier.runId]);
-  await assert.rejects(access(join(view, "index.json"), constants.W_OK));
+  assert.deepEqual(
+    (await readdir(view)).sort(),
+    [earlier.runId, current.runId, "index.json"].sort(),
+  );
 
   await current.input("inspect this run", "original-request");
   current.protocol({
@@ -227,15 +244,16 @@ test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view combines stabl
     message: { usage: { input: 20, output: 5, cacheRead: 10 } },
   });
   await current.output("current output");
-  const runningMetadata = JSON.parse(
-      await readFile(join(view, "current", "run.json"), "utf8"),
+  const currentDirectory = join(view, current.runId),
+    runningMetadata = JSON.parse(
+      await readFile(join(currentDirectory, "run.json"), "utf8"),
     ),
     runningActivity = await readFile(
-      join(view, "current", "activity.jsonl"),
+      join(currentDirectory, "activity.jsonl"),
       "utf8",
     ),
     runningSignals = JSON.parse(
-      await readFile(join(view, "current", "signals.json"), "utf8"),
+      await readFile(join(currentDirectory, "signals.json"), "utf8"),
     );
   assert.equal(runningMetadata.status, "running");
   assert.match(runningActivity, /inspect this run/);
@@ -247,10 +265,10 @@ test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view combines stabl
 
   await current.finalize({ termination: "failed", error: "task failed" });
   const finalCurrentMetadata = JSON.parse(
-      await readFile(join(view, "current", "run.json"), "utf8"),
+      await readFile(join(currentDirectory, "run.json"), "utf8"),
     ),
     finalCurrentSignals = JSON.parse(
-      await readFile(join(view, "current", "signals.json"), "utf8"),
+      await readFile(join(currentDirectory, "signals.json"), "utf8"),
     );
   assert.equal(finalCurrentMetadata.status, "finalized");
   assert.equal(finalCurrentMetadata.termination, "failed");
@@ -263,30 +281,41 @@ test("[RUN-01CA16F2] [RUN-79BACB0C] [RUN-770B8FFA] a history view combines stabl
     (await store.latestFinalized("interactive"))?.runId,
     earlier.runId,
   );
-  const stableIndex = JSON.parse(
+  const finalizedIndex = JSON.parse(
     await readFile(join(view, "index.json"), "utf8"),
   );
-  assert.deepEqual(stableIndex, initialIndex);
+  assert.equal(finalizedIndex.runs[1].status, "finalized");
+  assert.equal(finalizedIndex.runs[1].termination, "failed");
   const later = await store.begin({
     kind: "interactive",
     sessionId: "later",
     model: selection,
     config,
   });
-  const laterView = await store.createHistoryView(later),
-    laterIndex = JSON.parse(
-      await readFile(join(laterView, "index.json"), "utf8"),
-    );
-  assert.deepEqual(
-    laterIndex.runs.map((run: { runId: string }) => run.runId),
-    [earlier.runId, current.runId],
+  const laterView = await store.createHistoryView(later);
+  assert.equal(laterView, view);
+  await later.output("visible to current");
+  await later.finalize({ termination: "completed" });
+  const laterIndex = JSON.parse(
+    await readFile(join(view, "index.json"), "utf8"),
   );
   assert.deepEqual(
-    (await readdir(join(laterView, "runs"))).sort(),
-    [earlier.runId, current.runId].sort(),
+    laterIndex.runs.map((run: { runId: string; status: string }) => [
+      run.runId,
+      run.status,
+    ]),
+    [
+      [earlier.runId, "finalized"],
+      [current.runId, "finalized"],
+      [later.runId, "finalized"],
+    ],
+  );
+  assert.match(
+    await readFile(join(view, later.runId, "activity.jsonl"), "utf8"),
+    /visible to current/,
   );
   await store.removeHistoryView(view);
-  await store.removeHistoryView(laterView);
+  assert.ok((await readdir(view)).includes(later.runId));
 });
 
 test("[RUN-B1D837E0] unfinished records become interrupted during recovery", async (t) => {
@@ -344,7 +373,7 @@ test("[RUN-B1D837E0] unfinished records become interrupted during recovery", asy
     };
   assert.deepEqual(
     index.runs.map((item) => item.runId),
-    [run.runId],
+    [run.runId, next.runId],
   );
   await recovered.removeHistoryView(view);
 });
