@@ -20,6 +20,7 @@ does not grant the agent credentials or weaken governed-operation approvals.
 
 ## DISCORD-E4BE44A7 — Configure exactly one Discord DM
 
+```text
 Given no Discord connection exists for the deployment
 	When the user runs `integral connection add discord` in an interactive terminal
 		Then Integral reads the bot token without echoing it
@@ -45,9 +46,11 @@ Given a Discord connection already exists for the deployment
 			And instructs the user to remove the existing connection before changing the bound DM
 	When the user adds the same Discord application, user, and connection name with a valid replacement token
 		Then Integral rotates the credential atomically without changing the bound DM identity
+```
 
 ## DISCORD-E043BBDD — Run Discord as a supervised outbound listener
 
+```text
 Given an active Discord connection is configured
 	When the user runs `integral server start`
 		Then Integral connects to Discord from the host using an outbound Gateway connection
@@ -61,9 +64,11 @@ Given no active Discord connection is configured
 	When the user runs `integral server start`
 		Then Integral starts without a Discord listener
 			And terminal conversation behavior remains available
+```
 
 ## DISCORD-E5BF908E — Enforce the single-DM authorization boundary
 
+```text
 Given Integral receives an event from Discord
 	When the event belongs to the configured direct-message channel and bound user
 		Then Integral may interpret the event according to the Discord behaviors
@@ -76,9 +81,11 @@ Given the bound Discord user uses the configured DM
 		Then it revalidates both the immutable Discord user ID and channel ID
 			And records those identities as the human origin
 			And applies the same gateway and approval policy as a local terminal
+```
 
 ## DISCORD-A3CB29FC — Submit Discord messages to their own conversation
 
+```text
 Given the Discord listener receives a message in the configured DM
 	And the sender is the bound Discord user
 	And the message contains non-empty text
@@ -113,9 +120,11 @@ Given a Discord message contains both non-empty text and an unsupported attachme
 	When Integral imports the message
 		Then Integral adds only the text to the conversation
 			And replies once that the attachment was not processed
+```
 
 ## DISCORD-5D67C2B9 — Present Discord replies safely
 
+```text
 Given Integral accepted a conversation message from the configured Discord DM
 	When that message is queued or Pi is working on it
 		Then Integral maintains Discord's typing indication until a response or terminal error is ready
@@ -131,9 +140,11 @@ Given Integral accepted a conversation message from the configured Discord DM
 	When the turn fails without assistant text
 		Then Integral sends a concise user-facing error only to the host-stamped Discord reply route
 			And stops the typing indication
+```
 
 ## DISCORD-0ADC0A9D — Provide a native Discord DM conversation
 
+```text
 Given the Discord listener is healthy
 	And the bound user opens the configured DM
 	When the listener connects or reconnects without a message to process
@@ -160,9 +171,11 @@ Given Integral cannot start or complete the Pi turn for a Discord message
 		Then it posts one concise warning in plain language
 			And tells the user whether retrying the message is appropriate
 			And does not expose stack traces, container details, credentials, or raw provider errors
+```
 
 ## DISCORD-45EED959 — Steer an active Discord turn
 
+```text
 Given Pi is processing a message in the Discord conversation
 	And the bound user sends another non-empty text message in the configured DM
 	When Integral durably accepts the later message
@@ -187,9 +200,11 @@ Given Integral has durably accepted a Discord message for steering
 		Then Integral keeps the message in the Discord conversation's queue
 			And delivers it as the next follow-up prompt to the current or replacement session
 			And does not lose it, move it to another conversation, or start a duplicate turn for it
+```
 
 ## DISCORD-60D37149 — Route task notifications to their channel of origin
 
+```text
 Given a Pi turn originated from the configured Discord DM
 	When the turn creates a durable task
 		Then Integral stamps the task with the Discord logical conversation and native DM reply route from the trusted turn context
@@ -200,6 +215,9 @@ Given a task carries a Discord origin route
 	When Integral emits a task progress, approval, completion, or failure notification
 		Then Integral identifies the task by its stable ID and current state
 			And summarizes the outcome or next required action in plain language
+			And a failure includes the concise redacted recorded reason when available
+			And tells the user to inspect the complete task record with `/tasks show`
+			And does not direct the user to `/status` for a task-specific failure reason
 			And sends the notification only to the stored Discord DM route
 			And records a successfully delivered notification in the same Discord conversation's history
 			And does not display the notification in the default terminal conversation or another channel
@@ -218,25 +236,29 @@ Given a governed request originates from the Discord conversation
 	When the approval is approved, denied, stale, expired, or fails during execution
 		Then Integral posts the resulting state only in the configured DM
 			And includes the approval ID and a concise outcome
+```
 
 ## DISCORD-89FAF039 — Handle Discord commands on the host
 
+```text
 Given the Discord connection becomes active
 	When Integral registers commands for the configured application
-		Then it registers `/help`, `/status`, `/model`, `/queue`, and `/approvals` as native Discord application commands
+		Then it registers `/help`, `/status`, `/model`, `/queue`, `/tasks`, and `/approvals` as native Discord application commands
 			And limits the registered commands to bot direct messages
 			And gives every command, subcommand, and argument a concise description in Discord's command picker
 			And gives `/model` optional search terms matching the terminal model chooser
 			And provides `/queue ls`, `/queue edit`, and `/queue delete` as subcommands
+			And provides `/tasks ls`, `/tasks show`, and `/tasks cancel` as subcommands
 			And provides `/approvals ls`, `/approvals show`, `/approvals approve`, and `/approvals deny` as subcommands
 			And does not register `/exit` because leaving a DM does not detach or end the conversation
 Given the bound Discord user invokes a supported slash command in the configured DM
 	When Integral handles the interaction
 		Then it acknowledges the interaction immediately with Discord's private deferred-response state
 			And executes the equivalent deployment-wide host command
-			And `/status`, `/model`, `/queue`, and `/approvals` present the same durable host state from every authorized human channel
+			And `/status`, `/model`, `/queue`, `/tasks`, and `/approvals` present the same durable host state from every authorized human channel
 			And `/model` reads or changes the deployment's shared model selection
 			And `/queue` identifies each queued conversation message by its conversation and stable queue ID
+			And `/tasks` identifies each durable task by its execution ID and can cancel an active task
 			And `/approvals` lists unresolved governed requests without secret values regardless of their notification route
 			And `/approvals approve` and `/approvals deny` may decide any listed request under the same human-approval policy
 			And it replaces the deferred response with the command result
@@ -259,9 +281,11 @@ Given the bound Discord user invokes a supported slash command in the configured
 	When command execution fails after Integral deferred the interaction
 		Then Integral replaces the waiting state with a private failure message
 			And does not leave Discord showing an indefinite pending response
+```
 
 ## DISCORD-D235BC26 — Isolate and report Discord failures
 
+```text
 Given the core Integral server is healthy
 	When Discord authentication, registration, connection, or delivery fails
 		Then Integral keeps the coordinator, gateway, runner, terminal chat, and durable queue available
@@ -272,3 +296,4 @@ Given the core Integral server is healthy
 			And includes Discord listener health
 			And identifies the configured bot, user, and DM without printing credentials
 			And reports conversation-specific queue and session state with an unambiguous conversation label
+```

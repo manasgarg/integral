@@ -6,6 +6,7 @@ the account credential.
 
 ## EMAIL-B765A312 — Configure provider-defined email capabilities
 
+```text
 Given the connection catalog contains Gmail and Mailgun email providers
 	When the user configures a Gmail email connection
 		Then the connection may enable `read`, `search`, and `send`
@@ -23,9 +24,11 @@ Given the connection catalog contains Gmail and Mailgun email providers
 			And an omitted policy or catch-all wildcard never means allow all recipients
 	When an email connection requests a capability unsupported by its provider
 		Then integral rejects the declaration without storing credentials
+```
 
 ## EMAIL-276B27AA — Search and read Gmail through the host boundary
 
+```text
 Given an active Gmail connection enables `search` or `read`
 	When Pi searches the account with a Gmail query
 		Then trusted host code returns a bounded list of matching message summaries
@@ -35,9 +38,11 @@ Given an active Gmail connection enables `search` or `read`
 			And does not modify mailbox state
 	When Pi requests a read or search operation that the connection did not enable
 		Then the host refuses the operation without contacting Gmail
+```
 
 ## EMAIL-19BA105D — Send email through a constrained account
 
+```text
 Given an active Gmail or Mailgun connection enables `send`
 	When Pi submits a text email whose recipients match that connection's policy
 		Then trusted host code fixes the From identity to the configured account
@@ -50,9 +55,11 @@ Given an active Gmail or Mailgun connection enables `send`
 	When the provider rejects a valid constrained message
 		Then the host reports its HTTP status and bounded provider reason
 			And does not expose credentials or an unbounded response body
+```
 
 ## EMAIL-89334867 — Expose only semantic email tools to Pi
 
+```text
 Given one or more active email connections exist when a Pi session starts
 	When the runner prepares the session home
 		Then it registers tools only for capabilities enabled by those connections
@@ -67,11 +74,14 @@ Given one or more active email connections exist when a Pi session starts
 	When the semantic tool cannot reach the authenticated host email boundary
 		Then it reports whether the request was cancelled or a bounded transport error code
 			And does not expose the session credential
+```
 
 ## EMAIL-FB2E88EF — Log semantic email gateway decisions
 
+```text
 Given an authenticated Pi session requests an email operation
 	When the gateway completes or refuses the operation
 		Then it emits a structured event with the connection, provider, operation, session, request, and verdict
 			And a failure includes its bounded sanitized reason
 			And the event excludes recipients, subject, body, and credentials
+```

@@ -140,7 +140,8 @@ export function buildContainerSpec(options: {
   image?: string;
   mcp: Connection[];
   connections?: Connection[];
-  historyView?: string;
+  historyArchive?: string;
+  currentRun?: string;
 }): ContainerSpec {
   const proxy = new URL(options.gatewayUrl);
   proxy.username = "integral";
@@ -198,10 +199,16 @@ export function buildContainerSpec(options: {
       readonly: true,
     },
   ];
-  if (options.historyView)
+  if (options.historyArchive)
     mounts.push({
-      source: options.historyView,
-      target: "/home/pi/history",
+      source: options.historyArchive,
+      target: "/home/pi/history/runs",
+      readonly: true,
+    });
+  if (options.currentRun)
+    mounts.push({
+      source: options.currentRun,
+      target: "/home/pi/history/current",
       readonly: true,
     });
   return {
@@ -619,10 +626,17 @@ function result(value) { return { content: [{ type: "text", text: JSON.stringify
 export default function (pi) {
   for (const tool of tools) pi.registerTool({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters, async execute(_id, params, signal) { const value = await mcp(tool, params, signal); return { content: value.content || [{ type: "text", text: JSON.stringify(value.structuredContent ?? value) }], details: { connection: tool.connection, tool: tool.remoteName, structuredContent: value.structuredContent, isError: value.isError === true } }; } });
   pi.registerTool({ name: "schedule_list", label: "List schedules", description: "List schedules managed by Integral", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/schedules", "GET", undefined, signal)); } });
+  pi.registerTool({ name: "schedule_show", label: "Show schedule", description: "Show one Integral schedule definition", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "GET", undefined, signal)); } });
+  pi.registerTool({ name: "schedule_history", label: "Schedule history", description: "Show committed definition history for one Integral schedule", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id) + "/history", "GET", undefined, signal)); } });
+  pi.registerTool({ name: "schedule_runs", label: "Schedule runs", description: "List task occurrences, optionally for one schedule", parameters: Type.Object({ scheduleId: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const suffix = params.scheduleId ? "?scheduleId=" + encodeURIComponent(params.scheduleId) : ""; return result(await schedule("/integral/control/occurrences" + suffix, "GET", undefined, signal)); } });
   pi.registerTool({ name: "schedule_create", label: "Create schedule", description: "Create a recurring cron schedule or one-time task", parameters: Type.Object({ prompt: Type.String(), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : { type: "recurring", cron: params.cron, timezone: params.timezone }; return result(await schedule("/integral/control/schedules", "POST", { prompt: params.prompt, trigger }, signal)); } });
   for (const action of ["enable", "disable"]) pi.registerTool({ name: "schedule_" + action, label: action + " schedule", description: action + " a schedule", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id) + "/" + action, "POST", { expectedRevision: params.expectedRevision }, signal)); } });
   pi.registerTool({ name: "schedule_update", label: "Update schedule", description: "Update a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer(), prompt: Type.Optional(Type.String()), cron: Type.Optional(Type.String()), timezone: Type.Optional(Type.String()), runAt: Type.Optional(Type.String()) }), async execute(_id, params, signal) { const trigger = params.runAt ? { type: "once", runAt: params.runAt } : params.cron || params.timezone ? { type: "recurring", cron: params.cron, timezone: params.timezone } : undefined; return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "PATCH", { expectedRevision: params.expectedRevision, prompt: params.prompt, trigger }, signal)); } });
+  pi.registerTool({ name: "schedule_restore", label: "Restore schedule", description: "Restore a committed schedule definition as a new revision", parameters: Type.Object({ id: Type.String(), commit: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id) + "/restore", "POST", { commit: params.commit, expectedRevision: params.expectedRevision }, signal)); } });
   pi.registerTool({ name: "schedule_delete", label: "Delete schedule", description: "Delete a schedule using its current revision", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/schedules/" + encodeURIComponent(params.id), "DELETE", { expectedRevision: params.expectedRevision }, signal)); } });
+  pi.registerTool({ name: "task_list", label: "List tasks", description: "List durable Integral task executions and their current states", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/tasks", "GET", undefined, signal)); } });
+  pi.registerTool({ name: "task_show", label: "Show task", description: "Show attempts, declarations, results, retry timing, and failure reason for one task execution", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/tasks/" + encodeURIComponent(params.id), "GET", undefined, signal)); } });
+  pi.registerTool({ name: "task_cancel", label: "Cancel task", description: "Cancel an active one-time task execution", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/tasks/" + encodeURIComponent(params.id) + "/cancel", "POST", {}, signal)); } });
   pi.registerTool({ name: "container_package_list", label: "List container packages", description: "List the governed Debian package set and current revision for the managed Pi image", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await schedule("/integral/control/container-packages", "GET", undefined, signal)); } });
   for (const operation of ["install", "upgrade"]) pi.registerTool({ name: "container_package_" + operation, label: operation + " container packages", description: operation + " Debian packages through Integral's governed immutable-image builder; the current container is replaced after this turn", parameters: Type.Object({ packages: Type.Array(Type.String()), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await schedule("/integral/control/container-packages", "POST", { operation, packages: params.packages, expectedRevision: params.expectedRevision }, signal)); } });
 }
@@ -704,7 +718,8 @@ export default function (pi) {
     pi.registerTool({ name: kind + "_delete", label: "Soft-delete governed " + kind, description: "Remove this resource from future sessions while the current session keeps its mount", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/" + kind + "s/" + encodeURIComponent(params.id), "DELETE", params, signal)); } });
     pi.registerTool({ name: kind + "_restore", label: "Restore governed " + kind, description: "Restore a soft-deleted resource at a mount path; the current session is replaced after success", parameters: Type.Object({ id: Type.String(), expectedRevision: Type.Integer(), mount: Type.String() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/" + kind + "s/" + encodeURIComponent(params.id) + "/restore", "POST", params, signal)); } });
   }
-  pi.registerTool({ name: "repo_push", label: "Push governed repository", description: "Commit changes first, then land the current commit through Integral's validated host boundary; the protected image-recipe repository requires human approval", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { const repository = repositories.find(value => value.id === params.id || value.name === params.id); if (!repository) throw new Error("repository is not mounted in this session"); const checkout = repository.mount, proposed = (await run("git", ["rev-parse", "HEAD"], { cwd: checkout, signal })).stdout.trim(), bundle = join(tmpdir(), "integral-" + crypto.randomUUID() + ".bundle"); try { await run("git", ["bundle", "create", bundle, "HEAD"], { cwd: checkout, signal }); const encoded = (await readFile(bundle)).toString("base64"); return result(await call("/integral/control/resources/repos/" + encodeURIComponent(repository.id) + "/push", "POST", { proposed, bundle: encoded }, signal)); } finally { await rm(bundle, { force: true }); } } });
+  pi.registerTool({ name: "repo_push", label: "Push governed repository", description: "Land committed work on the canonical repository. A local commit exists only in this run until this tool succeeds; call it before reporting repository work complete. If you decide not to land your commits, undo them and their file changes instead. The protected image-recipe repository requires human approval.", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { const repository = repositories.find(value => value.id === params.id || value.name === params.id); if (!repository) throw new Error("repository is not mounted in this session"); const checkout = repository.mount, dirty = (await run("git", ["status", "--porcelain"], { cwd: checkout, signal })).stdout.trim(); if (dirty) throw new Error("repository has uncommitted changes; commit them before repo_push"); const proposed = (await run("git", ["rev-parse", "HEAD"], { cwd: checkout, signal })).stdout.trim(), bundle = join(tmpdir(), "integral-" + crypto.randomUUID() + ".bundle"); try { await run("git", ["bundle", "create", bundle, "HEAD"], { cwd: checkout, signal }); const encoded = (await readFile(bundle)).toString("base64"); return result(await call("/integral/control/resources/repos/" + encodeURIComponent(repository.id) + "/push", "POST", { proposed, bundle: encoded }, signal)); } finally { await rm(bundle, { force: true }); } } });
+  pi.registerTool({ name: "repo_recovery_discard", label: "Discard recovered repository work", description: "Remove one host-owned recovery ref after examining the originating run log and deciding the recovered work should not land", parameters: Type.Object({ id: Type.String(), recoveryId: Type.String() }), async execute(_id, params, signal) { const repository = repositories.find(value => value.id === params.id || value.name === params.id); if (!repository) throw new Error("repository is not mounted in this session"); await call("/integral/control/resources/repos/" + encodeURIComponent(repository.id) + "/recovery/" + encodeURIComponent(params.recoveryId), "DELETE", undefined, signal); return result({ discarded: params.recoveryId }); } });
   pi.registerTool({ name: "container_image_rebuild", label: "Rebuild managed Pi image", description: "Request a fresh pull and no-cache rebuild of the active Dockerfile; this requires human approval and replaces the container after resolution", parameters: Type.Object({}), async execute(_id, _params, signal) { return result(await call("/integral/control/image-rebuild", "POST", {}, signal)); } });
   pi.registerTool({ name: "store_snapshot_list", label: "List store snapshots", description: "List retained snapshots for a governed store", parameters: Type.Object({ id: Type.String() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/stores/" + encodeURIComponent(params.id) + "/snapshots", "GET", undefined, signal)); } });
   pi.registerTool({ name: "store_snapshot_restore", label: "Restore store snapshot", description: "Restore retained store bytes using the current lifecycle revision", parameters: Type.Object({ id: Type.String(), snapshotId: Type.String(), expectedRevision: Type.Integer() }), async execute(_id, params, signal) { return result(await call("/integral/control/resources/stores/" + encodeURIComponent(params.id) + "/snapshots/" + encodeURIComponent(params.snapshotId) + "/restore", "POST", params, signal)); } });
@@ -1221,8 +1236,21 @@ export const dockerContainerBackend: ContainerBackend = {
   },
 };
 
-export async function freshSessionHome(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "integral-pi-"));
+export async function freshSessionHome(
+  parent: string = tmpdir(),
+): Promise<string> {
+  await ensureDir(parent);
+  const home = await mkdtemp(join(parent, "integral-pi-"));
+  try {
+    await Promise.all([
+      ensureDir(join(home, "history", "runs")),
+      ensureDir(join(home, "history", "current")),
+    ]);
+  } catch (error) {
+    await rm(home, { recursive: true, force: true });
+    throw error;
+  }
+  return home;
 }
 export function newSessionIdentity(): {
   sessionId: string;

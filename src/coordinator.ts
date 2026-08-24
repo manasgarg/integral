@@ -32,7 +32,7 @@ import {
   type IntervalRuntime,
 } from "./runtime.ts";
 import { internalFetch } from "./http-client.ts";
-import { DurableTaskQueue } from "./task-queue.ts";
+import { DurableTaskQueue, type ScheduledTask } from "./task-queue.ts";
 import type { ScheduledOccurrence } from "./occurrence-store.ts";
 import type { ConversationOriginRoute } from "./schedule-types.ts";
 import { DEFAULT_PI_IMAGE, type Component } from "./constants.ts";
@@ -70,10 +70,12 @@ import {
 } from "./image-recipe.ts";
 import {
   clearConnectionDegraded,
+  credentialSecretValues,
   credentialFor,
   loadConnections,
   markConnectionDegraded,
 } from "./connections.ts";
+import { redactText } from "./runs/redaction.ts";
 import {
   DiscordIngressStore,
   DiscordJsListener,
@@ -312,6 +314,7 @@ export class Coordinator {
         "/status — show deployment and conversation status",
         "/model [search] — show or select the shared model",
         "/queue ls|edit|delete — manage queued conversation messages",
+        "/tasks ls|show|cancel — inspect or cancel durable tasks",
         "/approvals ls|show|approve|deny — manage all governed requests",
       ].join("\n");
     if (name === "status") {
@@ -393,6 +396,23 @@ export class Coordinator {
         await owner.conversation.deleteUser(options.id);
         return `Deleted queue message ${options.id}.`;
       }
+    }
+    if (name === "tasks") {
+      const tasks = this.tasks.snapshot(),
+        render = (task: ScheduledTask) =>
+          `${task.state}  ${task.executionId}  ${task.scheduledFor}  ${task.prompt}`;
+      if (!subcommand || subcommand === "ls")
+        return tasks.length
+          ? tasks.map(render).join("\n")
+          : "There are no tasks.";
+      if (!options.id) throw new IntegralError("A task ID is required.");
+      const task = tasks.find(
+        (candidate) => candidate.executionId === options.id,
+      );
+      if (!task) throw new IntegralError("Task not found.", 404);
+      if (subcommand === "show") return JSON.stringify(task, null, 2);
+      if (subcommand === "cancel")
+        return render(await this.tasks.cancel(options.id));
     }
     if (name === "approvals") {
       const approvals = this.approvals.snapshot(),
@@ -519,11 +539,19 @@ export class Coordinator {
   }
 
   async flushTaskOutbox(): Promise<void> {
-    for (const entry of this.tasks.outbox()) {
+    const outbox = this.tasks.outbox();
+    if (!outbox.length) return;
+    const secrets = await credentialSecretValues(this.paths);
+    for (const entry of outbox) {
       if (entry.origin) {
         const scope = this.scopes.get(entry.origin.conversationId);
         if (scope?.discord) {
-          const text = `Task ${entry.taskId ?? entry.executionId} ${entry.outcome}${entry.result ? `: ${entry.result}` : entry.error ? ": see /status for retry guidance" : "."}`;
+          const detail = entry.result
+            ? `: ${entry.result}`
+            : entry.error
+              ? `: ${redactText(entry.error, secrets).replace(/\s+/g, " ").trim().slice(0, 300)}`
+              : "";
+          const text = `Task ${entry.taskId ?? entry.executionId} ${entry.outcome}${detail}. Inspect the complete task record with /tasks show.`;
           if (!(await this.deliverDiscord(scope, text))) continue;
           await scope.conversation.append({ type: "notification", text });
         }
@@ -1425,7 +1453,26 @@ export class Coordinator {
         /^\/integral\/tasks\/([^/]+)\/cancel$/,
       );
       if (taskCancel && req.method === "POST") {
-        json(res, 200, await this.tasks.cancel(taskCancel[1]!));
+        json(
+          res,
+          200,
+          await this.tasks.cancel(decodeURIComponent(taskCancel[1]!)),
+        );
+        return;
+      }
+      if (url.pathname === "/integral/tasks" && req.method === "GET") {
+        json(res, 200, this.tasks.snapshot());
+        return;
+      }
+      const taskInspection = url.pathname.match(/^\/integral\/tasks\/([^/]+)$/);
+      if (taskInspection && req.method === "GET") {
+        const executionId = decodeURIComponent(taskInspection[1]!),
+          task = this.tasks
+            .snapshot()
+            .find((candidate) => candidate.executionId === executionId);
+        if (!task)
+          throw new IntegralError(`task not found: ${executionId}`, 404);
+        json(res, 200, task);
         return;
       }
       if (

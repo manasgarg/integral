@@ -9,6 +9,7 @@ access, and the default-deny network boundary.
 
 ## GATEWAY-3F299566 — Verify the expected gateway
 
+```text
 Given the integral gateway component is healthy
 	When the CLI requests the gateway health endpoint
 		Then the gateway returns success
@@ -16,25 +17,31 @@ Given the integral gateway component is healthy
 			And reports its current ready or degraded state
 			And includes its current error when degraded
 			And lets the CLI distinguish it from an unrelated process on the same port
+```
 
 ## GATEWAY-578CEF2E — Reject an unauthenticated proxy request
 
+```text
 Given the gateway is running
 	When a client makes a proxy request without a valid active-session token
 		Then the gateway returns HTTP 407 with a Basic proxy-authentication challenge
 			And does not connect to the upstream host
+```
 
 ## GATEWAY-B6C64AA7 — Attribute an authenticated request
 
+```text
 Given an active chat has a unique session token
 	When its container sends a request through the gateway
 		Then the container supplies the token as the password in Basic proxy authentication
 			And the gateway associates the request with that chat session
 			And removes proxy authorization and proxy connection headers before forwarding
 			And rejects the token after the session ends
+```
 
 ## GATEWAY-A2BBBBE8 — Forward a request allowed by an active connection
 
+```text
 Given an authenticated chat container is active
 	And its request matches an active connection's scheme policy
 	And its request matches that connection's host and port policy
@@ -45,9 +52,11 @@ Given an authenticated chat container is active
 			And refuses a caller-supplied credential that is not the integral sentinel
 			And forwards the upstream response to Pi
 			And does not log the real credential
+```
 
 ## GATEWAY-EB8D96FE — Deny destinations outside active connections
 
+```text
 Given an authenticated chat container is active
 	When it requests a destination outside every active connection boundary
 		Then the gateway returns HTTP 403
@@ -57,9 +66,11 @@ Given an authenticated chat container is active
 		Then the gateway accepts `CONNECT` only on port 443
 			And refuses the tunnel before interception unless an active HTTPS connection can match its host and port
 			And still applies method and path policy to each intercepted request
+```
 
 ## GATEWAY-123EDBDF — Fail closed when injection cannot be completed
 
+```text
 Given a request matches an active credentialed connection
 	And its credential file is missing
 	Or its recognized OAuth credential cannot be refreshed
@@ -67,16 +78,20 @@ Given a request matches an active credentialed connection
 		Then it refuses the request
 			And does not forward the sentinel upstream
 			And tells the user to rotate or reconfigure the connection
+```
 
 ## GATEWAY-EC79406A — Prevent direct container egress
 
+```text
 Given a chat container is running
 	When software in the container attempts internet access without the gateway
 		Then the connection cannot reach the destination
 			And integral fails container startup when it cannot create the locked network
+```
 
 ## GATEWAY-846B1000 — Require human approval for governed mutations
 
+```text
 Given the gateway classifies a control operation as requiring human approval
 	And container package installation and upgrade are approval-required
 	And writes to repositories with host-managed `approval-required` policy are approval-required
@@ -161,3 +176,4 @@ When an approval changes state
 	Then Integral writes a durable audit record with its safe summary, request digest, lineage, decision identity, execution state, and timestamps
 		And sends any human-facing notification only to the approval's originating conversation
 		And never records credentials or secret request values
+```

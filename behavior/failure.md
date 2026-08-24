@@ -9,6 +9,7 @@ These behaviors cover failures spanning more than one product area.
 
 ## FAILURE-071CB99A — Report an unexpected Pi exit
 
+```text
 Given a chat turn is in progress
 	When the Pi process or container exits unexpectedly
 		Then integral records that the response did not complete
@@ -16,9 +17,11 @@ Given a chat turn is in progress
 			And does not present partial protocol output as a complete answer
 			And durably returns the interrupted message to the queue
 			And removes the container and temporary session material
+```
 
 ## FAILURE-3780301D — Report loss of the gateway
 
+```text
 Given the runner has not claimed its next message
 	When gateway state is missing or not ready
 		Then the runner marks itself degraded
@@ -30,17 +33,21 @@ Given a chat turn is already in progress
 			And integral does not place a real credential in any replacement container
 			And the coordinator durably returns the interrupted message to the queue
 			And reports the turn error to attached terminals
+```
 
 ## FAILURE-A4C19E72 — Handle an immediate Pi prompt rejection
 
+```text
 Given the runner has sent a claimed message to Pi
 	When Pi rejects the prompt before beginning a turn
 		Then integral reports the rejection without waiting for the turn timeout
 			And durably returns the interrupted message to the queue
 			And removes the failed Pi container and temporary session material
+```
 
 ## FAILURE-BE6D295B — Wait for Pi's automatic retry
 
+```text
 Given Pi is processing a chat turn
 	When Pi ends an unsuccessful attempt and reports that it will retry
 		Then integral keeps the turn in progress
@@ -48,12 +55,15 @@ Given Pi is processing a chat turn
 	When Pi ends the final attempt
 		Then integral completes the turn with the accumulated final-attempt text
 			And publishes that text as the assistant response
+```
 
 ## FAILURE-282E3B57 — Redact known secrets from component diagnostics
 
+```text
 Given the component logger knows the deployment's stored credential values
 	When a gateway, provider, Docker, or Pi operation writes a diagnostic event
 		Then it redacts those known credential values wherever they occur
 			And redacts values under authorization, cookie, secret, token, password, and API-key fields
 			And redacts inline Basic and Bearer authorization values
 			And emits the sanitized event in the configured format
+```

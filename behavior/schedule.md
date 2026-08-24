@@ -5,7 +5,10 @@ isolated run-to-completion task execution.
 
 ## SCHEDULE-55BD779F — Manage schedules through the gateway
 
-Given Pi has an active integral session
+```text
+Given Pi has an authenticated Integral session
+	And the session may be an interactive conversation or isolated scheduled-task attempt
+	And the invocation may have originated from the terminal, Discord, or another supported human channel
 	When Pi creates a recurring schedule with a five-field cron expression, IANA timezone, and self-contained task prompt
 		Then the request passes through the authenticated gateway control boundary
 			And the scheduler validates the expression, timezone, minimum frequency, and task size
@@ -19,9 +22,33 @@ Given Pi has an active integral session
 			And an update requires the expected current revision
 			And an accepted mutation is durable before it is reported to Pi
 			And disabling or deleting a schedule prevents new occurrences without discarding an occurrence already due
+			And the same operation is available in an interactive conversation and a scheduled-task attempt
+			And a scheduled-task attempt may change the definition that created it without changing the immutable current occurrence
+```
+
+## SCHEDULE-F13C33A0 — Inspect complete scheduling state from every agent invocation
+
+```text
+Given Pi has an authenticated Integral session in an interactive conversation or isolated scheduled-task attempt
+	When Pi lists or shows schedule definitions
+		Then Integral returns the same deployment-wide definitions, stable IDs, revisions, triggers, prompts, enabled states, and deletion states available to the host CLI
+	When Pi inspects a schedule's definition history
+		Then Integral returns its committed revisions and operations in order
+	When Pi lists task occurrences or narrows them by schedule ID
+		Then Integral returns their stable execution IDs, trigger types, states, scheduled instants, dispatch history, completion times, and recorded errors
+	When Pi lists durable tasks or shows one by execution ID
+		Then Integral returns the coordinator's current task state, attempts, declarations, results, retry timing, and recorded failure reason
+			And the execution ID can be used to find the corresponding retained agent runs
+	When scheduling state changes after the current container was provisioned
+		Then a later query in that session sees the durable current state without restarting Pi
+	When Pi inspects or changes scheduling state
+		Then the authenticated gateway performs the operation without exposing component credentials or host paths
+			And applies the same validation, optimistic revision checks, persistence, and audit attribution regardless of invocation kind or conversation origin
+```
 
 ## SCHEDULE-22FF69D9 — Preserve schedule definition history in Git
 
+```text
 Given the scheduler owns a private Git repository under the deployment data directory
 	When it accepts creation, update, enable, disable, deletion, or restoration of a schedule
 		Then it writes the canonical schedule definition or deletion to that repository
@@ -37,9 +64,11 @@ Given the scheduler owns a private Git repository under the deployment data dire
 	When a user restores a prior definition revision
 		Then integral commits that definition as a new current revision
 			And does not rewrite or remove the intervening history
+```
 
 ## SCHEDULE-A1F47A7A — Materialize each due occurrence durably
 
+```text
 Given an enabled schedule reaches its next execution instant
 	When the scheduler evaluates due work
 		Then it durably creates an occurrence before dispatching it
@@ -47,18 +76,22 @@ Given an enabled schedule reaches its next execution instant
 			And snapshots the task prompt and immutable Pi execution profile into the occurrence
 			And never creates a second logical occurrence for the same execution ID after restart or clock rollback
 			And calculates the next recurring instant using the schedule's IANA timezone and defined daylight-saving behavior
+```
 
 ## SCHEDULE-52697825 — Dispatch an occurrence idempotently
 
+```text
 Given the scheduler has a due occurrence not yet accepted by the coordinator
 	When it submits that execution ID to the coordinator
 		Then the coordinator durably accepts one task-queue record for that execution ID
 			And returns that same record when an identical submission is repeated
 			And rejects a repeated execution ID whose immutable task data differs
 			And the scheduler retries unavailable or ambiguous delivery without creating duplicate logical work
+```
 
 ## SCHEDULE-033C050E — Isolate task execution from interactive talk
 
+```text
 Given the coordinator task queue contains an occurrence ready to run
 	And an interactive Pi container may already be active
 	When the task executor claims the occurrence
@@ -68,9 +101,11 @@ Given the coordinator task queue contains an occurrence ready to run
 			And supplies only the self-contained task prompt and trusted schedule, execution, and attempt metadata
 			And provisions governed connection capabilities through the same environment preparation path used by interactive talk
 			And permits the interactive container to remain separate from the task container
+```
 
 ## SCHEDULE-930581F7 — Require a clean one-shot exit for task success
 
+```text
 Given an isolated task container is processing exactly one occurrence
 	When Pi reaches the end of a turn without calling any tool and has not declared the task complete or failed
 		Then the task completion extension injects a steering message before the agent loop settles
@@ -96,9 +131,11 @@ Given an isolated task container is processing exactly one occurrence
 		Then the runner revokes that attempt's gateway identity
 			And removes its container and temporary home
 			And never retains the container for another task or talk turn
+```
 
 ## SCHEDULE-E85BDCAD — Do not retry a failed recurring occurrence
 
+```text
 Given a recurring occurrence has been durably accepted by the coordinator
 	When delivery or capacity fails before its isolated Pi container starts
 		Then integral keeps the occurrence pending for an execution attempt
@@ -112,9 +149,11 @@ Given a recurring occurrence has been durably accepted by the coordinator
 	When the schedule reaches its next recurring instant after an earlier occurrence failed
 		Then the scheduler creates the next independent occurrence normally
 			And the earlier failure does not delay or replace it
+```
 
 ## SCHEDULE-4205553B — Retry a one-time task until clean success
 
+```text
 Given a one-time task has not completed successfully
 	When delivery fails or an isolated execution attempt is unsuccessful
 		Then integral retains the same logical execution ID in the active task queue
@@ -128,27 +167,33 @@ Given a one-time task has not completed successfully
 	When an operator explicitly cancels the task
 		Then integral records cancellation as the only non-successful terminal outcome
 			And retains its execution and attempt history for inspection
+```
 
 ## SCHEDULE-42E63F16 — Recover scheduler acknowledgement idempotently
 
+```text
 Given the coordinator has durably completed a task or terminally failed a recurring occurrence
 	When scheduler acknowledgement is unavailable or its response is lost
 		Then the coordinator retains the acknowledgement in a durable outbox
 			And retries the same execution ID and outcome after component restart
 			And the scheduler applies repeated identical acknowledgements without changing the recorded outcome
 			And neither component causes the task to execute again because acknowledgement was repeated
+```
 
 ## SCHEDULE-81B854FB — Expose stable task identity for side-effect idempotency
 
+```text
 Given Pi is running an isolated task attempt
 	When integral supplies its trusted task context
 		Then the context includes the stable schedule ID, execution ID, scheduled instant, and attempt number
 			And retries of a one-time task retain the execution ID while changing the attempt identity
 			And Pi can use the execution ID as an idempotency key for external operations
 			And integral does not claim that coordinator idempotency prevents repeated external effects after an ambiguous failure
+```
 
 ## SCHEDULE-E141FFD9 — Inspect and recover scheduled work from the CLI
 
+```text
 Given schedules and task occurrences exist in any state
 	When the user runs the schedule list, show, or run-history command
 		Then integral reports stable schedule and execution IDs, trigger type, state, scheduled instant, and attempt history
@@ -165,20 +210,25 @@ Given schedules and task occurrences exist in any state
 		Then integral rejects the request
 			And leaves the failed occurrence terminal
 			And identifies the next schedule occurrence as the way recurring work runs again
+```
 
 ## SCHEDULE-8912B5E6 — Coalesce missed recurring instants
 
+```text
 Given an enabled recurring schedule passes more than one execution instant while scheduling is unavailable
 	When the scheduler recovers
 		Then it creates only the latest missed occurrence
 			And records the earlier missed instants as coalesced for inspection
 			And does not silently present coalesced instants as successfully executed
 			And resumes calculation from the schedule's next future instant
+```
 
 ## SCHEDULE-FDFA799E — Prevent overlapping occurrences of one schedule
 
+```text
 Given one occurrence of a recurring schedule is running
 	When another occurrence of that schedule becomes due
 		Then the scheduler may materialize the later occurrence durably
 			And the coordinator does not start it before the running occurrence reaches a terminal outcome
 			And work from other schedules and interactive talk remains eligible to run
+```

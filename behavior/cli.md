@@ -5,19 +5,22 @@ deliberate overlap between shell commands and local commands in `integral talk`.
 
 ## CLI-6001FE46 — Show top-level help
 
+```text
 Given integral is installed
 	When the user runs `integral`, `integral --help`, `integral -h`, or `integral help`
 		Then the command exits successfully
-			And lists `server`, `talk`, `status`, `model`, `queue`, `approval`, `schedule`, `connection`, `image`, `config`, and `version`
+			And lists `server`, `talk`, `status`, `model`, `queue`, `task`, `approval`, `schedule`, `connection`, `image`, `config`, and `version`
 			And does not list a separate `auth` or `credential` command
 			And describes each command in plain English
 	When npm reads the package metadata
 		Then the package is named `@pirogram/integral`
 			And it exposes `integral` through `bin/integral.js`
 			And it does not expose an `rr` binary
+```
 
 ## CLI-04301CCA — Report the implementation version
 
+```text
 Given integral is installed
 	When the user runs `integral version`
 		Then the command prints the integral version
@@ -27,19 +30,23 @@ Given integral is installed
 	When the user runs `integral --version` or `integral -V`
 		Then the command prints the same implementation versions
 			And exits successfully
+```
 
 ## CLI-A7D3E91B — Accept short help on every command
 
+```text
 Given integral is installed
 	When the user adds `-h` to any integral command or subcommand
 		Then integral prints the applicable help
 			And exits successfully
 			And does not perform the command operation
+```
 
 <!-- Automation note (CLI-D1B5816E): Shared terminal operations are covered individually; complete cross-surface equivalence requires an attached interactive terminal fixture. -->
 
 ## CLI-D1B5816E — Keep conversation operations available in the CLI and talk
 
+```text
 Given the integral coordinator is healthy
 	And an operation concerns the default terminal conversation rather than host administration or terminal lifecycle
 	When the user invokes `integral status` or enters `/status` in `integral talk`
@@ -54,6 +61,9 @@ Given the integral coordinator is healthy
 	When the user invokes `integral queue ls`, `integral queue edit <id> <text>`, or `integral queue delete <id>`
 		And the user could instead enter the corresponding `/queue` command in `integral talk`
 		Then integral reads or changes the same durable queue from either surface
+	When the user invokes `integral task ls`, `integral task show <id>`, or `integral task cancel <id>`
+		And the user could instead enter the corresponding `/tasks` command in `integral talk`
+		Then integral reads or changes the same durable task queue from either surface
 	When the user invokes `integral approval ls` or enters `/approvals` in `integral talk`
 		Then integral lists the same durable approval requests from either surface
 	When the user invokes `integral approval approve <id>` or `integral approval deny <id>`
@@ -76,9 +86,33 @@ Given an operation is specific to host administration, scripting, or an attached
 			And structured-output flags remain CLI-only
 			And `/exit` remains talk-only
 			And integral does not treat an arbitrary top-level CLI command as a local talk command
+```
+
+## TASK-FC4DA418 — Inspect and cancel durable tasks
+
+```text
+Given the durable task queue contains zero or more scheduled task executions
+	When the user runs `integral task ls` or enters `/tasks` or `/tasks ls` in `integral talk`
+		Then Integral lists every task in queue order
+			And shows each task's state, execution ID, scheduled time, and prompt
+			And reports an empty task queue without error
+	When the user runs `integral task show <id>` or enters `/tasks show <id>` in `integral talk`
+		Then Integral shows the complete task record for that execution ID
+			And reports when the task does not exist
+	When the user runs `integral task cancel <id>` or enters `/tasks cancel <id>` in `integral talk`
+		Then Integral asks the coordinator to cancel that task
+			And shows the resulting task state
+	When the user runs `integral task ls --json` or `integral task show <id> --json`
+		Then Integral prints the selected task data as JSON
+	When the user includes `--json` in a `/tasks` command
+		Then Integral explains that structured output is available only in the CLI
+	When Integral handles a `/tasks` command locally
+		Then it does not send the command to Pi
+```
 
 ## CLI-5D8A1C72 — Let a trusted host operator edit and rebuild the Pi image
 
+```text
 Given a user has local authority to operate an Integral deployment
 	When the user runs `integral image edit`
 		Then Integral opens a temporary working copy of the active Dockerfile in the configured editor
@@ -95,3 +129,4 @@ Given a user has local authority to operate an Integral deployment
 		Then Integral explains that these are privileged local operator actions
 			And distinguishes them from Pi and remote automation requests that require approval
 			And performs no edit or build
+```

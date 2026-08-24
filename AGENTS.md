@@ -93,6 +93,8 @@ organized the same way as test cases.
   record its ID in the retired-ID list in `behavior/README.md`.
 - Use one level-two heading per behavior in the form
   `## <ID> — <short description>`.
+- Wrap each behavior's complete Given/When/Then clause body in a fenced `text`
+  code block so Markdown preserves and visibly renders its literal indentation.
 - Express each behavior as Given/When/Then, using literal tab indentation.
 - Write `Given` with no indentation, each `When` with one tab, and each `Then`
   with two tabs. This allows several sibling `When` clauses to share one
@@ -106,9 +108,10 @@ organized the same way as test cases.
 
 Use this exact layout:
 
-```text
+````text
 ## CHAT-7A3F19C2 — Hold an interactive conversation
 
+```text
 Given the server is healthy
 	And the terminal is interactive
 	When the user runs `integral talk`
@@ -116,6 +119,7 @@ Given the server is healthy
 		Then integral sends the message to Pi
 			And displays Pi's response
 ```
+````
 
 Each behavior file may start with a level-one heading and a short scope note,
 but normative outcomes belong in identified Given/When/Then behaviors.

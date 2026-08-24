@@ -243,6 +243,36 @@ export class DiscordJsListener implements DiscordListener {
       ),
       direct(
         new SlashCommandBuilder()
+          .setName("tasks")
+          .setDescription("Inspect or cancel durable task executions")
+          .addSubcommand((command) =>
+            command.setName("ls").setDescription("List task executions"),
+          )
+          .addSubcommand((command) =>
+            command
+              .setName("show")
+              .setDescription("Show a task execution")
+              .addStringOption((option) =>
+                option
+                  .setName("id")
+                  .setDescription("Task execution ID")
+                  .setRequired(true),
+              ),
+          )
+          .addSubcommand((command) =>
+            command
+              .setName("cancel")
+              .setDescription("Cancel an active task execution")
+              .addStringOption((option) =>
+                option
+                  .setName("id")
+                  .setDescription("Task execution ID")
+                  .setRequired(true),
+              ),
+          ),
+      ),
+      direct(
+        new SlashCommandBuilder()
           .setName("approvals")
           .setDescription("Inspect or decide this conversation's approvals")
           .addSubcommand((command) =>

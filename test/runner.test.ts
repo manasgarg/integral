@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   ContainerBackend,
@@ -275,6 +275,16 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
       connectionGeneration: 2,
       startedAt: "now",
     });
+  const recoveryDirectory = join(paths.recovery, "profile-id", "session-old-1");
+  await mkdir(recoveryDirectory, { recursive: true });
+  await writeFile(
+    join(recoveryDirectory, ".integral-recovery.json"),
+    `${JSON.stringify({
+      createdAt: "now",
+      sessionId: "session-old",
+      ref: "refs/integral/recovery/session-old",
+    })}\n`,
+  );
 
   let spec: ContainerSpec | undefined,
     observe: ((event: Record<string, unknown>) => void) | undefined;
@@ -418,31 +428,41 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
     assert.ok(
       spec?.args.includes(`/home/pi/.integral/extensions/${extension}`),
     );
-  assert.match(spec?.args.at(-1) ?? "", /ephemeral Integral-managed container/);
+  const systemPrompts = spec?.args.join("\n") ?? "";
+  assert.match(systemPrompts, /ephemeral Integral-managed container/);
+  assert.match(systemPrompts, /undo those commits and their file changes/);
+  assert.match(
+    systemPrompts,
+    /sessionId in \/home\/pi\/history\/runs\/index.json/,
+  );
+  assert.match(systemPrompts, /repo_recovery_discard/);
   const historyMount = spec?.mounts.find(
-    (mount) => mount.target === "/home/pi/history",
-  );
+      (mount) => mount.target === "/home/pi/history/runs",
+    ),
+    currentMount = spec?.mounts.find(
+      (mount) => mount.target === "/home/pi/history/current",
+    );
   assert.equal(historyMount?.readonly, true);
-  assert.ok(historyMount);
-  assert.ok(historyMount.source.startsWith(`${paths.runViews}/`));
-  assert.equal(historyMount.source.startsWith(`${paths.runs}/`), false);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(historyMount.source, "index.json"), "utf8")),
-    { schemaVersion: 1, runs: [] },
-  );
-  assert.deepEqual(await readdir(join(historyMount.source, "runs")), []);
+  assert.equal(currentMount?.readonly, true);
+  assert.equal(historyMount?.source, paths.runs);
+  assert.ok(currentMount?.source.startsWith(`${paths.runs}/`));
+  const historyIndex = JSON.parse(
+      await readFile(join(historyMount.source, "index.json"), "utf8"),
+    ) as { runs: Array<{ runId: string; status: string }> },
+    indexedRun = historyIndex.runs[0];
+  assert.equal(historyIndex.runs.length, 1);
+  assert.ok(indexedRun);
+  assert.equal(indexedRun.status, "running");
+  assert.equal(currentMount?.source, join(paths.runs, indexedRun.runId));
   const currentMetadata = JSON.parse(
-      await readFile(join(historyMount.source, "current", "run.json"), "utf8"),
+      await readFile(join(currentMount.source, "run.json"), "utf8"),
     ) as { status: string },
     currentActivity = await readFile(
-      join(historyMount.source, "current", "activity.jsonl"),
+      join(currentMount.source, "activity.jsonl"),
       "utf8",
     ),
     currentSignals = JSON.parse(
-      await readFile(
-        join(historyMount.source, "current", "signals.json"),
-        "utf8",
-      ),
+      await readFile(join(currentMount.source, "signals.json"), "utf8"),
     ) as { usage: { inputTokens: number; cacheReadTokens: number } };
   assert.equal(currentMetadata.status, "running");
   assert.match(currentActivity, /hello/);
@@ -456,7 +476,9 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
   await clock.fire(config.runner.idleTimeoutSeconds * 1000);
   assert.ok(calls.includes("pi:stop"));
   assert.ok(calls.includes("DELETE:/integral/internal/session"));
-  const runDirectories = await readdir(paths.runs);
+  const runDirectories = (await readdir(paths.runs, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
   assert.equal(runDirectories.length, 1);
   const runDirectory = join(paths.runs, runDirectories[0]!);
   const metadata = JSON.parse(
@@ -864,7 +886,9 @@ test("an approval continuation starts a replacement Pi session with parent linea
       "replacement:prompt:Approval approval-1 resolved as succeeded.",
     ),
   );
-  const metadataFiles = await readdir(paths.runs),
+  const metadataFiles = (await readdir(paths.runs, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name),
     metadata = JSON.parse(
       await readFile(join(paths.runs, metadataFiles[0]!, "run.json"), "utf8"),
     ) as {
@@ -1173,6 +1197,11 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] [RUN-B1D837E0]
         },
         createTaskPi(value) {
           calls.push("task:create");
+          assert.ok(
+            value.args.includes(
+              "/home/pi/.integral/extensions/integral-mcp.ts",
+            ),
+          );
           assert.match(value.args.at(-1)!, /Schedule ID: schedule-1/);
           assert.match(value.args.at(-1)!, /Execution ID: execution-1/);
           assert.match(value.args.at(-1)!, /Attempt: 1/);
@@ -1263,7 +1292,9 @@ test("[SCHEDULE-033C050E] [SCHEDULE-930581F7] [SCHEDULE-81B854FB] [RUN-B1D837E0]
     attemptId: "attempt-1",
   });
   assert.ok(calls.includes("DELETE:gateway:/integral/internal/session"));
-  const runIds = await readdir(paths.runs);
+  const runIds = (await readdir(paths.runs, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
   assert.equal(runIds.length, 1);
   const runDirectory = join(paths.runs, runIds[0]!),
     runMetadata = JSON.parse(

@@ -23,11 +23,13 @@ import {
   addHostResource,
   cleanupResourceProjection,
   createResource,
+  discardRepositoryRecovery,
   ensurePiProfileRepository,
   listStoreSnapshots,
   listRepositoryRecovery,
   prepareResourceProjection,
   readResource,
+  recoverAbandonedResourceProjections,
   refreshResource,
   repositoryBundlePush,
   restoreResource,
@@ -894,15 +896,17 @@ test("[STORE-815F88A3] [STORE-F0338E2A] [STORE-0B28DA79] store bytes and symlink
 /* @covers REPO-BB20CA23
 Given a governed repository checkout differs from its landed canonical head
 	When the Pi run stops, fails, times out, or is recycled
-		Then integral snapshots its files without trusting or executing its `.git` metadata
-			And records the snapshot in host recovery storage independent of the canonical repository
+		Then integral reconstructs its files without trusting or executing its `.git` metadata
+			And records the reconstructed state on a host-owned recovery ref in the canonical repository
 			And records whether the checkout contained committed or uncommitted changes
 			And makes the recovery artifact visible in repository status for a later run
 			And only then removes the temporary checkout
+	When integral restarts with an abandoned repository checkout
+		Then it performs the same host-owned recovery before starting a new Pi invocation
 	When the checkout has no work beyond its landed canonical head
 		Then integral removes it without creating an empty recovery artifact
 	When a recovery artifact exceeds the configured retention period
-		Then integral removes it without requiring or changing canonical history
+		Then integral removes its recovery ref without changing the canonical branch
 			And records the expiration in host-attested repository history
 */
 /* @covers REPO-1C3B9872
@@ -1007,6 +1011,81 @@ test("[REPO-BB20CA23] [REPO-1C3B9872] [REPO-CEE2CA38] repository failure preserv
   assert.match(
     await readFile(paths.repositoryRecoveryAudit, "utf8"),
     /repository_recovery_expired/,
+  );
+});
+
+/* @covers REPO-54D1B8C7
+Given one or more host-owned repository recovery refs exist
+	When integral starts a later Pi invocation
+		Then it identifies each recovery ref and its originating session in the system context
+			And instructs Pi to find and examine the originating run log before deciding its disposition
+			And instructs Pi to either land the recovered work through `repo_push` or remove the recovery ref
+	When Pi decides recovered work should be kept
+		Then it fetches and applies the recovery ref to its run checkout
+			And lands the resulting commit through `repo_push`
+	When Pi decides recovered work should not be kept
+		Then it calls the governed recovery-discard operation
+			And integral removes only that recovery ref and its recovery metadata
+*/
+test("[REPO-BB20CA23] [REPO-54D1B8C7] abandoned work becomes a discardable host recovery ref", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    resource = await createResource(
+      paths,
+      "host-repo",
+      "recoverable-ref",
+      "/home/pi/recoverable-ref",
+      config,
+    ),
+    home = join(paths.root, "abandoned-home");
+  await mkdir(home);
+  const projection = await prepareResourceProjection(
+      paths,
+      config,
+      home,
+      "abandoned-session",
+    ),
+    checkout = projection.repositories.find(
+      (value) => value.resource.id === resource.id,
+    )!.checkout;
+  await writeFile(join(checkout, "wanted.md"), "recover me\n");
+  await run("git", ["add", "wanted.md"], { cwd: checkout });
+  await run(
+    "git",
+    [
+      "-c",
+      "user.name=Integral Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "work left behind",
+    ],
+    { cwd: checkout },
+  );
+
+  await recoverAbandonedResourceProjections(paths, config);
+
+  const recovery = await listRepositoryRecovery(paths, resource.id);
+  assert.equal(recovery.length, 1);
+  const artifact = recovery[0];
+  assert.ok(artifact);
+  assert.equal(artifact.sessionId, "abandoned-session");
+  assert.equal(artifact.ref, "refs/integral/recovery/abandoned-session");
+  assert.equal(
+    await run("git", [
+      "--git-dir",
+      resource.path,
+      "show",
+      `${artifact.ref}:wanted.md`,
+    ]).then((value) => value.stdout),
+    "recover me\n",
+  );
+
+  await discardRepositoryRecovery(paths, resource.id, artifact.id);
+  assert.deepEqual(await listRepositoryRecovery(paths, resource.id), []);
+  await assert.rejects(
+    run("git", ["--git-dir", resource.path, "show-ref", artifact.ref]),
   );
 });
 

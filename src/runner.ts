@@ -28,7 +28,9 @@ import {
 import {
   cleanupResourceProjection,
   ensurePiProfileRepository,
+  listRepositoryRecovery,
   prepareResourceProjection,
+  recoverAbandonedResourceProjections,
   type ResourceProjection,
 } from "./resources.ts";
 import { ensureCa } from "./ca.ts";
@@ -40,7 +42,7 @@ import {
   verifyInternal,
 } from "./state.ts";
 import { updateComponentState } from "./state.ts";
-import { readText } from "./fs.ts";
+import { ensureDir, readText } from "./fs.ts";
 import { join } from "node:path";
 import { IntegralError } from "./errors.ts";
 import { oauthAccess } from "./oauth.ts";
@@ -90,6 +92,7 @@ export interface RunnerDependencies {
   ensurePiProfileRepository: typeof ensurePiProfileRepository;
   prepareResourceProjection: typeof prepareResourceProjection;
   cleanupResourceProjection: typeof cleanupResourceProjection;
+  recoverAbandonedResourceProjections: typeof recoverAbandonedResourceProjections;
   writePiCredential: typeof writePiCredential;
   now(): number;
   listen(server: http.Server, port: number, address: string): Promise<void>;
@@ -118,6 +121,7 @@ const productionDependencies: RunnerDependencies = {
   ensurePiProfileRepository,
   prepareResourceProjection,
   cleanupResourceProjection,
+  recoverAbandonedResourceProjections,
   writePiCredential,
   now: Date.now,
   async listen(server, port, address) {
@@ -204,6 +208,10 @@ export class Runner {
   }
   async start(): Promise<http.Server> {
     await this.dependencies.ensurePiProfileRepository(this.paths, this.config);
+    await this.dependencies.recoverAbandonedResourceProjections(
+      this.paths,
+      this.config,
+    );
     await this.runs.initialize();
     this.token = await componentIdentity(this.paths);
     const network = `integral-${deploymentId(this.paths)}`;
@@ -612,11 +620,18 @@ export class Runner {
     try {
       historyView = await this.runs.createHistoryView(recorder);
       this.taskHistoryView = historyView;
-      spec.mounts.push({
-        source: historyView,
-        target: "/home/pi/history",
-        readonly: true,
-      });
+      spec.mounts.push(
+        {
+          source: historyView,
+          target: "/home/pi/history/runs",
+          readonly: true,
+        },
+        {
+          source: join(historyView, recorder.runId),
+          target: "/home/pi/history/current",
+          readonly: true,
+        },
+      );
       runtime = this.dependencies.containers.createTaskPi(
         spec,
         this.config,
@@ -926,11 +941,18 @@ export class Runner {
     let historyView: string | undefined, pi: PiRuntime | undefined;
     try {
       historyView = await this.runs.createHistoryView(recorder);
-      spec.mounts.push({
-        source: historyView,
-        target: "/home/pi/history",
-        readonly: true,
-      });
+      spec.mounts.push(
+        {
+          source: historyView,
+          target: "/home/pi/history/runs",
+          readonly: true,
+        },
+        {
+          source: join(historyView, recorder.runId),
+          target: "/home/pi/history/current",
+          readonly: true,
+        },
+      );
       pi = this.dependencies.containers.createPi(
         spec,
         this.config,
@@ -1039,7 +1061,9 @@ export class Runner {
       email = active.filter((connection) => connection.kind === "email"),
       identity = this.dependencies.newSessionIdentity(),
       ca = await this.dependencies.ensureCa(this.paths),
-      home = await this.dependencies.freshSessionHome();
+      sessionHomes = join(this.paths.state, "session-homes");
+    await ensureDir(sessionHomes);
+    const home = await this.dependencies.freshSessionHome(sessionHomes);
     const catalogs: McpCatalog[] = [],
       stdio: Array<{
         connection: Connection;
@@ -1151,8 +1175,28 @@ export class Runner {
       );
     spec.args.push(
       "--append-system-prompt",
-      "You run in an ephemeral Integral-managed container. The active image Dockerfile is in /home/pi/image. You may edit and commit it, then call repo_push for image-recipe; that proposal requires human approval and affects a replacement container, not this running filesystem. Use container_image_rebuild to request an approval-gated fresh rebuild of the unchanged recipe.",
+      "You run in an ephemeral Integral-managed container. A commit in a governed repository exists only in this run until repo_push succeeds. Before reporting repository work complete, either call repo_push and report its landed canonical commit, or, if you decide the commits should not land, undo those commits and their file changes so the checkout matches the canonical branch. Do not deliberately leave rejected work for recovery. The active image Dockerfile is in /home/pi/image; repo_push for image-recipe requires human approval and affects a replacement container, not this running filesystem. Use container_image_rebuild to request an approval-gated fresh rebuild of the unchanged recipe.",
     );
+    const recoveries = (
+      await Promise.all(
+        resources.repositories.map(async ({ resource }) => ({
+          resource,
+          recoveries: await listRepositoryRecovery(this.paths, resource.id),
+        })),
+      )
+    ).flatMap(({ resource, recoveries }) =>
+      recoveries
+        .filter((recovery) => recovery.ref && recovery.sessionId)
+        .map(
+          (recovery) =>
+            `${resource.connection}: recovery ${recovery.id} at ${recovery.ref} from session ${recovery.sessionId}`,
+        ),
+    );
+    if (recoveries.length)
+      spec.args.push(
+        "--append-system-prompt",
+        `Unresolved repository recovery exists: ${recoveries.join("; ")}. For each recovery, first find the run with the matching sessionId in /home/pi/history/runs/index.json and examine that run's activity log to understand why the work was created. Then decide: keep it by fetching and applying the recovery ref and landing it through repo_push, or reject it by calling repo_recovery_discard. Do not ignore or discard recovered work without examining its originating run.`,
+      );
     spec.mounts.push(...resources.mounts);
     if (
       resources.unavailable.length ||
@@ -1339,10 +1383,19 @@ export class Runner {
       });
       await this.mcpSidecars.stop(taskRuntime.spec.sessionId);
       await this.revoke(taskRuntime.spec.sessionToken);
+      if (this.taskResources)
+        await this.dependencies
+          .cleanupResourceProjection(
+            this.paths,
+            this.config,
+            this.taskResources,
+          )
+          .catch(() => undefined);
       await taskRuntime.stop().catch(() => undefined);
       await this.removeHistoryView(this.taskHistoryView);
       this.taskRun = undefined;
       this.taskHistoryView = undefined;
+      this.taskResources = undefined;
     }
     await this.destroyPi("stopped");
     const server = this.server;

@@ -15,6 +15,7 @@ concept.
 
 ## CONNECTION-C14B8E70 — Show connection command help
 
+```text
 Given integral is installed
 	When the user runs `integral connection --help`
 		Then the command lists `catalog`, `add`, `ls`, and `rm`
@@ -22,11 +23,14 @@ Given integral is installed
 			And documents `--auth` for explicit setup
 			And documents `--transport`, `--command`, `--arg`, `--env`, `--secret-env`, and `--allow-url` for MCP setup
 			And documents `--path`, `--branch`, and `--mount` for host resources
-			And documents `--user-id` and `--credential-stdin` for Discord setup
+			And documents `--user-id` as the numeric ID of the human allowed to DM the bot
+			And documents `--credential-stdin` for Discord setup
 			And does not list `grant` or `revoke`
+```
 
 ## CONNECTION-75EC27E8 — Show the connection catalog
 
+```text
 Given integral is installed
 	When the user runs `integral connection catalog`
 		Then the command lists `openai-codex` and `anthropic`
@@ -38,9 +42,11 @@ Given integral is installed
 			And identifies the kind of each catalog entry
 			And describes supported OAuth, device-code, key, and no-auth methods
 			And does not list unsupported channel or general host-directory connection types
+```
 
 ## CONNECTION-03C4E791 — Open guided connection setup
 
+```text
 Given an interactive terminal
 	When the user runs `integral connection add`
 		Then integral presents the connection catalog
@@ -52,11 +58,15 @@ Given an interactive terminal
 			And collects a command and arguments when the selected type is stdio MCP
 			And treats MCP authentication and transport choices as advanced compatibility overrides
 			And requires a mount path for a host resource
+			And routes a selected Discord entry through verified Discord setup
+			And identifies the Discord user ID as the numeric ID of the human allowed to DM the bot
 			And runs the selected authentication flow
 			And completes the same setup as explicit `connection add <entry>`
+```
 
 ## CONNECTION-46E90D69 — Add a model connection explicitly
 
+```text
 Given no connection exists for the selected provider
 	When the user runs `integral connection add <provider>`
 		And provider authentication succeeds
@@ -65,9 +75,11 @@ Given no connection exists for the selected provider
 			And makes the credential file readable only by its owner
 			And makes the connection available to new chat sessions
 			And identifies the connection without printing secret values
+```
 
 ## CONNECTION-2F7C9A61 — Choose a supported authentication method
 
+```text
 Given the selected catalog entry supports more than one authentication method
 	And the selected entry is not MCP
 	When the user runs `integral connection add <entry>` without `--auth`
@@ -88,9 +100,11 @@ Given the selected catalog entry supports exactly one authentication method
 	When the user runs `integral connection add <entry>` without `--auth`
 		Then integral selects that method without an echoed authentication prompt
 			And begins its authentication flow directly
+```
 
 ## CONNECTION-512D9A25 — Select an authentication method explicitly
 
+```text
 Given the selected connection type supports the requested authentication method
 	When the user adds it with `--auth oauth`
 		Then integral runs the configured OAuth authorization flow
@@ -114,9 +128,11 @@ Given the selected connection type supports the requested authentication method
 	When an expired OAuth credential cannot be refreshed
 		Then the gateway excludes its credential from request injection
 			And publishes degraded gateway health with the refresh error
+```
 
 ## CONNECTION-6D2A9F84 — Complete OAuth without opening a local browser
 
+```text
 Given the selected connection uses OAuth
 	And a browser cannot be opened locally
 	When the user runs `integral connection add`
@@ -127,18 +143,22 @@ Given the selected connection uses OAuth
 			And uses PKCE for generic authorization-code exchange
 			And times out generic authorization after ten minutes
 			And completes the same credential storage as a local callback
+```
 
 ## CONNECTION-1D691391 — Verify a connection during setup
 
+```text
 Given the selected catalog entry supports credential verification
 	When the user runs `integral connection add <entry> --verify`
 		And authentication succeeds
 		Then integral makes one authenticated `HEAD` request through trusted host code
 			And completes setup only when verification succeeds
 			And reports verification failure without printing secret values
+```
 
 ## CONNECTION-634C2DA7 — Rotate existing connection credentials
 
+```text
 Given a connection with one or more stored credentials already exists
 	When the user adds the same entry and connection name again
 		And authentication or stdio secret collection succeeds
@@ -150,9 +170,11 @@ Given a connection with one or more stored credentials already exists
 			And the command reports rotation rather than duplicate creation
 	When the existing connection uses no authentication and declares no secret environment values
 		Then integral refuses to treat another add as credential rotation
+```
 
 ## CONNECTION-5833EDC7 — List connections
 
+```text
 Given zero or more connections have been configured
 	When the user runs `integral connection ls`
 		Then integral lists every connection by name
@@ -165,17 +187,21 @@ Given zero or more connections have been configured
 			And shows `DISABLED (no secret)` when a stdio connection is missing any declared secret environment value
 			And shows `DISABLED (no secret)` for malformed or expired OAuth without a refresh token
 			And does not print secret values
+```
 
 ## CONNECTION-475E6AE7 — List connections as JSON
 
+```text
 Given zero or more connections have been configured
 	When the user runs `integral connection ls --json`
 		Then integral writes a machine-readable JSON array to stdout
 			And represents the same names, types, auth methods, and states as the human view
 			And does not include secret values
+```
 
 ## CONNECTION-741C2F56 — Remove a connection deliberately
 
+```text
 Given a connection with one or more stored credentials exists
 	And the terminal is interactive
 	When the user runs `integral connection rm <name>`
@@ -192,9 +218,11 @@ Given a connection with one or more stored credentials exists
 	When the user confirms connection-record removal
 		Then integral removes the connection record
 			And prevents new chats from selecting the removed connection
+```
 
 ## CONNECTION-20778353 — Refuse server startup without an active model connection
 
+```text
 Given no active model connection is configured
 	When the user runs `integral server start`
 		Then the server exits non-zero
@@ -205,9 +233,11 @@ Given no active model connection is configured
 		Then the runner exits non-zero with the same connection instruction
 	When the user starts only the coordinator or gateway component
 		Then that component is not refused solely because the model connection is absent
+```
 
 ## CONNECTION-0FB2F92A — Keep real credentials outside the container
 
+```text
 Given an active credentialed connection is configured on the host
 	When integral provisions a chat container
 		Then every real credential is absent from the container environment
@@ -215,18 +245,22 @@ Given an active credentialed connection is configured on the host
 			And is absent from container arguments
 			And is absent from Docker metadata
 			And any credential visible to Pi is a harmless sentinel
+```
 
 ## CONNECTION-9C7A41E2 — Name a connection explicitly
 
+```text
 Given the user wants to choose a connection name
 	When the user runs `integral connection add <entry> --name <name>`
 		And the selected authentication setup succeeds
 		Then integral stores the connection and any credential under the requested name
 			And reports the provider or type separately from the connection name
 			And lets later `connection ls` and `connection rm` address that name
+```
 
 ## CONNECTION-A61E2C9D — Add a generic HTTP connection
 
+```text
 Given the user has an HTTP or HTTPS endpoint
 	When the user runs `integral connection add http --name <name> --url <url>`
 		And completes the selected authentication setup
@@ -234,9 +268,11 @@ Given the user has an HTTP or HTTPS endpoint
 			And makes the named endpoint available to Pi
 			And configures the gateway to allow only that endpoint boundary
 			And injects its credential only inside that boundary when authentication requires it
+```
 
 ## CONNECTION-4B8D73F1 — Add a remote MCP connection
 
+```text
 Given the user has the URL of a remote MCP server
 	When the user runs `integral connection add mcp --name <name> --url <url>`
 		Then integral contacts the endpoint through trusted host code
@@ -256,10 +292,12 @@ Given the user has the URL of a remote MCP server
 	When the user explicitly supplies supported authentication or transport options
 		Then integral treats them as compatibility overrides
 			And still verifies the resulting MCP connection before committing it
+```
 
 
 ## CONNECTION-0EF2CF89 — Add a stdio MCP connection
 
+```text
 Given the user has an MCP server executable available in the configured runner image
 	When the user runs `integral connection add mcp --transport stdio --name <name> --command <executable>`
 		And supplies zero or more `--arg <argument>` values
@@ -287,9 +325,11 @@ Given the user has an MCP server executable available in the configured runner i
 		Then integral exits non-zero
 			And removes the verification sidecar
 			And does not store a partial connection or secret
+```
 
 ## CONNECTION-D20F6A85 — Make active connections available automatically
 
+```text
 Given a connection is valid and active
 	When integral starts a new Pi session
 		Then integral makes the connection available to that session automatically
@@ -297,9 +337,11 @@ Given a connection is valid and active
 			And maps OpenAI Codex model traffic to `https://chatgpt.com/backend-api/`
 			And injects the stored OpenAI account ID as `chatgpt-account-id` when present
 			And does not expose another connection's credential on its requests
+```
 
 ## CONNECTION-12C87631 — Connect GitHub without exposing its token
 
+```text
 Given no GitHub connection exists
 	When the user runs `integral connection add github --auth key`
 		And supplies a non-empty personal access token
@@ -324,9 +366,11 @@ Given an active GitHub connection exists
 			And injects the stored token using GitHub Basic authentication
 	When Pi attempts GitHub access through SSH or another host
 		Then the gateway denies the request
+```
 
 ## CONNECTION-8F14C3B7 — Reject an invalid generic connection declaration
 
+```text
 Given the user is adding a generic HTTP or remote MCP connection
 	When its name is missing or already used
 		Then integral rejects setup without changing stored connections
@@ -334,9 +378,11 @@ Given the user is adding a generic HTTP or remote MCP connection
 		Then integral rejects setup without changing stored connections
 	When explicitly configured authentication metadata is incomplete
 		Then integral rejects setup without storing partial credentials
+```
 
 ## CONNECTION-E73B40C6 — Remove a no-auth connection deliberately
 
+```text
 Given a no-auth HTTP or MCP connection with no stored secret environment values exists
 	And the terminal is interactive
 	When the user runs `integral connection rm <name>`
@@ -347,9 +393,11 @@ Given a no-auth HTTP or MCP connection with no stored secret environment values 
 	When the user confirms removal
 		Then integral removes the connection record
 			And prevents new chats from selecting the removed connection
+```
 
 ## CONNECTION-89A88F7C — Add and attach an existing host repository
 
+```text
 Given an existing bare Git repository is available at a host path
 	When the user runs `integral connection add host-repo --name <name> --path <path> [--branch <branch>] --mount <container-path>`
 		Then integral accepts an absolute host path or resolves a relative host path from the current directory
@@ -368,9 +416,11 @@ Given an existing bare Git repository is available at a host path
 	When the path or mount is missing, invalid, already connected, or the repository has no selectable branch
 		Then integral rejects setup without creating a connection or modifying the path
 			And explains how to create a bare clone when the source is a working checkout
+```
 
 ## CONNECTION-857967F4 — Add and attach an existing durable host store
 
+```text
 Given an existing host directory is available at a host path
 	When the user runs `integral connection add host-store --name <name> --path <path> --mount <container-path>`
 		Then integral accepts an absolute host path or resolves a relative host path from the current directory
@@ -385,9 +435,11 @@ Given an existing host directory is available at a host path
 			And advances the connection generation
 	When the path or mount is missing, invalid, already connected, or lacks required access
 		Then integral rejects setup without creating a connection or modifying the path
+```
 
 ## CONNECTION-C0978F5E — Validate host-resource source paths
 
+```text
 Given the connection CLI is adding an existing host repository or store
 	When integral validates its source path
 		Then it resolves symbolic links and records one canonical absolute host path
@@ -397,9 +449,11 @@ Given the connection CLI is adding an existing host repository or store
 			And rejects a socket, device, named pipe, or other source of the wrong filesystem type
 			And performs all validation in trusted host code
 			And never makes the source path available to Pi
+```
 
 ## CONNECTION-717CAD0E — Detect and recover host-resource availability
 
+```text
 Given a host-repository or host-store connection records a canonical path and backing filesystem identity
 	When the periodic health check, session provisioner, or a host-mediated resource operation validates it
 		Then integral distinguishes `missing`, `wrong_type`, `permission_denied`, `identity_changed`, `invalid_repository`, and `read_only` where applicable
@@ -417,16 +471,18 @@ Given a host-repository or host-store connection records a canonical path and ba
 			And requires the operator to soft-delete the unavailable resource and add the replacement as a new governed resource
 	When the operator tries to add a replacement path still referenced by an existing session
 		Then integral rejects the addition until every session using the prior backing identity ends naturally
+```
 
 ## CONNECTION-06B6AE14 — List and remove host-resource connections safely
 
+```text
 Given a host-repository or host-store connection exists
 	When the user runs `integral connection ls`
 		Then integral identifies it as `host-repo` or `host-store`
 			And reports whether it is active, unavailable, or soft-deleted
 			And reports a bounded availability reason and whether restoration is currently possible
-			And reports its Pi mount path
-			And does not print its canonical host path unless the user requests JSON output
+			And labels and reports its canonical host path
+			And labels and reports its Pi mount path
 	When the user runs `integral connection rm <name>` in an interactive terminal
 		Then integral identifies the resource kind
 			And displays the lifecycle revision to be removed
@@ -439,3 +495,4 @@ Given a host-repository or host-store connection exists
 			And never permanently deletes canonical repository or store content
 	When the lifecycle revision changes while confirmation is pending
 		Then integral rejects the stale confirmation without changing the connection
+```

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
@@ -15,6 +15,7 @@ import {
   buildContainerSpec,
   dockerMcpSidecarArgs,
   dockerRunArgs,
+  freshSessionHome,
   isManagedContainerVariable,
   interpretPiProtocol,
   managedPiImage,
@@ -604,7 +605,9 @@ test("[GATEWAY-578CEF2E] [GATEWAY-B6C64AA7] proxy authentication extracts only a
 });
 
 /* @covers SCHEDULE-55BD779F
-Given Pi has an active integral session
+Given Pi has an authenticated Integral session
+	And the session may be an interactive conversation or isolated scheduled-task attempt
+	And the invocation may have originated from the terminal, Discord, or another supported human channel
 	When Pi creates a recurring schedule with a five-field cron expression, IANA timezone, and self-contained task prompt
 		Then the request passes through the authenticated gateway control boundary
 			And the scheduler validates the expression, timezone, minimum frequency, and task size
@@ -618,6 +621,8 @@ Given Pi has an active integral session
 			And an update requires the expected current revision
 			And an accepted mutation is durable before it is reported to Pi
 			And disabling or deleting a schedule prevents new occurrences without discarding an occurrence already due
+			And the same operation is available in an interactive conversation and a scheduled-task attempt
+			And a scheduled-task attempt may change the definition that created it without changing the immutable current occurrence
 */
 test("[SCHEDULE-55BD779F] gateway attributes Pi schedule mutations and injects the selected execution profile", async (t) => {
   const paths = await fixture(t),
@@ -682,6 +687,109 @@ test("[SCHEDULE-55BD779F] gateway attributes Pi schedule mutations and injects t
     (forwardedBody.profile as Record<string, unknown>).provider,
     "anthropic",
   );
+});
+
+test("[SCHEDULE-55BD779F] [SCHEDULE-F13C33A0] scheduled attempts inspect and mutate current scheduling state", async (t) => {
+  const paths = await fixture(t),
+    config = await loadConfig(paths, {}),
+    forwarded: Array<{
+      target: string;
+      path: string;
+      body?: Record<string, unknown>;
+    }> = [],
+    profile = {
+      connection: "task-model",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      piVersion: "1.2.3",
+      piImage: "sha256:task",
+    },
+    origin = {
+      provider: "discord",
+      conversationId: "discord:channel-1",
+      externalId: "message-1",
+      userId: "user-1",
+      channelId: "channel-1",
+    },
+    gateway = new Gateway(
+      paths,
+      config,
+      new Logger({
+        component: "gateway",
+        deploymentId: deploymentId(paths),
+        level: "error",
+        format: "json",
+        sink: () => undefined,
+      }),
+      {
+        async internalFetch(_paths, _caller, target, path, init) {
+          forwarded.push({
+            target,
+            path,
+            ...(typeof init?.body === "string"
+              ? { body: JSON.parse(init.body) as Record<string, unknown> }
+              : {}),
+          });
+          if (
+            target === "coordinator" &&
+            path === "/integral/tasks/execution-1"
+          )
+            return Response.json({
+              executionId: "execution-1",
+              profile,
+              origin,
+              state: "running",
+              attempts: [],
+            });
+          if (path === "/integral/schedules")
+            return Response.json(
+              { id: "nested-schedule", prompt: "later work" },
+              { status: 201 },
+            );
+          return Response.json([]);
+        },
+      },
+    );
+  gateway.taskSessions.set("task-session", {
+    executionId: "execution-1",
+    attemptId: "attempt-1",
+  });
+
+  for (const [target, path] of [
+    ["scheduler", "/integral/schedules/schedule-1"],
+    ["scheduler", "/integral/schedules/schedule-1/history"],
+    ["scheduler", "/integral/occurrences?scheduleId=schedule-1"],
+    ["coordinator", "/integral/tasks"],
+    ["coordinator", "/integral/tasks/execution-1"],
+  ] as const) {
+    const response = await gateway.scheduleControl(
+      "task-session",
+      "GET",
+      path,
+      {},
+    );
+    assert.equal(response.ok, true);
+    assert.deepEqual(forwarded.at(-1), { target, path });
+  }
+
+  const created = await gateway.scheduleControl(
+    "task-session",
+    "POST",
+    "/integral/schedules",
+    {
+      prompt: "later work",
+      trigger: { type: "once", runAt: "2026-08-24T10:00:00Z" },
+      profile: { provider: "forged" },
+    },
+  );
+  assert.equal(created.status, 201);
+  const creation = forwarded.find(
+    (request) => request.path === "/integral/schedules",
+  );
+  assert.equal(creation?.target, "scheduler");
+  assert.equal(creation?.body?.actor, "pi:task-session");
+  assert.deepEqual(creation?.body?.profile, profile);
+  assert.deepEqual(creation?.body?.origin, origin);
 });
 
 test("[SCHEDULE-55BD779F] authenticated origin-form schedule requests reach the scheduler", async (t) => {
@@ -1339,6 +1447,7 @@ Given integral is provisioning a Pi container
 			And does not mount the Docker socket
 			And does not mount control-plane configuration or credentials
 			And mounts only the gateway CA, curated read-only run history, fresh temporary session home, store lock namespace, and configured store directories as required
+			And uses server-created history mount destinations that remain removable during session cleanup
 */
 /* @covers GATEWAY-EC79406A
 Given a chat container is running
@@ -1349,20 +1458,20 @@ Given a chat container is running
 /* @covers RUN-01CA16F2
 Given one or more runs were finalized before integral prepares a new agent environment
 	When integral provisions an interactive or scheduled-task container
-		Then it makes every earlier finalized run in that deployment available under `$HOME/history/runs`
+		Then it mounts the deployment's agent-safe durable run archive read-only at `$HOME/history/runs`
+			And makes every retained finalized run in that deployment available there
 			And provides a machine-readable index ordered by run start time
 			And provides each run's metadata, ordered activity, learning-signal summary, usage, and outcome under its run ID
 			And includes successful, failed, interrupted, cancelled, and timed-out runs
 			And includes earlier attempts of the same one-time scheduled task
-			And mounts the history view read-only
 			And does not require the agent to call a host tool or network service to inspect it
-Given no run was finalized before integral prepares a new agent environment
+Given no earlier run was retained before integral prepares a new agent environment
 	When integral provisions the container
-		Then `$HOME/history/runs` exists as an empty readable history view
-			And the machine-readable index contains no finalized runs
+		Then `$HOME/history/runs` exists as a readable archive mount containing the new current run
+			And the machine-readable index identifies that run as running and contains no finalized runs
 Given integral has begun the run for a new agent environment
 	When it provisions the container
-		Then it makes that run available under `$HOME/history/current`
+		Then it makes `$HOME/history/current` a read-only view of that run's archive record
 			And exposes its running metadata, ordered activity, and provisional learning-signal and usage summary
 	When the current run records input, output, tool activity, provider usage, feedback, or failure
 		Then `$HOME/history/current` reflects the newly recorded evidence while the session remains active
@@ -1370,13 +1479,13 @@ Given integral has begun the run for a new agent environment
 		Then `$HOME/history/current` reflects its final status, outcome, elapsed time, and final learning-signal summary before the environment is removed
 */
 /* @covers RUN-79BACB0C
-Given integral is constructing the agent-visible history view
-	When it projects a durable run record into that view
+Given integral is recording agent-visible run evidence in the durable archive
+	When it writes metadata or activity that Pi may later inspect
 		Then it includes the prompts, agent-visible tool inputs and results, assistant output, and host-observed outcome
 			And excludes gateway session tokens, real provider credentials, component authentication, and credential-bearing proxy URLs
 			And excludes host-only configuration, locks, and mutable queue state
-			And does not mount `<INTEGRAL_HOME>` or the host run archive itself into the container
-			And updates the current-run projection without exposing a writable path back to the durable record
+			And mounts only the agent-safe run archive rather than `<INTEGRAL_HOME>` or unrelated host state
+			And exposes the current run without providing a writable path back to the durable record
 	When an agent attempts to modify, rename, or delete history content
 		Then the container filesystem refuses the change
 			And the durable host record remains unchanged
@@ -1397,7 +1506,8 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] Docker spe
       caCert: "/ca",
       caBundle: "/bundle",
       sessionHome: "/fresh",
-      historyView: "/host/projected-history",
+      historyArchive: "/host/runs",
+      currentRun: "/host/runs/current-run",
       ...newSessionIdentity(),
       model,
       mcp: [],
@@ -1422,9 +1532,29 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] Docker spe
   assert.equal(args.includes(process.cwd()), false);
   assert.ok(
     args.includes(
-      "type=bind,source=/host/projected-history,target=/home/pi/history,readonly",
+      "type=bind,source=/host/runs,target=/home/pi/history/runs,readonly",
     ),
   );
+  assert.ok(
+    args.includes(
+      "type=bind,source=/host/runs/current-run,target=/home/pi/history/current,readonly",
+    ),
+  );
+});
+
+test("[BOX-601613D4] history mount destinations remain owned by session cleanup", async (t) => {
+  const paths = await fixture(t),
+    home = await freshSessionHome(paths.root),
+    owner = (await stat(home)).uid,
+    runs = await stat(join(home, "history", "runs")),
+    current = await stat(join(home, "history", "current"));
+
+  assert.ok(runs.isDirectory());
+  assert.equal(runs.uid, owner);
+  assert.ok(current.isDirectory());
+  assert.equal(current.uid, owner);
+  await rm(home, { recursive: true });
+  await assert.rejects(stat(home), { code: "ENOENT" });
 });
 
 /* @covers BOX-AB639757
@@ -1510,7 +1640,24 @@ Given the user has the URL of a remote MCP server
 		Then integral treats them as compatibility overrides
 			And still verifies the resulting MCP connection before committing it
 */
-test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi extensions expose remote MCP and authenticated control tools", async (t) => {
+/* @covers SCHEDULE-F13C33A0
+Given Pi has an authenticated Integral session in an interactive conversation or isolated scheduled-task attempt
+	When Pi lists or shows schedule definitions
+		Then Integral returns the same deployment-wide definitions, stable IDs, revisions, triggers, prompts, enabled states, and deletion states available to the host CLI
+	When Pi inspects a schedule's definition history
+		Then Integral returns its committed revisions and operations in order
+	When Pi lists task occurrences or narrows them by schedule ID
+		Then Integral returns their stable execution IDs, trigger types, states, scheduled instants, dispatch history, completion times, and recorded errors
+	When Pi lists durable tasks or shows one by execution ID
+		Then Integral returns the coordinator's current task state, attempts, declarations, results, retry timing, and recorded failure reason
+			And the execution ID can be used to find the corresponding retained agent runs
+	When scheduling state changes after the current container was provisioned
+		Then a later query in that session sees the durable current state without restarting Pi
+	When Pi inspects or changes scheduling state
+		Then the authenticated gateway performs the operation without exposing component credentials or host paths
+			And applies the same validation, optimistic revision checks, persistence, and audit attribution regardless of invocation kind or conversation origin
+*/
+test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [SCHEDULE-F13C33A0] [BOX-40521095] temporary Pi extensions expose remote MCP and authenticated control tools", async (t) => {
   const paths = await fixture(t),
     mcp = validateConnection({
       name: "work-docs",
@@ -1545,7 +1692,14 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi exte
   assert.match(source, /"properties":\{"query":\{"type":"string"\}\}/);
   assert.match(source, /\/integral\/mcp/);
   assert.match(source, /schedule_create/);
+  assert.match(source, /schedule_show/);
+  assert.match(source, /schedule_history/);
+  assert.match(source, /schedule_runs/);
   assert.match(source, /schedule_update/);
+  assert.match(source, /schedule_restore/);
+  assert.match(source, /task_list/);
+  assert.match(source, /task_show/);
+  assert.match(source, /task_cancel/);
   assert.match(source, /container_package_list/);
   assert.match(source, /container_package_" \+ operation/);
   assert.match(source, /\["install", "upgrade"\]/);
@@ -1558,7 +1712,7 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [BOX-40521095] temporary Pi exte
 /* @covers REPO-D1865075
 Given integral provisions any interactive or isolated scheduled Pi session
 	When it prepares Pi's extensions
-		Then it registers `repo_list`, `repo_create`, `repo_push`, `repo_delete`, and `repo_restore`
+		Then it registers `repo_list`, `repo_create`, `repo_push`, `repo_recovery_discard`, `repo_delete`, and `repo_restore`
 			And describes the commit-before-push and soft-delete semantics to Pi
 			And explains that creation and restoration replace the calling session while deletion changes mounted resources only for later sessions
 			And sends every operation through the authenticated gateway control boundary
@@ -1566,6 +1720,18 @@ Given integral provisions any interactive or isolated scheduled Pi session
 			And keeps the tools available when no repository connection exists yet
 	When a repository tool is called with an expired, revoked, or mismatched session identity
 		Then integral rejects it without reading or changing repository state
+*/
+/* @covers REPO-9C4A71E2
+Given Pi works in a run-scoped governed repository checkout
+	When Pi creates commits it wants to keep
+		Then it calls `repo_push` before reporting the repository work complete
+			And reports the landed canonical commit rather than only the run-branch commit
+	When Pi decides not to land commits it created
+		Then it undoes those commits and their file changes in the run checkout before reporting completion
+			And does not deliberately leave rejected work for host recovery
+	When integral describes governed repository work to Pi
+		Then it explains that a local commit is not durable until `repo_push` succeeds
+			And explains the required land-or-undo disposition before completion
 */
 /* @covers STORE-350F3496
 Given integral provisions any interactive or isolated scheduled Pi session
@@ -1579,7 +1745,7 @@ Given integral provisions any interactive or isolated scheduled Pi session
 	When a store tool is called with an expired, revoked, or mismatched session identity
 		Then integral rejects it without reading or changing store state
 */
-test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticated governed resource tools", async (t) => {
+test("[REPO-D1865075] [REPO-9C4A71E2] [STORE-350F3496] every Pi environment receives authenticated governed resource tools", async (t) => {
   const paths = await fixture(t);
   await writeResourceExtension(paths.root, {
     sessionId: "session",
@@ -1626,11 +1792,14 @@ test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticat
     "store_delete",
     "store_restore",
     "repo_push",
+    "repo_recovery_discard",
     "container_image_rebuild",
     "store_snapshot_list",
     "store_snapshot_restore",
   ]);
   assert.match(source, /proxy-authorization/);
+  assert.match(source, /local commit exists only in this run/);
+  assert.match(source, /undo them and their file changes/);
   assert.doesNotMatch(source, /host path:/i);
   const lockHelper = await readFile(
     join(paths.root, ".local/bin/integral-lock"),

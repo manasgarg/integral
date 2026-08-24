@@ -30,7 +30,7 @@ async function capture(
 Given integral is installed
 	When the user runs `integral`, `integral --help`, `integral -h`, or `integral help`
 		Then the command exits successfully
-			And lists `server`, `talk`, `status`, `model`, `queue`, `approval`, `schedule`, `connection`, `image`, `config`, and `version`
+			And lists `server`, `talk`, `status`, `model`, `queue`, `task`, `approval`, `schedule`, `connection`, `image`, `config`, and `version`
 			And does not list a separate `auth` or `credential` command
 			And describes each command in plain English
 	When npm reads the package metadata
@@ -47,6 +47,7 @@ test("[CLI-6001FE46] top-level help lists the public command surface", async () 
     "status",
     "model",
     "queue",
+    "task",
     "approval",
     "schedule",
     "connection",
