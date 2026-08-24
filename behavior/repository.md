@@ -9,6 +9,7 @@ bare repositories may enter the same lifecycle through a host connection.
 
 ## REPO-D1865075 — Give Pi authenticated repository lifecycle tools
 
+```text
 Given integral provisions any interactive or isolated scheduled Pi session
 	When it prepares Pi's extensions
 		Then it registers `repo_list`, `repo_create`, `repo_push`, `repo_recovery_discard`, `repo_delete`, and `repo_restore`
@@ -19,9 +20,11 @@ Given integral provisions any interactive or isolated scheduled Pi session
 			And keeps the tools available when no repository connection exists yet
 	When a repository tool is called with an expired, revoked, or mismatched session identity
 		Then integral rejects it without reading or changing repository state
+```
 
 ## REPO-403F597E — Create a governed repository from Pi
 
+```text
 Given Pi has an authenticated integral session
 	When Pi calls `repo_create` with a unique connection name and mount path
 		Then integral creates a stable repository ID
@@ -37,9 +40,11 @@ Given Pi has an authenticated integral session
 	When canonical creation or checkout placement fails
 		Then the tool reports failure without an active repository connection
 			And removes any incomplete canonical repository and checkout created by that operation
+```
 
 ## REPO-515BAAB9 — Constrain agent-visible resource mount paths
 
+```text
 Given Pi or the connection CLI creates, adds, or restores a governed repository or store
 	When integral validates the requested mount path
 		Then it requires an absolute normalized path below `/home/pi`
@@ -50,9 +55,11 @@ Given Pi or the connection CLI creates, adds, or restores a governed repository 
 			And rejects a path equal to, above, or below another governed resource mount
 			And rejects a target containing files not owned by that resource
 			And records the normalized container path rather than a host path
+```
 
 ## REPO-A690931F — Mount every active governed repository into every Pi session
 
+```text
 Given one or more governed repository connections are active and have mount paths
 	When integral provisions an interactive or isolated scheduled Pi session
 		Then it creates a separate checkout for that run from each canonical branch head
@@ -68,9 +75,11 @@ Given one or more governed repository connections are active and have mount path
 			And removes any partial checkout for that repository
 			And provisions the session with the remaining active resources
 			And tells Pi which named repository is unavailable without exposing its host path
+```
 
 ## REPO-CDA4609A — Land directly writable repository work through the host boundary
 
+```text
 Given Pi has committed work on a current-run governed repository branch
 	And that repository's host-managed write policy is `direct`
 	When Pi calls `repo_push` for that repository
@@ -87,9 +96,11 @@ Given Pi has committed work on a current-run governed repository branch
 			And preserves Pi's commits without creating a host merge commit
 			And records the repository ID, prior head, landed head, run ID, and changed paths in the host-attested run history
 			And reports success only after the canonical ref update is durable
+```
 
 ## REPO-9C4A71E2 — Require an explicit disposition for repository commits
 
+```text
 Given Pi works in a run-scoped governed repository checkout
 	When Pi creates commits it wants to keep
 		Then it calls `repo_push` before reporting the repository work complete
@@ -100,9 +111,11 @@ Given Pi works in a run-scoped governed repository checkout
 	When integral describes governed repository work to Pi
 		Then it explains that a local commit is not durable until `repo_push` succeeds
 			And explains the required land-or-undo disposition before completion
+```
 
 ## REPO-7B0E2F4A — Approval-gate selected host-managed repositories
 
+```text
 Given every governed repository has a host-managed write policy of `direct`, `approval-required`, or `denied`
 	And Pi cannot change that policy
 	When Pi calls `repo_push`
@@ -132,9 +145,11 @@ Given every governed repository has a host-managed write policy of `direct`, `ap
 		Then integral treats the local CLI invocation as direct human authority for that repository
 			And validates and durably commits the exact change without creating an approval request
 			And records the operator, prior commit, landed commit, tree digest, and changed paths in host audit history
+```
 
 ## REPO-37441347 — Refuse stale or malformed repository landings safely
 
+```text
 Given a governed repository canonical branch may have advanced since a run began
 	When `repo_push` proposes a head that does not descend from the current canonical head
 		Then integral refuses the landing without changing the canonical repository
@@ -144,9 +159,11 @@ Given a governed repository canonical branch may have advanced since a run began
 		Then integral refuses the landing without importing unvalidated refs into the canonical repository
 			And records a redacted refusal reason in the run history
 			And leaves the checkout available for Pi to correct and retry
+```
 
 ## REPO-BB20CA23 — Preserve unlanded work when a run ends
 
+```text
 Given a governed repository checkout differs from its landed canonical head
 	When the Pi run stops, fails, times out, or is recycled
 		Then integral reconstructs its files without trusting or executing its `.git` metadata
@@ -161,9 +178,11 @@ Given a governed repository checkout differs from its landed canonical head
 	When a recovery artifact exceeds the configured retention period
 		Then integral removes its recovery ref without changing the canonical branch
 			And records the expiration in host-attested repository history
+```
 
 ## REPO-54D1B8C7 — Review recovered work using its originating run
 
+```text
 Given one or more host-owned repository recovery refs exist
 	When integral starts a later Pi invocation
 		Then it identifies each recovery ref and its originating session in the system context
@@ -175,9 +194,11 @@ Given one or more host-owned repository recovery refs exist
 	When Pi decides recovered work should not be kept
 		Then it calls the governed recovery-discard operation
 			And integral removes only that recovery ref and its recovery metadata
+```
 
 ## REPO-95B5606D — Soft-delete a governed repository from Pi
 
+```text
 Given an active governed repository is visible to Pi
 	Or an unavailable governed repository is visible to Pi
 	When Pi calls `repo_delete` with its repository ID and expected lifecycle revision
@@ -193,9 +214,11 @@ Given an active governed repository is visible to Pi
 			And reports that the current session retains its checkout until it ends
 	When the expected lifecycle revision is stale
 		Then integral rejects deletion without changing the repository or its active checkouts
+```
 
 ## REPO-1C3B9872 — Keep repository sessions running after backing failure
 
+```text
 Given a Pi session was provisioned with a governed repository checkout
 	When trusted host code detects that the canonical repository is missing, inaccessible, invalid, or replaced by another filesystem identity
 		Then integral marks the connection unavailable with a bounded reason
@@ -207,9 +230,11 @@ Given a Pi session was provisioned with a governed repository checkout
 	When integral starts a later Pi session
 		Then it omits the unavailable repository
 			And tells Pi the connection name and bounded availability reason without exposing its host path
+```
 
 ## REPO-F96C6AE6 — Restore a soft-deleted governed repository
 
+```text
 Given a governed repository has a tombstone and its canonical repository remains available
 	When Pi calls `repo_restore` with its repository ID, expected lifecycle revision, and a valid mount path
 		Then integral reactivates the same stable repository and canonical history
@@ -220,9 +245,11 @@ Given a governed repository has a tombstone and its canonical repository remains
 	When the canonical repository is missing or the requested path is invalid
 		Then integral leaves the tombstone unchanged
 			And reports why restoration could not complete
+```
 
 ## REPO-4EB2390E — Apply one lifecycle to every governed repository
 
+```text
 Given a governed repository was created through Pi or added from an existing host path
 	When Pi or the connection CLI performs a lifecycle operation
 		Then integral applies the same states, revisions, tools, and restoration rules
@@ -231,9 +258,11 @@ Given a governed repository was created through Pi or added from an existing hos
 		Then integral removes access and preserves a tombstone
 			And never deletes, moves, rewrites, or changes filesystem ownership of the canonical repository merely because access was removed
 			And a successful governed landing remains the only operation allowed to advance its selected canonical branch
+```
 
 ## REPO-CEE2CA38 — Expose governed repository inventory without host paths
 
+```text
 Given active, unavailable, and soft-deleted governed repositories may exist
 	When Pi calls `repo_list`
 		Then integral returns each repository's stable ID, connection name, lifecycle state, lifecycle revision, canonical branch, and mount path
@@ -243,9 +272,11 @@ Given active, unavailable, and soft-deleted governed repositories may exist
 	When Pi calls a repository tool using only a path
 		Then integral requires the path to resolve to exactly one repository in the authenticated session
 			And otherwise requires the stable ID or connection name
+```
 
 ## REPO-D987932B — Serialize repository lifecycle and landing operations
 
+```text
 Given several Pi runs or host commands act on one governed repository concurrently
 	When integral creates, adds, pushes, soft-deletes, or restores it
 		Then the host serializes validation and state changes by stable repository ID
@@ -258,3 +289,4 @@ Given permanent deletion of repository content is outside the governed lifecycle
 	When Pi or the connection CLI requests removal
 		Then integral offers only soft deletion
 			And leaves permanent canonical purging outside this phase
+```

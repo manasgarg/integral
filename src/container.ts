@@ -1240,7 +1240,17 @@ export async function freshSessionHome(
   parent: string = tmpdir(),
 ): Promise<string> {
   await ensureDir(parent);
-  return mkdtemp(join(parent, "integral-pi-"));
+  const home = await mkdtemp(join(parent, "integral-pi-"));
+  try {
+    await Promise.all([
+      ensureDir(join(home, "history", "runs")),
+      ensureDir(join(home, "history", "current")),
+    ]);
+  } catch (error) {
+    await rm(home, { recursive: true, force: true });
+    throw error;
+  }
+  return home;
 }
 export function newSessionIdentity(): {
   sessionId: string;

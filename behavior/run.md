@@ -14,6 +14,7 @@ scheduled-task attempt.
 
 ## RUN-B1D837E0 — Keep a durable record of every agent run
 
+```text
 Given the runner is about to start a warm interactive Pi session or an isolated scheduled-task attempt
 	When integral assigns the container a run identity
 		Then it creates a durable run record under `<INTEGRAL_HOME>/data/runs/<run-id>` before starting Pi
@@ -30,9 +31,11 @@ Given the runner is about to start a warm interactive Pi session or an isolated 
 	When integral recovers a record whose run did not reach finalization
 		Then it marks the run interrupted with the available host evidence
 			And does not invent a successful outcome
+```
 
 ## RUN-88706C0D — Record evidence the agent can learn from
 
+```text
 Given integral is recording a run
 	When it records the run's identity and operating conditions
 		Then it records the run ID, run kind, parent or prior-attempt run IDs when applicable, model provider and model, Pi runtime identity, start time, finish time, and elapsed time
@@ -65,9 +68,11 @@ Given integral is recording a run
 			And distinguishes host-observed facts, provider-reported values, user feedback, and agent declarations
 			And does not infer an unobserved mistake, quality score, or cause
 			And does not store or expose private provider reasoning that was not part of the agent-visible protocol
+```
 
 ## RUN-01CA16F2 — Give each agent a view of earlier and current runs
 
+```text
 Given one or more runs were finalized before integral prepares a new agent environment
 	When integral provisions an interactive or scheduled-task container
 		Then it mounts the deployment's agent-safe durable run archive read-only at `$HOME/history/runs`
@@ -89,9 +94,11 @@ Given integral has begun the run for a new agent environment
 		Then `$HOME/history/current` reflects the newly recorded evidence while the session remains active
 	When integral finalizes the current run
 		Then `$HOME/history/current` reflects its final status, outcome, elapsed time, and final learning-signal summary before the environment is removed
+```
 
 ## RUN-79BACB0C — Expose run evidence without exposing authority
 
+```text
 Given integral is recording agent-visible run evidence in the durable archive
 	When it writes metadata or activity that Pi may later inspect
 		Then it includes the prompts, agent-visible tool inputs and results, assistant output, and host-observed outcome
@@ -102,9 +109,11 @@ Given integral is recording agent-visible run evidence in the durable archive
 	When an agent attempts to modify, rename, or delete history content
 		Then the container filesystem refuses the change
 			And the durable host record remains unchanged
+```
 
 ## RUN-770B8FFA — Keep the mounted run archive live and consistent
 
+```text
 Given integral has mounted the durable run archive into an active agent environment
 	When any run starts, records activity, or finalizes while that agent remains active
 		Then the corresponding archive changes become visible under `$HOME/history/runs` without restarting Pi
@@ -117,9 +126,11 @@ Given integral restarts with an existing durable run archive
 	When it prepares the next agent environment
 		Then the environment receives the same retained run history as before the restart
 			And container or temporary session-home cleanup does not remove that history
+```
 
 ## RUN-B13114A3 — Mount the complete run archive into every agent invocation
 
+```text
 Given Pi is running in an authenticated interactive session or isolated scheduled-task attempt
 	And the session may have originated from the terminal, Discord, or another supported human channel
 	When Integral provisions the Pi environment
@@ -131,3 +142,4 @@ Given Pi is running in an authenticated interactive session or isolated schedule
 	When Pi reads the mounted archive
 		Then Integral applies the same credential redaction and authority boundaries to every record
 			And Pi cannot alter, rename, or delete durable run evidence through the mount
+```

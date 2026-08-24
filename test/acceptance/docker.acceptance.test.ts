@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -9,6 +9,7 @@ import {
   dockerNetworkGateway,
   dockerRunArgs,
   ensureContainerImage,
+  freshSessionHome,
   newSessionIdentity,
 } from "../../src/container.ts";
 import { loadConfig } from "../../src/config.ts";
@@ -29,15 +30,13 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
   const paths = await fixture(t),
     config = await loadConfig(paths, {}),
     network = `integral-acceptance-${deploymentId(paths)}`,
-    sessionHome = join(paths.root, "session"),
+    sessionHome = await freshSessionHome(paths.root),
     historyArchive = join(paths.root, "runs"),
     currentRun = join(historyArchive, "current-run"),
     caCert = join(paths.root, "ca.pem"),
     caBundle = join(paths.root, "bundle.pem");
-  await mkdir(sessionHome, { recursive: true });
   await mkdir(join(sessionHome, ".integral"), { recursive: true });
   await mkdir(join(sessionHome, ".pi", "agent"), { recursive: true });
-  await mkdir(join(sessionHome, "history"), { recursive: true });
   await writeFile(join(sessionHome, ".integral", "auth.json"), "{}\n");
   await mkdir(currentRun, { recursive: true });
   await writeFile(
@@ -94,6 +93,15 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] live Pi co
   });
   execFileSync("docker", createArgs);
   execFileSync("docker", ["start", name], { stdio: "ignore" });
+  const sessionOwner = (await stat(sessionHome)).uid;
+  assert.equal(
+    (await stat(join(sessionHome, "history", "runs"))).uid,
+    sessionOwner,
+  );
+  assert.equal(
+    (await stat(join(sessionHome, "history", "current"))).uid,
+    sessionOwner,
+  );
   const inspection = JSON.parse(
     execFileSync("docker", ["inspect", name], {
       encoding: "utf8",

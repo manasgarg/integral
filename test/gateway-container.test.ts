@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
@@ -15,6 +15,7 @@ import {
   buildContainerSpec,
   dockerMcpSidecarArgs,
   dockerRunArgs,
+  freshSessionHome,
   isManagedContainerVariable,
   interpretPiProtocol,
   managedPiImage,
@@ -1446,6 +1447,7 @@ Given integral is provisioning a Pi container
 			And does not mount the Docker socket
 			And does not mount control-plane configuration or credentials
 			And mounts only the gateway CA, curated read-only run history, fresh temporary session home, store lock namespace, and configured store directories as required
+			And uses server-created history mount destinations that remain removable during session cleanup
 */
 /* @covers GATEWAY-EC79406A
 Given a chat container is running
@@ -1538,6 +1540,21 @@ test("[BOX-601613D4] [GATEWAY-EC79406A] [RUN-01CA16F2] [RUN-79BACB0C] Docker spe
       "type=bind,source=/host/runs/current-run,target=/home/pi/history/current,readonly",
     ),
   );
+});
+
+test("[BOX-601613D4] history mount destinations remain owned by session cleanup", async (t) => {
+  const paths = await fixture(t),
+    home = await freshSessionHome(paths.root),
+    owner = (await stat(home)).uid,
+    runs = await stat(join(home, "history", "runs")),
+    current = await stat(join(home, "history", "current"));
+
+  assert.ok(runs.isDirectory());
+  assert.equal(runs.uid, owner);
+  assert.ok(current.isDirectory());
+  assert.equal(current.uid, owner);
+  await rm(home, { recursive: true });
+  await assert.rejects(stat(home), { code: "ENOENT" });
 });
 
 /* @covers BOX-AB639757

@@ -7,6 +7,7 @@ responsibility in this behavior increment.
 
 ## PROFILE-6A93810F — Initialize one opaque Pi profile repository
 
+```text
 Given the deployment has never created a Pi profile repository
 	When `integral server start` starts a Pi-capable server
 		Or the runner first attempts to provision Pi
@@ -33,9 +34,11 @@ Given an earlier development version recorded `pi-profile` at `/home/pi/.pi/agen
 		Then it migrates the existing repository metadata to `/home/pi/.pi`
 			And preserves the canonical repository, commits, lifecycle state, and write policy
 			And does not create a replacement profile repository
+```
 
 ## PROFILE-3083AEEE — Mount the profile at Pi's native directory
 
+```text
 Given the `pi-profile` repository is active and available
 	When integral provisions an interactive or isolated scheduled Pi session
 		Then it materializes a writable per-run checkout through the ordinary governed repository protocol
@@ -58,3 +61,4 @@ Given the `pi-profile` repository was soft-deleted
 	When Pi or an operator requests its restoration
 		Then integral accepts only `/home/pi/.pi` as its restored mount path
 			And otherwise applies the ordinary governed repository restoration behavior
+```

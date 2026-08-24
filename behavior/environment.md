@@ -5,23 +5,28 @@ controlled environment constructed for Pi containers.
 
 ## ENV-2A7C4E91 — Select a deployment with INTEGRAL_HOME
 
+```text
 Given `INTEGRAL_HOME` contains an absolute path
 	When an integral command needs deployment state
 		Then integral uses that path as the deployment root
 			And keeps configuration under `<INTEGRAL_HOME>/config`
 			And keeps durable data under `<INTEGRAL_HOME>/data`
 			And keeps reconstructible runtime state under `<INTEGRAL_HOME>/state`
+```
 
 ## ENV-8D13B6F0 — Use the default deployment home
 
+```text
 Given `INTEGRAL_HOME` is unset or empty
 	And `HOME` contains an absolute path
 	When an integral command needs deployment state
 		Then integral uses `<HOME>/.integral` as the deployment root
 			And behaves as if that absolute path had been supplied through `INTEGRAL_HOME`
+```
 
 ## ENV-4C9E20A7 — Reject an invalid deployment home
 
+```text
 Given an integral command needs deployment state
 	When `INTEGRAL_HOME` is set to a relative path
 		Then integral exits non-zero before reading or writing deployment state
@@ -29,17 +34,21 @@ Given an integral command needs deployment state
 	When both `INTEGRAL_HOME` and `HOME` are unavailable
 		Then integral exits non-zero before reading or writing deployment state
 			And explains how to set `INTEGRAL_HOME`
+```
 
 ## ENV-B71F3D85 — Normalize deployment identity
 
+```text
 Given two integral processes receive paths that resolve to the same deployment root
 	When they resolve their deployment identity
 		Then they use the same normalized absolute root
 			And contend for the same per-component locks
 			And resolve the same durable conversation registry and per-conversation queues
+```
 
 ## ENV-0E6A92C4 — Keep discovery commands independent of deployment state
 
+```text
 Given `INTEGRAL_HOME` and `HOME` are invalid or unavailable
 	When the user runs `integral --help`
 		Then the command succeeds without resolving a deployment root
@@ -47,17 +56,21 @@ Given `INTEGRAL_HOME` and `HOME` are invalid or unavailable
 		Then the command succeeds without resolving a deployment root
 	When the user runs `integral connection catalog`
 		Then the command succeeds without resolving a deployment root
+```
 
 ## ENV-93D4A1B8 — Resolve integral variables once per process
 
+```text
 Given an integral process has resolved its deployment root and component settings
 	When its parent environment changes later
 		Then the running process continues using the resolved values
 			And does not switch deployment roots or ports
 			And requires a new process to observe new values
+```
 
 ## ENV-5F2C7E06 — Override component ports from the environment
 
+```text
 Given `INTEGRAL_GATEWAY_PORT`, `INTEGRAL_COORDINATOR_PORT`, `INTEGRAL_RUNNER_PORT`, and `INTEGRAL_SCHEDULER_PORT` contain distinct free decimal ports from `1` through `65535`
 	And the main config may contain different component ports
 	When the user runs `integral server start`
@@ -67,9 +80,11 @@ Given `INTEGRAL_GATEWAY_PORT`, `INTEGRAL_COORDINATOR_PORT`, `INTEGRAL_RUNNER_POR
 			And the scheduler binds to `INTEGRAL_SCHEDULER_PORT`
 			And environment values take precedence over main-config values
 			And integral records all bound component endpoints under the resolved `INTEGRAL_HOME`
+```
 
 ## ENV-C8A14D73 — Use default component ports
 
+```text
 Given all four component port variables are unset or empty
 	And the main config does not define component ports
 	When the user runs `integral server start`
@@ -78,35 +93,43 @@ Given all four component port variables are unset or empty
 			And the runner uses port `7312`
 			And the scheduler uses port `7313`
 			And integral records all bound component endpoints under the resolved `INTEGRAL_HOME`
+```
 
 ## ENV-17B6E9C2 — Reject invalid component ports
 
+```text
 Given a component port variable is not a decimal integer from `1` through `65535`
 	Or two component port variables contain the same port
 	When the user starts any server component
 		Then the command exits non-zero before publishing ready state
 			And identifies every invalid or conflicting variable
 			And does not silently choose or fall back to another port
+```
 
 ## ENV-A4D8206F — Discover the coordinator from deployment state
 
+```text
 Given a healthy coordinator recorded its endpoint under an `INTEGRAL_HOME`
 	When the user runs `integral talk` or another coordinator client with that same `INTEGRAL_HOME`
 		Then the client uses the recorded coordinator endpoint
 			And does not require `INTEGRAL_COORDINATOR_PORT` to be repeated
 			And verifies the endpoint belongs to the expected deployment and component
+```
 
 ## ENV-6C3F91E5 — Do not import ambient credentials
 
+```text
 Given the host shell contains provider keys, tokens, or credential variables
 	And no corresponding integral connection is configured
 	When integral starts the server or provisions Pi
 		Then integral does not treat those ambient variables as connections
 			And does not copy them into the container
 			And requires credentials to enter through `integral connection add`
+```
 
 ## ENV-D20B7A48 — Build the container environment from an allowlist
 
+```text
 Given the host shell contains arbitrary environment variables
 	When integral provisions a Pi container
 		Then integral constructs a new container environment from an explicit allowlist
@@ -116,18 +139,22 @@ Given the host shell contains arbitrary environment variables
 			And sets `HOME` to `/home/pi`
 			And sets `PATH` to `/usr/local/bin:/usr/bin:/bin`
 			And sets `TMPDIR` to `/tmp`
+```
 
 ## ENV-3E85C1F9 — Route HTTP traffic through the gateway
 
+```text
 Given integral provisions an authenticated Pi session
 	When it constructs the container environment
 		Then it sets `HTTP_PROXY` and `HTTPS_PROXY` to the session-authenticated gateway URL
 			And sets `http_proxy` and `https_proxy` to the same URL
 			And sets `NO_PROXY` and `no_proxy` to empty values
 			And does not place a real connection credential in any proxy variable
+```
 
 ## ENV-F19A64B2 — Configure CA trust inside the container
 
+```text
 Given integral provisions a Pi container
 	When it constructs the container environment
 		Then it sets `NODE_EXTRA_CA_CERTS` to the mounted integral CA certificate
@@ -140,24 +167,30 @@ Given integral provisions a Pi container
 			And does not mount the CA private key into the container
 	When the gateway intercepts an allowed HTTPS host for the first time
 		Then integral creates and caches a host certificate signed by the deployment CA
+```
 
 ## ENV-7B2D40AC — Protect integral-managed container variables
 
+```text
 Given a connection name or configuration attempts to define a reserved variable
 	And the reserved set includes `HOME`, `PATH`, proxy variables, CA variables, and names beginning with `INTEGRAL_`
 	When integral validates that connection or configuration
 		Then integral rejects the conflicting definition
 			And does not start a container with an overridden managed value
+```
 
 ## ENV-E64A9C31 — Respect NO_COLOR in human output
 
+```text
 Given `NO_COLOR` is present in the host environment
 	When integral writes human-oriented CLI output
 		Then integral emits no ANSI color sequences
 			And leaves JSON output unchanged
+```
 
 ## ENV-BC39A7D2 — Default each unset component port independently
 
+```text
 Given one or more component port variables are explicitly configured
 	And one or more component port variables are unset or empty
 	When the user starts a server component
@@ -165,18 +198,22 @@ Given one or more component port variables are explicitly configured
 			And otherwise uses that component's main-config value where present
 			And otherwise uses that component's built-in default port
 			And validates that the resulting four ports are distinct
+```
 
 ## ENV-2E7A94C1 — Override one separately running component port
 
+```text
 Given the user starts one component with `--component <name>`
 	And its matching `INTEGRAL_<NAME>_PORT` contains a valid free port
 	When that component binds its listener
 		Then it uses its matching environment override
 			And does not require sibling component port variables to be repeated
 			And publishes its actual endpoint for sibling discovery
+```
 
 ## ENV-9A4C17E2 — Override logging from the environment
 
+```text
 Given logging environment variables may be set
 	When `INTEGRAL_LOG_LEVEL` contains `error`, `warn`, `info`, `debug`, or `trace`
 		And `INTEGRAL_LOG_FORMAT` contains `text` or `json`
@@ -187,3 +224,4 @@ Given logging environment variables may be set
 			And resolves the other option from main config or its built-in default
 	When either variable contains an unsupported value
 		Then the process exits non-zero before performing its operation
+```

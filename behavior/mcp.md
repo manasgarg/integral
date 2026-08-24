@@ -13,6 +13,7 @@ switches are outside this scope.
 
 ## MCP-948B2522 — Discover and complete MCP authorization
 
+```text
 Given a remote MCP server responds that authorization is required
 	When integral adds or reconnects the server
 		Then integral discovers its protected-resource metadata
@@ -33,9 +34,11 @@ Given a remote MCP server responds that authorization is required
 	When authorization discovery is incomplete or inconsistent
 		Then integral refuses the connection
 			And identifies the incompatible metadata without exposing secrets
+```
 
 ## MCP-DB6BD516 — Negotiate compatible remote MCP protocols
 
+```text
 Given an active remote MCP connection
 	When integral opens communication with its server
 		Then integral supports the MCP `2026-07-28` stateless HTTP protocol
@@ -51,9 +54,11 @@ Given an active remote MCP connection
 	When a server cannot negotiate any supported version
 		Then integral marks that connection unavailable
 			And does not send a tool request using guessed protocol semantics
+```
 
 ## MCP-007BCE08 — Expose discovered MCP tools as first-class Pi tools
 
+```text
 Given an active MCP server advertises one or more tools
 	When integral prepares a Pi session
 		Then integral reads every page of the server's tool catalog
@@ -68,9 +73,11 @@ Given an active MCP server advertises one or more tools
 		Then integral excludes that tool
 			And reports a bounded diagnostic identifying its connection and tool
 			And keeps other valid tools from the same server available
+```
 
 ## MCP-2F0F5CB5 — Invoke a discovered MCP tool faithfully
 
+```text
 Given Pi invokes a tool discovered from an MCP connection
 	When integral handles the invocation
 		Then integral validates the arguments against the advertised input schema
@@ -88,9 +95,11 @@ Given Pi invokes a tool discovered from an MCP connection
 	When the remote server redirects a request outside the declared connection boundary
 		Then the gateway refuses the redirect
 			And does not forward the credential to the new destination
+```
 
 ## MCP-5751370A — Refresh a changing MCP tool catalog
 
+```text
 Given an active MCP server changes its tool catalog
 	When the negotiated protocol announces a tool-list change
 		Or the advertised tool-catalog cache lifetime expires
@@ -105,9 +114,11 @@ Given an active MCP server changes its tool catalog
 		Then integral retains no newly received partial catalog
 			And reports the connection as degraded
 			And does not prevent unrelated connections from operating
+```
 
 ## MCP-6F5CFA0E — Isolate MCP connection failures
 
+```text
 Given multiple MCP connections are configured
 	When one server is unreachable, unauthorized, malformed, protocol-incompatible, or its stdio process exits
 		Then integral marks only that connection unavailable or degraded
@@ -118,9 +129,11 @@ Given multiple MCP connections are configured
 		Then integral returns the connection to active
 			And makes its tools available no later than the next Pi turn
 			And does not require the connection to be recreated
+```
 
 ## MCP-0A804DA4 — Isolate and supervise a stdio MCP server
 
+```text
 Given an active stdio MCP connection is available to a Pi session
 	When the runner provisions that session
 		Then integral starts one dedicated MCP sidecar from the configured runner image
@@ -146,3 +159,4 @@ Given an active stdio MCP connection is available to a Pi session
 			And allows a bounded graceful-exit period
 			And forcibly terminates the sidecar if it remains running
 			And removes all sidecar resources and secret material
+```

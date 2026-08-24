@@ -70,7 +70,20 @@ function behaviorDefinitions(
           heading.index,
           headings[index + 1]?.index ?? source.text.length,
         ),
-        clauses = body.split("\n").filter((line) => clausePattern.test(line));
+        lines = body.split("\n"),
+        clauses = lines.filter((line) => clausePattern.test(line)),
+        firstClause = lines.findIndex((line) => clausePattern.test(line)),
+        lastClause = lines.findLastIndex((line) => clausePattern.test(line));
+      if (
+        firstClause < 1 ||
+        lines[firstClause - 1] !== "```text" ||
+        lines[lastClause + 1] !== "```" ||
+        lines.filter((line) => line === "```text").length !== 1 ||
+        lines.filter((line) => line === "```").length !== 1
+      )
+        errors.push(
+          `behavior clauses must be enclosed in one fenced text block: ${id}`,
+        );
       if (definitions.has(id)) errors.push(`duplicate behavior ID: ${id}`);
       definitions.set(id, {
         id,

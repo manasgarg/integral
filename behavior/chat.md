@@ -10,14 +10,17 @@ unless a future behavior explicitly links them.
 
 ## CHAT-DB0EF523 — Refuse chat without the server
 
+```text
 Given no healthy coordinator is reachable
 	When the user runs `integral talk`
 		Then the command exits non-zero
 			And tells the user to start the coordinator or run `integral server start`
 			And does not start an ungoverned local Pi process
+```
 
 ## CHAT-888AFAE0 — Hold an interactive conversation
 
+```text
 Given the terminal is interactive
 	And the integral coordinator is healthy
 	When the user runs `integral talk`
@@ -47,17 +50,21 @@ Given the user is in `integral talk`
 			And does not disturb input already being typed
 	When no Pi container is active or the active Pi process is idle
 		Then the terminal does not animate the working indicator
+```
 
 ## CHAT-84D839CE — Show local chat help
 
+```text
 Given the user is in `integral talk`
 	When the user enters `/help`
 		Then the terminal describes `/help`, `/status`, `/model [<pattern>...]`, `/connection catalog`, `/connection ls`, `/queue ls`, `/queue edit`, `/queue delete`, `/tasks`, `/tasks show`, `/tasks cancel`, `/approvals`, `/approve`, `/deny`, and `/exit`
 			And handles the command on the host
 			And does not send the command to Pi
+```
 
 ## CHAT-989F5C14 — Show chat status
 
+```text
 Given the user is in `integral talk`
 	When the user enters `/status`
 		Then the terminal reports whether the gateway is healthy
@@ -69,9 +76,11 @@ Given the user is in `integral talk`
 			And reports the queue depth and number of attached terminals
 			And identifies the in-flight message when one exists
 			And does not print secrets
+```
 
 ## CHAT-6E91B4C7 — Select and reuse the conversation model
 
+```text
 Given the terminal is interactive
 	And the integral coordinator is healthy
 	When the user runs `integral talk`
@@ -105,9 +114,11 @@ Given the terminal is interactive
 		Then the command exits non-zero
 			And instructs the user to run `integral connection add`
 			And does not attach the terminal or change the conversation's selections
+```
 
 ## CHAT-C53A90D2 — Choose a provider and model with friendly matching
 
+```text
 Given integral opens the model chooser for `integral model`, `integral talk`, or `/model`
 	When the coordinator has already discovered models for the current connection generation and configuration
 		Then it serves the cached catalog without repeating Pi version, image, or model discovery
@@ -160,9 +171,11 @@ Given the model chooser resolves a valid choice
 		And the resolved choice is different from the conversation's current choice
 		Then integral refuses to change the selection until the turn finishes
 			And leaves the current connection, model, and Pi session unchanged
+```
 
 ## CHAT-54B8A1C3 — Attach every terminal to the same conversation
 
+```text
 Given one `integral talk` terminal is attached to the deployment conversation
 	When the user starts another `integral talk` with the same `$INTEGRAL_HOME`
 		Then the second terminal attaches to the same logical conversation
@@ -171,9 +184,11 @@ Given one `integral talk` terminal is attached to the deployment conversation
 			And observes the same selected model connection and model
 			And observes the same Pi session and in-flight message
 			And does not start another logical conversation or Pi container
+```
 
 ## CHAT-D7E2F609 — Broadcast conversation events to every terminal
 
+```text
 Given two or more terminals are attached to the same conversation
 	When any terminal submits a message
 		Then every attached terminal displays that same persisted user message once
@@ -187,9 +202,11 @@ Given two or more terminals are attached to the same conversation
 	When the selected model connection or model changes
 		Then every attached terminal observes the same resulting selection
 			And identifies its connection, provider, and model without exposing credentials
+```
 
 ## CHAT-1C4A8B7E — Detach one terminal without ending the conversation
 
+```text
 Given one or more terminals are attached to the conversation
 	When one terminal enters `/exit`, sends EOF, or is interrupted
 		Then integral detaches only that terminal
@@ -197,9 +214,11 @@ Given one or more terminals are attached to the conversation
 			And does not end the logical conversation
 			And does not discard queued messages or persisted conversation events
 			And does not disturb other attached terminals
+```
 
 ## CHAT-93E7D20B — Reattach to the durable conversation
 
+```text
 Given every terminal has detached
 	And the integral coordinator still owns the conversation
 	When the user runs `integral talk` with the same `$INTEGRAL_HOME`
@@ -207,18 +226,22 @@ Given every terminal has detached
 			And omits session records from rendered conversation text
 			And continues following new events without a snapshot-to-live gap
 			And does not create a blank logical conversation
+```
 
 ## CHAT-B46C81F5 — Restore conversation context in a replacement Pi session
 
+```text
 Given the logical conversation has persisted completed turns
 	And no Pi container is active
 	When the runner starts a replacement Pi session for a queued message
 		Then integral supplies the persisted conversation context to Pi
 			And the replacement session can continue the same conversation
 			And temporary files from the previous container remain unavailable
+```
 
 ## CHAT-4F29A6D8 — Recover the conversation after a server restart
 
+```text
 Given conversation events were acknowledged before the coordinator stopped or crashed
 	When the coordinator starts again with the same `$INTEGRAL_HOME`
 		Then integral restores the events in their committed order
@@ -231,3 +254,4 @@ Given conversation events were acknowledged before the coordinator stopped or cr
 			And reconnects to the coordinator for the same `$INTEGRAL_HOME`
 			And reconciles from the restored snapshot without rendering acknowledged conversation events twice
 			And accepts new local commands and messages after reconnection
+```

@@ -14,6 +14,7 @@ Pi RPC container.
 
 ## BOX-AB639757 — Start Pi for the first message
 
+```text
 Given the coordinator, runner, and gateway are healthy
 	And no Pi session is active
 	And the durable queue contains a message ready for delivery
@@ -27,9 +28,11 @@ Given the coordinator, runner, and gateway are healthy
 			And supplies only a sentinel credential in the authentication shape required by the selected provider
 			And restores conversational context from the durable conversation record
 			And sends the claimed message as a Pi `prompt` command
+```
 
 ## BOX-E1F472A1 — Refresh one coordinated Pi runtime
 
+```text
 Given integral begins Pi-specific OAuth or opens the model chooser
 	When the npm registry reports a newer `latest` Pi version
 		Then integral installs that exact version under deployment runtime state
@@ -54,9 +57,11 @@ Given a conversation selection records a Pi version and immutable image identity
 		Then it uses that immutable image identity
 			And treats a runtime identity change as a model-selection change
 			And never substitutes another locally tagged Pi image
+```
 
 ## BOX-601613D4 — Apply container restrictions
 
+```text
 Given integral is provisioning a Pi container
 	When Docker receives the container specification
 		Then the container runs as a non-root user
@@ -71,9 +76,12 @@ Given integral is provisioning a Pi container
 			And does not mount the Docker socket
 			And does not mount control-plane configuration or credentials
 			And mounts only the gateway CA, curated read-only run history, fresh temporary session home, store lock namespace, and configured store directories as required
+			And uses server-created history mount destinations that remain removable during session cleanup
+```
 
 ## BOX-B45DEA9B — Keep one warm Pi conversation
 
+```text
 Given integral has an active Pi RPC session
 	When the runner claims another message after the prior turn completes
 		Then integral sends it to the same Pi process
@@ -81,9 +89,11 @@ Given integral has an active Pi RPC session
 			And preserves preceding turns as conversational context
 			And cancels a pending idle shutdown before starting the turn
 			And does not start a second Pi container or duplicate an existing MCP sidecar
+```
 
 ## BOX-BE26C696 — Bound a stuck turn
 
+```text
 Given Pi does not finish a turn within the configured turn timeout
 	When the timeout expires
 		Then integral requests container termination
@@ -93,9 +103,11 @@ Given Pi does not finish a turn within the configured turn timeout
 			And revokes temporary session credentials
 			And terminates every MCP sidecar owned by the timed-out session
 			And force-removes the Docker container if it has not exited five seconds after SIGTERM
+```
 
 ## BOX-7D3A19E4 — Recycle an idle Pi session without ending the conversation
 
+```text
 Given the durable queue is empty
 	And the Pi session has no turn in flight
 	When the Pi idle timeout expires
@@ -105,18 +117,22 @@ Given the durable queue is empty
 			And preserves the durable conversation record and queue
 			And keeps attached terminals connected
 			And starts a replacement session when another message is queued
+```
 
 ## BOX-C28F4A61 — Return a message when Pi provisioning fails
 
+```text
 Given the runner has claimed a queued message
 	When it cannot provision or start the Pi container
 		Then integral durably returns the message to its prior queue position
 			And terminates every partially started MCP sidecar
 			And records the provisioning failure
 			And reports the failure to every attached terminal
+```
 
 ## BOX-40521095 — Govern Pi image package changes
 
+```text
 Given Pi runs in an immutable managed image without host Docker access
 	When Pi lists the image's Debian packages through Integral's authenticated control pathway
 		Then Integral returns the durable desired package set and its revision
@@ -135,9 +151,11 @@ Given Pi runs in an immutable managed image without host Docker access
 		And a human approves a fresh rebuild of that recipe
 		Then Integral resolves Pi again during the build instead of overriding the Dockerfile with the prior selected version
 			And records the version and immutable image identity that were actually installed
+```
 
 ## BOX-6A91C3E7 — Let Pi author its next managed image
 
+```text
 Given Integral owns a dedicated governed Git repository for the deployment's Pi image overlay
 	And Integral's foundational Pi image, runtime user, gateway trust, entrypoint, and security constraints are outside that repository
 	And the image repository has an immutable host-managed `approval-required` write policy
@@ -197,3 +215,4 @@ Given Integral owns a dedicated governed Git repository for the deployment's Pi 
 	When a later Pi session starts from an activated recipe
 		Then its projected image-recipe checkout identifies the exact active commit and host-managed foundational image reference
 			And Pi can propose a rollback or further change through the same approval-gated path
+```
