@@ -51,6 +51,7 @@ export const PI_PROFILE_MOUNT = "/home/pi/.pi";
 const LEGACY_PI_PROFILE_MOUNT = "/home/pi/.pi/agent";
 const PI_PROFILE_CHECKOUT_EXCLUDES = [
   "/agent/auth.json",
+  "/agent/models-store.json",
   "/agent/sessions/",
   "/agent/npm/",
   "/agent/git/",
@@ -110,6 +111,14 @@ export interface ResourceProjection {
     kind: ResourceKind;
     reason: AvailabilityReason;
   }>;
+}
+
+interface ResourceSessionRecord {
+  sessionId: string;
+  identity: BackingIdentity;
+  path: string;
+  checkout?: string;
+  initialHead?: string;
 }
 
 function recordFile(paths: IntegralPaths, name: string): string {
@@ -811,11 +820,11 @@ export async function prepareResourceProjection(
       continue;
     }
     await ensureDir(join(paths.resourceSessions, record.id));
-    await atomicWrite(
-      sessionFile(paths, record.id, sessionId),
-      `${JSON.stringify({ sessionId, identity: record.identity, path: record.path })}\n`,
-    );
     if (record.kind === "host-store") {
+      await atomicWrite(
+        sessionFile(paths, record.id, sessionId),
+        `${JSON.stringify({ sessionId, identity: record.identity, path: record.path })}\n`,
+      );
       result.stores.push(record);
       result.mounts.push({
         source: record.path,
@@ -824,8 +833,21 @@ export async function prepareResourceProjection(
       });
     } else {
       try {
-        result.repositories.push(
-          await materializeRepository(record, sessionHome, sessionId),
+        const repository = await materializeRepository(
+          record,
+          sessionHome,
+          sessionId,
+        );
+        result.repositories.push(repository);
+        await atomicWrite(
+          sessionFile(paths, record.id, sessionId),
+          `${JSON.stringify({
+            sessionId,
+            identity: record.identity,
+            path: record.path,
+            checkout: repository.checkout,
+            initialHead: repository.initialHead,
+          })}\n`,
         );
       } catch {
         await rm(sessionFile(paths, record.id, sessionId), { force: true });
@@ -990,31 +1012,15 @@ export async function cleanupResourceProjection(
                 `refs/heads/${record.branch ?? "main"}`,
               ]).catch(() => "")
             : "";
-    if (current || head !== canonicalHead) {
-      const destination = join(
-        paths.recovery,
-        repository.resource.id,
-        `${projection.sessionId}-${Date.now()}`,
+    if (current || head !== canonicalHead)
+      await createRepositoryRecovery(
+        paths,
+        config,
+        repository,
+        projection.sessionId,
+        Boolean(head && head !== canonicalHead),
+        Boolean(current),
       );
-      await ensureDir(dirname(destination));
-      await cp(repository.checkout, destination, {
-        recursive: true,
-        dereference: false,
-        filter: (source) =>
-          relative(repository.checkout, source).split("/")[0] !== ".git",
-      });
-      await atomicWrite(
-        join(destination, ".integral-recovery.json"),
-        `${JSON.stringify({
-          schemaVersion: 1,
-          resourceId: repository.resource.id,
-          sessionId: projection.sessionId,
-          createdAt: new Date().toISOString(),
-          committedChanges: Boolean(head && head !== canonicalHead),
-          uncommittedChanges: Boolean(current),
-        })}\n`,
-      );
-    }
     await expireRecoveryArtifacts(paths, repository.resource.id, config);
     await rm(sessionFile(paths, repository.resource.id, projection.sessionId), {
       force: true,
@@ -1040,6 +1046,140 @@ export async function cleanupResourceProjection(
   }
 }
 
+function recoverableEntry(
+  resource: ResourceRecord,
+  checkout: string,
+  source: string,
+): boolean {
+  const path = relative(checkout, source).split("/").join("/");
+  if (!path) return true;
+  if (path === ".git" || path.startsWith(".git/")) return false;
+  if (resource.connection !== PI_PROFILE_NAME) return true;
+  const absolute = `/${path}`;
+  return !PI_PROFILE_CHECKOUT_EXCLUDES.some(
+    (excluded) =>
+      absolute === excluded.replace(/\/$/, "") ||
+      (excluded.endsWith("/") && absolute.startsWith(excluded)),
+  );
+}
+
+async function createRepositoryRecovery(
+  paths: IntegralPaths,
+  config: EffectiveConfig,
+  repository: RepositoryProjection,
+  sessionId: string,
+  committedChanges: boolean,
+  uncommittedChanges: boolean,
+): Promise<void> {
+  const resource = repository.resource,
+    branch = resource.branch ?? "main",
+    artifactId = `${sessionId}-${Date.now()}`,
+    recoveryRef = `refs/integral/recovery/${sessionId}`;
+  const canonical = await stat(resource.path).catch(() => undefined);
+  if (!canonical?.isDirectory()) {
+    const destination = join(paths.recovery, resource.id, artifactId);
+    await ensureDir(dirname(destination));
+    await cp(repository.checkout, destination, {
+      recursive: true,
+      dereference: false,
+      filter: (source) =>
+        recoverableEntry(resource, repository.checkout, source),
+    });
+    await atomicWrite(
+      join(destination, ".integral-recovery.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        resourceId: resource.id,
+        sessionId,
+        createdAt: new Date().toISOString(),
+        committedChanges,
+        uncommittedChanges,
+      })}\n`,
+    );
+    return;
+  }
+  const staging = await mkdtemp(join(paths.state, "repository-recovery-"));
+  try {
+    const canonicalHead = await git([
+      "--git-dir",
+      resource.path,
+      "rev-parse",
+      "--verify",
+      `refs/heads/${branch}`,
+    ]).catch(() => "");
+    if (canonicalHead) {
+      await rm(staging, { recursive: true, force: true });
+      await git([
+        "clone",
+        "--no-local",
+        "--branch",
+        branch,
+        resource.path,
+        staging,
+      ]);
+    } else await git(["init", "--initial-branch", branch], staging);
+    for (const entry of await readdir(staging)) {
+      if (entry === ".git") continue;
+      await rm(join(staging, entry), { recursive: true, force: true });
+    }
+    for (const entry of await readdir(repository.checkout)) {
+      const source = join(repository.checkout, entry);
+      if (!recoverableEntry(resource, repository.checkout, source)) continue;
+      await cp(source, join(staging, entry), {
+        recursive: true,
+        dereference: false,
+        errorOnExist: true,
+        filter: (nested) =>
+          recoverableEntry(resource, repository.checkout, nested),
+      });
+    }
+    await git(["add", "--all"], staging);
+    const unchanged = await git(["diff", "--cached", "--quiet"], staging)
+      .then(() => true)
+      .catch(() => false);
+    if (unchanged) return;
+    await git(
+      [
+        "-c",
+        "user.name=Integral Recovery",
+        "-c",
+        "user.email=recovery@integral.local",
+        "commit",
+        "-m",
+        `Recover unlanded work from session ${sessionId}`,
+      ],
+      staging,
+    );
+    const commit = await git(["rev-parse", "HEAD"], staging);
+    await validateTree(join(staging, ".git"), commit, config);
+    await git([
+      "--git-dir",
+      resource.path,
+      "fetch",
+      staging,
+      `+${commit}:${recoveryRef}`,
+    ]);
+    const destination = join(paths.recovery, resource.id, artifactId),
+      createdAt = new Date().toISOString();
+    await ensureDir(destination);
+    await atomicWrite(
+      join(destination, ".integral-recovery.json"),
+      `${JSON.stringify({
+        schemaVersion: 2,
+        resourceId: resource.id,
+        sessionId,
+        createdAt,
+        committedChanges,
+        uncommittedChanges,
+        ref: recoveryRef,
+        commit,
+      })}\n`,
+    );
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
+}
+
 async function expireRecoveryArtifacts(
   paths: IntegralPaths,
   resourceId: string,
@@ -1051,7 +1191,22 @@ async function expireRecoveryArtifacts(
   for (const entry of await readdir(root).catch(() => [] as string[])) {
     const path = join(root, entry),
       value = await stat(path);
-    if (value.mtimeMs < cutoff)
+    if (value.mtimeMs < cutoff) {
+      const metadata = await recoveryMetadata(path);
+      if (metadata.ref) {
+        const resourcePath =
+          resourceId === IMAGE_RECIPE_ID
+            ? paths.imageRecipe
+            : (await resourceForId(paths, resourceId))?.path;
+        if (resourcePath)
+          await git([
+            "--git-dir",
+            resourcePath,
+            "update-ref",
+            "-d",
+            metadata.ref,
+          ]).catch(() => undefined);
+      }
       await rm(path, { recursive: true, force: true }).then(async () => {
         await ensureDir(dirname(paths.repositoryRecoveryAudit));
         await appendFile(
@@ -1065,6 +1220,28 @@ async function expireRecoveryArtifacts(
           { mode: 0o600 },
         );
       });
+    }
+  }
+}
+
+interface RepositoryRecoveryMetadata {
+  createdAt?: string;
+  committedChanges?: boolean;
+  uncommittedChanges?: boolean;
+  sessionId?: string;
+  ref?: string;
+  commit?: string;
+}
+
+async function recoveryMetadata(
+  directory: string,
+): Promise<RepositoryRecoveryMetadata> {
+  const metadata = await readText(join(directory, ".integral-recovery.json"));
+  if (!metadata) return {};
+  try {
+    return JSON.parse(metadata) as RepositoryRecoveryMetadata;
+  } catch {
+    return {};
   }
 }
 
@@ -1099,6 +1276,9 @@ export async function listRepositoryRecovery(
     createdAt: string;
     committedChanges: boolean;
     uncommittedChanges: boolean;
+    sessionId?: string;
+    ref?: string;
+    commit?: string;
   }>
 > {
   const root = join(paths.recovery, id),
@@ -1108,25 +1288,115 @@ export async function listRepositoryRecovery(
   return await Promise.all(
     entries.map(async (entry) => {
       const directory = join(root, entry),
-        metadata = await readText(join(directory, ".integral-recovery.json")),
-        parsed = metadata
-          ? (JSON.parse(metadata) as {
-              createdAt?: unknown;
-              committedChanges?: unknown;
-              uncommittedChanges?: unknown;
-            })
-          : undefined;
+        parsed = await recoveryMetadata(directory);
       return {
         id: entry,
         createdAt:
-          typeof parsed?.createdAt === "string"
+          typeof parsed.createdAt === "string"
             ? parsed.createdAt
             : (await stat(directory)).mtime.toISOString(),
-        committedChanges: parsed?.committedChanges === true,
-        uncommittedChanges: parsed?.uncommittedChanges === true,
+        committedChanges: parsed.committedChanges === true,
+        uncommittedChanges: parsed.uncommittedChanges === true,
+        ...(typeof parsed.sessionId === "string"
+          ? { sessionId: parsed.sessionId }
+          : {}),
+        ...(typeof parsed.ref === "string" ? { ref: parsed.ref } : {}),
+        ...(typeof parsed.commit === "string" ? { commit: parsed.commit } : {}),
       };
     }),
   );
+}
+
+export async function discardRepositoryRecovery(
+  paths: IntegralPaths,
+  resourceId: string,
+  artifactId: string,
+): Promise<void> {
+  if (
+    basename(artifactId) !== artifactId ||
+    !/^[A-Za-z0-9._-]+$/.test(artifactId)
+  )
+    throw new IntegralError("invalid recovery artifact", 400);
+  const resource = await resourceForId(paths, resourceId),
+    resourcePath =
+      resourceId === IMAGE_RECIPE_ID ? paths.imageRecipe : resource?.path;
+  if (
+    !resourcePath ||
+    (resourceId !== IMAGE_RECIPE_ID && resource?.kind !== "host-repo")
+  )
+    throw new IntegralError("repository not found", 404);
+  const directory = join(paths.recovery, resourceId, artifactId),
+    metadata = await recoveryMetadata(directory);
+  if (!metadata.ref)
+    throw new IntegralError("recovery artifact not found", 404);
+  if (!metadata.ref.startsWith("refs/integral/recovery/"))
+    throw new IntegralError("invalid recovery ref", 409);
+  await git(["--git-dir", resourcePath, "update-ref", "-d", metadata.ref]);
+  await rm(directory, { recursive: true, force: true });
+  await ensureDir(dirname(paths.repositoryRecoveryAudit));
+  await appendFile(
+    paths.repositoryRecoveryAudit,
+    `${JSON.stringify({
+      event: "repository_recovery_discarded",
+      resourceId,
+      artifactId,
+      ref: metadata.ref,
+      discardedAt: new Date().toISOString(),
+    })}\n`,
+    { mode: 0o600 },
+  );
+}
+
+export async function recoverAbandonedResourceProjections(
+  paths: IntegralPaths,
+  config: EffectiveConfig,
+): Promise<void> {
+  for (const resourceId of await readdir(paths.resourceSessions).catch(
+    () => [] as string[],
+  )) {
+    const directory = join(paths.resourceSessions, resourceId),
+      resource = await resourceForId(paths, resourceId);
+    for (const file of await readdir(directory).catch(() => [] as string[])) {
+      if (!file.endsWith(".json")) continue;
+      const marker = await readText(join(directory, file));
+      let session: ResourceSessionRecord | undefined;
+      try {
+        session = marker
+          ? (JSON.parse(marker) as ResourceSessionRecord)
+          : undefined;
+      } catch {
+        session = undefined;
+      }
+      if (!session?.checkout || !resource || resource.kind !== "host-repo")
+        continue;
+      const checkout = await stat(session.checkout).catch(() => undefined);
+      if (!checkout?.isDirectory()) {
+        await rm(join(directory, file), { force: true });
+        continue;
+      }
+      await run("docker", [
+        "rm",
+        "--force",
+        `integral-${session.sessionId}`,
+      ]).catch(() => undefined);
+      await cleanupResourceProjection(paths, config, {
+        sessionId: session.sessionId,
+        repositories: [
+          {
+            resource,
+            checkout: session.checkout,
+            ...(session.initialHead
+              ? { initialHead: session.initialHead }
+              : {}),
+          },
+        ],
+        stores: [],
+        mounts: [],
+        unavailable: [],
+      });
+      await rm(session.checkout, { recursive: true, force: true });
+    }
+  }
 }
 
 export interface StoreSnapshot {

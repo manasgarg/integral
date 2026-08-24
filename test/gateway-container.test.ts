@@ -1695,7 +1695,7 @@ test("[CONNECTION-4B8D73F1] [SCHEDULE-55BD779F] [SCHEDULE-F13C33A0] [BOX-4052109
 /* @covers REPO-D1865075
 Given integral provisions any interactive or isolated scheduled Pi session
 	When it prepares Pi's extensions
-		Then it registers `repo_list`, `repo_create`, `repo_push`, `repo_delete`, and `repo_restore`
+		Then it registers `repo_list`, `repo_create`, `repo_push`, `repo_recovery_discard`, `repo_delete`, and `repo_restore`
 			And describes the commit-before-push and soft-delete semantics to Pi
 			And explains that creation and restoration replace the calling session while deletion changes mounted resources only for later sessions
 			And sends every operation through the authenticated gateway control boundary
@@ -1703,6 +1703,18 @@ Given integral provisions any interactive or isolated scheduled Pi session
 			And keeps the tools available when no repository connection exists yet
 	When a repository tool is called with an expired, revoked, or mismatched session identity
 		Then integral rejects it without reading or changing repository state
+*/
+/* @covers REPO-9C4A71E2
+Given Pi works in a run-scoped governed repository checkout
+	When Pi creates commits it wants to keep
+		Then it calls `repo_push` before reporting the repository work complete
+			And reports the landed canonical commit rather than only the run-branch commit
+	When Pi decides not to land commits it created
+		Then it undoes those commits and their file changes in the run checkout before reporting completion
+			And does not deliberately leave rejected work for host recovery
+	When integral describes governed repository work to Pi
+		Then it explains that a local commit is not durable until `repo_push` succeeds
+			And explains the required land-or-undo disposition before completion
 */
 /* @covers STORE-350F3496
 Given integral provisions any interactive or isolated scheduled Pi session
@@ -1716,7 +1728,7 @@ Given integral provisions any interactive or isolated scheduled Pi session
 	When a store tool is called with an expired, revoked, or mismatched session identity
 		Then integral rejects it without reading or changing store state
 */
-test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticated governed resource tools", async (t) => {
+test("[REPO-D1865075] [REPO-9C4A71E2] [STORE-350F3496] every Pi environment receives authenticated governed resource tools", async (t) => {
   const paths = await fixture(t);
   await writeResourceExtension(paths.root, {
     sessionId: "session",
@@ -1763,11 +1775,14 @@ test("[REPO-D1865075] [STORE-350F3496] every Pi environment receives authenticat
     "store_delete",
     "store_restore",
     "repo_push",
+    "repo_recovery_discard",
     "container_image_rebuild",
     "store_snapshot_list",
     "store_snapshot_restore",
   ]);
   assert.match(source, /proxy-authorization/);
+  assert.match(source, /local commit exists only in this run/);
+  assert.match(source, /undo them and their file changes/);
   assert.doesNotMatch(source, /host path:/i);
   const lockHelper = await readFile(
     join(paths.root, ".local/bin/integral-lock"),

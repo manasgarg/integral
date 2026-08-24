@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   ContainerBackend,
@@ -275,6 +275,16 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
       connectionGeneration: 2,
       startedAt: "now",
     });
+  const recoveryDirectory = join(paths.recovery, "profile-id", "session-old-1");
+  await mkdir(recoveryDirectory, { recursive: true });
+  await writeFile(
+    join(recoveryDirectory, ".integral-recovery.json"),
+    `${JSON.stringify({
+      createdAt: "now",
+      sessionId: "session-old",
+      ref: "refs/integral/recovery/session-old",
+    })}\n`,
+  );
 
   let spec: ContainerSpec | undefined,
     observe: ((event: Record<string, unknown>) => void) | undefined;
@@ -418,7 +428,14 @@ test("[BOX-B45DEA9B] [BOX-7D3A19E4] [RUN-B1D837E0] [RUN-01CA16F2] [RUN-88706C0D]
     assert.ok(
       spec?.args.includes(`/home/pi/.integral/extensions/${extension}`),
     );
-  assert.match(spec?.args.at(-1) ?? "", /ephemeral Integral-managed container/);
+  const systemPrompts = spec?.args.join("\n") ?? "";
+  assert.match(systemPrompts, /ephemeral Integral-managed container/);
+  assert.match(systemPrompts, /undo those commits and their file changes/);
+  assert.match(
+    systemPrompts,
+    /sessionId in \/home\/pi\/history\/runs\/index.json/,
+  );
+  assert.match(systemPrompts, /repo_recovery_discard/);
   const historyMount = spec?.mounts.find(
       (mount) => mount.target === "/home/pi/history/runs",
     ),

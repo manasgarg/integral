@@ -11,7 +11,7 @@ bare repositories may enter the same lifecycle through a host connection.
 
 Given integral provisions any interactive or isolated scheduled Pi session
 	When it prepares Pi's extensions
-		Then it registers `repo_list`, `repo_create`, `repo_push`, `repo_delete`, and `repo_restore`
+		Then it registers `repo_list`, `repo_create`, `repo_push`, `repo_recovery_discard`, `repo_delete`, and `repo_restore`
 			And describes the commit-before-push and soft-delete semantics to Pi
 			And explains that creation and restoration replace the calling session while deletion changes mounted resources only for later sessions
 			And sends every operation through the authenticated gateway control boundary
@@ -88,6 +88,19 @@ Given Pi has committed work on a current-run governed repository branch
 			And records the repository ID, prior head, landed head, run ID, and changed paths in the host-attested run history
 			And reports success only after the canonical ref update is durable
 
+## REPO-9C4A71E2 — Require an explicit disposition for repository commits
+
+Given Pi works in a run-scoped governed repository checkout
+	When Pi creates commits it wants to keep
+		Then it calls `repo_push` before reporting the repository work complete
+			And reports the landed canonical commit rather than only the run-branch commit
+	When Pi decides not to land commits it created
+		Then it undoes those commits and their file changes in the run checkout before reporting completion
+			And does not deliberately leave rejected work for host recovery
+	When integral describes governed repository work to Pi
+		Then it explains that a local commit is not durable until `repo_push` succeeds
+			And explains the required land-or-undo disposition before completion
+
 ## REPO-7B0E2F4A — Approval-gate selected host-managed repositories
 
 Given every governed repository has a host-managed write policy of `direct`, `approval-required`, or `denied`
@@ -136,16 +149,32 @@ Given a governed repository canonical branch may have advanced since a run began
 
 Given a governed repository checkout differs from its landed canonical head
 	When the Pi run stops, fails, times out, or is recycled
-		Then integral snapshots its files without trusting or executing its `.git` metadata
-			And records the snapshot in host recovery storage independent of the canonical repository
+		Then integral reconstructs its files without trusting or executing its `.git` metadata
+			And records the reconstructed state on a host-owned recovery ref in the canonical repository
 			And records whether the checkout contained committed or uncommitted changes
 			And makes the recovery artifact visible in repository status for a later run
 			And only then removes the temporary checkout
+	When integral restarts with an abandoned repository checkout
+		Then it performs the same host-owned recovery before starting a new Pi invocation
 	When the checkout has no work beyond its landed canonical head
 		Then integral removes it without creating an empty recovery artifact
 	When a recovery artifact exceeds the configured retention period
-		Then integral removes it without requiring or changing canonical history
+		Then integral removes its recovery ref without changing the canonical branch
 			And records the expiration in host-attested repository history
+
+## REPO-54D1B8C7 — Review recovered work using its originating run
+
+Given one or more host-owned repository recovery refs exist
+	When integral starts a later Pi invocation
+		Then it identifies each recovery ref and its originating session in the system context
+			And instructs Pi to find and examine the originating run log before deciding its disposition
+			And instructs Pi to either land the recovered work through `repo_push` or remove the recovery ref
+	When Pi decides recovered work should be kept
+		Then it fetches and applies the recovery ref to its run checkout
+			And lands the resulting commit through `repo_push`
+	When Pi decides recovered work should not be kept
+		Then it calls the governed recovery-discard operation
+			And integral removes only that recovery ref and its recovery metadata
 
 ## REPO-95B5606D — Soft-delete a governed repository from Pi
 

@@ -44,6 +44,7 @@ import { callRemoteMcp } from "./mcp.ts";
 import { readJsonObject, readRequestBody, writeJson } from "./http-server.ts";
 import {
   createResource,
+  discardRepositoryRecovery,
   listRepositoryRecovery,
   listResourceRecords,
   listStoreSnapshots,
@@ -800,6 +801,17 @@ export class Gateway {
       });
       return;
     }
+    if (
+      kind === "host-repo" &&
+      id === IMAGE_RECIPE_ID &&
+      parts[2] === "recovery" &&
+      parts.length === 4 &&
+      method === "DELETE"
+    ) {
+      await discardRepositoryRecovery(this.paths, id, parts[3]!);
+      res.writeHead(204).end();
+      return;
+    }
     const resource = id ? await resourceForId(this.paths, id) : undefined;
     if (!resource || resource.kind !== kind)
       throw new IntegralError("resource not found", 404);
@@ -886,6 +898,21 @@ export class Gateway {
         return;
       }
       throw new IntegralError("unknown Git repository operation", 404);
+    }
+    if (
+      kind === "host-repo" &&
+      parts[2] === "recovery" &&
+      parts.length === 4 &&
+      method === "DELETE"
+    ) {
+      if (!(await sessionHasResource(this.paths, resource.id, sessionId)))
+        throw new IntegralError(
+          "repository is not mounted in this session",
+          403,
+        );
+      await discardRepositoryRecovery(this.paths, resource.id, parts[3]!);
+      res.writeHead(204).end();
+      return;
     }
     if (parts.length === 2 && method === "DELETE") {
       const body = await bodyJson(req),
